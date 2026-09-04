@@ -1,7 +1,7 @@
 {
   "schema": "reliquary/environment-artifact/v1",
   "environment": "reliquary_logic_v2",
-  "contract": "reliquary/episode-json/v1",
+  "contract": "reliquary/answer-json/v1",
   "distribution": {
     "name": "reliquary-logic",
     "version": "0.1.0a1"

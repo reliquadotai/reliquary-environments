@@ -290,3 +290,22 @@ def test_prime_rl_reference_config_and_pins() -> None:
         assert source["env"]["agent"]["runtime"] == {"type": "docker", "allow": []}
     # Single turn with no tools: a tool-call parser here would be cargo.
     assert "tool_call_parser" not in config["inference"]["vllm"]
+
+
+def test_the_declared_contract_matches_the_surface() -> None:
+    """`answer-json`, not `episode-json`: one turn, no reset and no step.
+
+    The sibling tool-use package implements the episode contract. Naming it
+    here would claim a surface this environment does not have, so the name
+    is different and this test is what keeps it honest.
+    """
+    artifact = json.loads(
+        importlib.resources.files("reliquary_logic")
+        .joinpath("artifact.json")
+        .read_text()
+    )
+    assert artifact["contract"] == "reliquary/answer-json/v1"
+    assert artifact["environment"] == "reliquary_logic_v2"
+    surface = {"task", "grade", "replay", "reference_completion"}
+    assert surface <= set(dir(LogicEnvironment))
+    assert not {"reset", "step"} & set(dir(LogicEnvironment))

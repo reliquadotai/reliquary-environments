@@ -61,3 +61,8 @@ over.
 The package exports `LogicTaskset` for Verifiers and `prime-rl`, and
 `LogicEnvironment` for synchronous Reliquary-compatible replay. It imports no
 Reliquary code.
+
+`LogicEnvironment` implements `reliquary/answer-json/v1` — `task`, `grade`,
+`replay`, `reference_completion` — and deliberately not the episode contract
+its tool-use sibling implements: one turn means there is no `reset` and no
+`step` to expose.
