@@ -1,0 +1,22 @@
+{
+  "schema": "reliquary/environment-artifact/v1",
+  "environment": "reliquary_logic_v2",
+  "contract": "reliquary/episode-json/v1",
+  "distribution": {
+    "name": "reliquary-logic",
+    "version": "0.1.0a1"
+  },
+  "entrypoints": {
+    "taskset": "reliquary_logic:LogicTaskset",
+    "replay": "reliquary_logic:LogicEnvironment"
+  },
+  "source_manifest_sha256": "abec2de92d2a992153351bd0983df4a756e5863d6e678e8c05437ac0da0015c0",
+  "files": {
+    "reliquary_logic/__init__.py": "a3f27db20af8cb7c85739b9232b38fac18029fd74014e751111d2129676d8f13",
+    "reliquary_logic/answer.py": "a6142a959849f69af2f58aea326271304ac5aaaf423036b9bb07d4decf4e0969",
+    "reliquary_logic/rng.py": "5f9d054dc4f2db639c5a63aae62ec8d1871487c69cdb5a7d88af29cdc73d99a8",
+    "reliquary_logic/tasks.py": "fd96bf3c27c4ef93bd48050d364d452a089ea5c1c4ff4804d31e91acc5e191c5",
+    "reliquary_logic/taskset.py": "f1eb70b894ccfd4e85525d825094ddf9a92e7da3879ca51c2f5e0a8ec27ada1f",
+    "reliquary_logic/goldens/reference.jsonl": "49f052d7d751dc074cc3f7d5c8bb3b3a812aba3028f42ba18fb5d2fbdb64271c"
+  }
+}
