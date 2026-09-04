@@ -5,3 +5,19 @@ source_commit = "656c86227b7cd5a96676c3e88e31412ababf464c"
 api = "v1"
 version = "0.3.1"
 source_commit = "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"
+
+[prime_rl]
+version = "0.9.0"
+source_commit = "ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1"
+verifiers_commit = "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"
+renderers_commit = "cb8243913702367878427c7a7094b350ea1a8e20"
+pydantic_config_commit = "65b15dffba82d4be19efdaf8b2b9705cc1756be8"
+prime_envs_commit = "26dafdc9582576975ec576f893be7319028daf51"
+
+[models.qwen3_4b_instruct_2507]
+id = "Qwen/Qwen3-4B-Instruct-2507"
+revision = "cdbee75f17c01a7cc42f958dc650907174af0554"
+
+[releases.reliquary_stateful_tools]
+tag = "v0.1.0a1"
+wheel_sha256 = "f4d5480e57e66265faa78c53e36fa8ab781afe0ae907d7dc5749d2b0f9344155"

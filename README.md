@@ -15,3 +15,5 @@ uv build
 ```
 
 The embedded `reliquary_stateful_tools_v1` implementation remains in the core repository for historical replay. This repository versions forward; it does not move or rewrite that consensus artifact.
+
+The pinned [Prime-RL v0.9.0 training lane](environments/tool_use/reliquary_stateful_tools/examples/prime_rl) uses the package directly through Verifiers. It remains non-production until GPU qualification is complete.

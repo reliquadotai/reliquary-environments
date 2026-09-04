@@ -27,3 +27,37 @@ jobs:
       - name: Validate installed wheel
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/tool_use/reliquary_stateful_tools/.wheel-venv/bin/validate reliquary-stateful-tools -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+
+  prime-rl-v0-9:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: PrimeIntellect-ai/prime-rl
+          ref: ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1
+          path: .prime-rl
+          submodules: recursive
+          fetch-depth: 1
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Verify upstream pin
+        run: |
+          test "$(git -C .prime-rl rev-parse HEAD)" = "ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1"
+          test "$(git -C .prime-rl/deps/verifiers rev-parse HEAD)" = "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"
+          test "$(git -C .prime-rl/deps/renderers rev-parse HEAD)" = "cb8243913702367878427c7a7094b350ea1a8e20"
+          test "$(git -C .prime-rl/deps/pydantic-config rev-parse HEAD)" = "65b15dffba82d4be19efdaf8b2b9705cc1756be8"
+          test "$(git -C .prime-rl/deps/prime-envs rev-parse HEAD)" = "26dafdc9582576975ec576f893be7319028daf51"
+      - name: Install pinned Prime-RL
+        working-directory: .prime-rl
+        run: uv sync --frozen --package prime-rl --no-dev
+      - name: Install pinned environment wheel
+        run: |
+          curl -fsSL "https://github.com/reliquadotai/reliquary-environments/releases/download/v0.1.0a1/reliquary_stateful_tools-0.1.0a1-py3-none-any.whl" -o "${{ runner.temp }}/reliquary_stateful_tools-0.1.0a1-py3-none-any.whl"
+          echo "f4d5480e57e66265faa78c53e36fa8ab781afe0ae907d7dc5749d2b0f9344155  ${{ runner.temp }}/reliquary_stateful_tools-0.1.0a1-py3-none-any.whl" | sha256sum -c -
+          uv pip install --python .prime-rl/.venv/bin/python --no-deps "${{ runner.temp }}/reliquary_stateful_tools-0.1.0a1-py3-none-any.whl"
+      - name: Load environment through pinned Verifiers
+        run: .prime-rl/.venv/bin/python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary-stateful-tools'); t=vf.load_taskset(c(id='reliquary-stateful-tools', split='train')); assert len(list(t.head(3))) == 3"
+      - name: Validate Prime-RL config
+        run: .prime-rl/.venv/bin/rl @ "$GITHUB_WORKSPACE/environments/tool_use/reliquary_stateful_tools/examples/prime_rl/rl.toml" --dry-run True --output-dir "${{ runner.temp }}/prime-output" --run.name reliquary-prime-compatibility
