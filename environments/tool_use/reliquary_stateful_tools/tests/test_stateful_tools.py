@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import importlib.resources
 import json
+import tomllib
 from pathlib import Path
 
 import verifiers.v1 as vf
@@ -184,3 +185,60 @@ def test_artifact_manifest_hashes_installed_files() -> None:
     assert hashlib.sha256(source_manifest.read_bytes()).hexdigest() == artifact["source_manifest_sha256"]
     for name, expected in artifact["files"].items():
         assert hashlib.sha256(root.joinpath(name).read_bytes()).hexdigest() == expected
+
+
+def test_prime_rl_reference_config_and_pins() -> None:
+    environment_root = Path(__file__).parents[1]
+    config = tomllib.loads(
+        (environment_root / "examples/prime_rl/rl.toml").read_text()
+    )
+    compatibility = tomllib.loads(
+        (environment_root.parents[2] / "compatibility.toml").read_text()
+    )
+
+    assert compatibility["prime_rl"] == {
+        "version": "0.9.0",
+        "source_commit": "ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1",
+        "verifiers_commit": "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf",
+        "renderers_commit": "cb8243913702367878427c7a7094b350ea1a8e20",
+        "pydantic_config_commit": "65b15dffba82d4be19efdaf8b2b9705cc1756be8",
+        "prime_envs_commit": "26dafdc9582576975ec576f893be7319028daf51",
+    }
+    assert compatibility["verifiers"]["source_commit"] == compatibility["prime_rl"]["verifiers_commit"]
+    assert compatibility["models"]["qwen3_4b_instruct_2507"] == {
+        "id": "Qwen/Qwen3-4B-Instruct-2507",
+        "revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
+    }
+    assert compatibility["releases"]["reliquary_stateful_tools"]["wheel_sha256"] == (
+        "f4d5480e57e66265faa78c53e36fa8ab781afe0ae907d7dc5749d2b0f9344155"
+    )
+    assert config["deployment"] == {
+        "type": "single_node",
+        "gpus_per_node": 2,
+        "num_train_gpus": 1,
+        "num_infer_gpus": 1,
+    }
+    assert config["dashboard"] is False
+    assert config["weight_broadcast"]["type"] == "filesystem"
+    assert config["model"]["name"] == compatibility["models"]["qwen3_4b_instruct_2507"]["id"]
+    assert config["orchestrator"]["algo"]["type"] == "grpo"
+    assert config["orchestrator"]["renderer"]["name"] == "qwen3"
+    assert config["orchestrator"]["group_size"] == 16
+    assert config["orchestrator"]["max_off_policy_steps"] == 8
+    assert config["orchestrator"]["train"]["source"][0]["env"]["taskset"] == {
+        "id": "reliquary-stateful-tools",
+        "split": "train",
+    }
+    assert config["orchestrator"]["train"]["source"][0]["env"]["agent"]["runtime"] == {
+        "type": "docker",
+        "allow": [],
+    }
+    assert config["orchestrator"]["eval"]["source"][0]["env"]["taskset"] == {
+        "id": "reliquary-stateful-tools",
+        "split": "eval",
+    }
+    assert config["orchestrator"]["eval"]["source"][0]["env"]["agent"]["runtime"] == {
+        "type": "docker",
+        "allow": [],
+    }
+    assert config["inference"]["vllm"]["tool_call_parser"] == "hermes"
