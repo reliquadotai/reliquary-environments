@@ -1,0 +1,15 @@
+Reliquary Environments
+
+The initial stateful-tools environment is derived from MIT-licensed Reliquary
+code at commit 656c86227b7cd5a96676c3e88e31412ababf464c.
+
+Original paths:
+  reliquary/environment/agentic/envs/stateful_tools_v1/environment.py
+  reliquary/environment/agentic/envs/stateful_tools_v1/tasks.py
+  reliquary/environment/agentic/envs/stateful_tools_v1/tools.py
+  reliquary/environment/agentic/envs/stateful_tools_v1/verifier.py
+
+The standalone port keeps the procedural task families and exact-state reward
+principle, replaces the in-process SQLite object with JSON-serializable state,
+and adds native Verifiers v1 plus a Reliquary-free synchronous JSON
+compatibility surface. The original MIT notice is retained in LICENSE.

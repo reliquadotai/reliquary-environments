@@ -1,0 +1,7 @@
+[reliquary]
+source_commit = "656c86227b7cd5a96676c3e88e31412ababf464c"
+
+[verifiers]
+api = "v1"
+version = "0.3.1"
+source_commit = "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"

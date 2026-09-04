@@ -1,0 +1,19 @@
+{
+  "schema": "reliquary/environment-artifact/v1",
+  "environment": "reliquary_stateful_tools_v2",
+  "contract": "reliquary/episode-json/v1",
+  "distribution": {
+    "name": "reliquary-stateful-tools",
+    "version": "0.1.0a1"
+  },
+  "entrypoints": {
+    "taskset": "reliquary_stateful_tools:StatefulToolsTaskset",
+    "replay": "reliquary_stateful_tools:StatefulToolsEnvironment"
+  },
+  "source_manifest_sha256": "6487e60f82a2f5404fa89eb3acb2366889352a949c66f0c0a977609eb2c60c0e",
+  "files": {
+    "reliquary_stateful_tools/__init__.py": "b9a25b35874eee1e75cf65fab43b162559646910c8a78a6c8c9b7b77b8c64159",
+    "reliquary_stateful_tools/taskset.py": "d875be54a9a0d14cf3363bdfa4d5e47938fbb2fa21e0b55cd630059780a7a8a1",
+    "reliquary_stateful_tools/goldens/reference.jsonl": "27fbfed389dc6b73d270a09f122c3295ef4bd41fdaf0cd579c6563331b518f88"
+  }
+}

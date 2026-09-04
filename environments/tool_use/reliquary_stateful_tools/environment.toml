@@ -1,0 +1,40 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/stateful-tools"
+version = "0.1.0a1"
+taskset = "reliquary-stateful-tools"
+entrypoint = "reliquary_stateful_tools:StatefulToolsTaskset"
+compatibility_entrypoint = "reliquary_stateful_tools:StatefulToolsEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["address_update", "refund", "support_note"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 8
+max_observation_bytes = 65536
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["state_invariants", "completion"]
+
+[data]
+train = "procedural:reliquary-stateful-tools-generator-v2:train"
+eval = "procedural:reliquary-stateful-tools-generator-v2:eval"
+qualification = "procedural:reliquary-stateful-tools-generator-v2:qualification"
+redistributable = true
+license = "MIT"
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary"
+source_commit = "656c86227b7cd5a96676c3e88e31412ababf464c"
+source_environment = "reliquary_stateful_tools_v1"
+port = "new-v2-identity"
