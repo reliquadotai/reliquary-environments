@@ -138,3 +138,52 @@ def test_load_corpus_selects_exactly_the_train_shards_and_excludes_subsets(
     assert captured_kwargs.get("filename_prefix") == "train-"
     assert selected == sorted(canonical)
     assert not (set(selected) & set(decoys))
+
+
+import pytest
+
+from reliquary_math.grading import answers_equal, compute_reward
+
+
+@pytest.mark.parametrize(
+    "candidate,truth",
+    [
+        ("45", "45"),
+        ("\\frac{3}{4}", "0.75"),
+        ("0.5", "\\frac{1}{2}"),
+        ("2\\sqrt{2}", "\\sqrt{8}"),
+        ("x = 5", "5"),
+        ("$12$", "12"),
+        ("1,000", "1000"),
+        ("(1, 2)", "(1,2)"),
+    ],
+)
+def test_equivalent_surface_forms_compare_equal(candidate: str, truth: str) -> None:
+    assert answers_equal(candidate, truth) is True
+
+
+@pytest.mark.parametrize(
+    "candidate,truth",
+    [("45", "46"), ("\\frac{3}{4}", "0.74"), ("(1, 2)", "(2, 1)"), ("", "5")],
+)
+def test_different_answers_compare_unequal(candidate: str, truth: str) -> None:
+    assert answers_equal(candidate, truth) is False
+
+
+def test_reward_reads_the_last_boxed_answer() -> None:
+    """A model that reconsiders mid-completion is graded on its conclusion,
+    not on its first attempt."""
+    problem = {"expected_answer": "7"}
+    completion = "First \\boxed{3}. On reflection, \\boxed{7}."
+    assert compute_reward(problem, completion) == 1.0
+
+
+def test_reward_is_zero_without_a_boxed_answer() -> None:
+    assert compute_reward({"expected_answer": "7"}, "the answer is 7") == 0.0
+
+
+def test_reward_refuses_an_unsafe_expression() -> None:
+    """The safety gate is what keeps a model answer from becoming arbitrary
+    sympy evaluation."""
+    problem = {"expected_answer": "7"}
+    assert compute_reward(problem, "\\boxed{__import__('os').system('id')}") == 0.0
