@@ -40,10 +40,15 @@ def _limits(cpu_seconds: int, memory_bytes: int) -> Callable[[], None]:
         resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
         # Blocks ANY nonzero-size write, not just large ones: a correct
         # solution that writes a scratch file is scored the same as a wrong
-        # one. Kept anyway and deliberately, not by oversight — these cases
-        # are pinned stdin/stdout pairs, so a solution has no legitimate
-        # need to touch the filesystem, and the alternative (letting writes
-        # through) reopens the disk-filling attack this closes.
+        # one. It also blocks `multiprocessing.Queue`/`Lock`/`Semaphore` —
+        # they create a /dev/shm-backed semaphore file and fail with
+        # `OSError: [Errno 27] File too large` (EFBIG) at construction time,
+        # before the submission's own logic runs at all. Kept anyway and
+        # deliberately, not by oversight — these cases are pinned
+        # stdin/stdout pairs, so a solution has no legitimate need to touch
+        # the filesystem or use cross-process shared memory, and the
+        # alternative (letting writes through) reopens the disk-filling
+        # attack this closes.
         resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
         # No RLIMIT_NPROC here. It was tried and removed: on Linux it is
         # scoped to the real UID, not to this process's subtree, so on a

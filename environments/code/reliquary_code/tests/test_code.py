@@ -198,13 +198,28 @@ def test_a_forked_grandchild_does_not_survive_the_wall_clock_kill() -> None:
     grandchild can outlive the wall-clock kill entirely.
 
     This drives `_spawn` directly with a source that forks a grandchild
-    that sleeps far longer than `wall_seconds`, and polls `/proc` for the
-    grandchild's state after `_spawn` returns. `os.kill(pid, 0)` alone can't
-    tell "killed, not yet reaped" from "still alive and sleeping": a zombie
-    still answers signal 0 (its PID slot persists until reaped). Reading the
-    state character distinguishes actually-still-running (`S`/`R`) from
-    killed (gone, `Z` zombie, or the transient `X`/`x` dead state Linux
-    reports mid-teardown).
+    that sleeps far longer than `wall_seconds`, and checks two things after
+    `_spawn` returns: that it returned promptly, and that the grandchild is
+    dead.
+
+    Both checks are needed. Checking only the end state has a blind spot: a
+    regression that reverts `_kill_group` to a plain `proc.kill()` (killing
+    only the immediate child) while keeping `start_new_session=True` was
+    verified by hand to still pass an end-state-only version of this test.
+    The grandchild inherits the stdout pipe fd; killing only the immediate
+    child does not close the grandchild's copy of it, so `communicate()`
+    blocks until the grandchild exits *on its own* — measured at 10.02s wall
+    against a 1.0s `wall_seconds` in that reproduction. By the time `_spawn`
+    finally returns, the grandchild has already exited normally, so an
+    end-state check alone sees a clean state and reports the test as
+    passing — a real regression in the wall-clock guarantee passes slowly
+    instead of failing. Bounding elapsed time closes that gap.
+
+    `os.kill(pid, 0)` alone can't tell "killed, not yet reaped" from "still
+    alive and sleeping": a zombie still answers signal 0 (its PID slot
+    persists until reaped). Reading the state character distinguishes
+    actually-still-running (`S`/`R`) from killed (gone, `Z` zombie, or the
+    transient `X`/`x` dead state Linux reports mid-teardown).
     """
     source = (
         "import os, sys, time\n"
@@ -218,9 +233,29 @@ def test_a_forked_grandchild_does_not_survive_the_wall_clock_kill() -> None:
     )
     from reliquary_code.runner import _spawn
 
+    wall_seconds = 1.0
+    started = time.monotonic()
     completed = _spawn(
-        source, "", cpu_seconds=5, memory_bytes=512 * 1024 * 1024, wall_seconds=1.0
+        source,
+        "",
+        cpu_seconds=5,
+        memory_bytes=512 * 1024 * 1024,
+        wall_seconds=wall_seconds,
     )
+    elapsed = time.monotonic() - started
+
+    # Not a strict multiple of wall_seconds: spawn/kill/reap overhead is a
+    # roughly fixed cost, not proportional to the budget, so a fixed slack
+    # on top of it is what stays non-flaky on a loaded machine. This bound
+    # only needs to sit well below "the grandchild's own 30s sleep" (or the
+    # 10.02s measured in the broken-kill reproduction above) to catch a
+    # descendant that kept the pipe open — it is not a precision timing
+    # assertion.
+    assert elapsed < wall_seconds + 4.0, (
+        f"_spawn took {elapsed:.2f}s against a {wall_seconds}s wall clock: "
+        "a surviving descendant likely kept the output pipe open"
+    )
+
     grandchild_pid = int(completed.stdout.strip())
 
     deadline = time.monotonic() + 3.0
