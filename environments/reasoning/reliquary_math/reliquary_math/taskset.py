@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from collections.abc import Iterator
+from typing import Any, Literal
+
+import verifiers.v1 as vf
+from pydantic import Field
 
 from reliquary_math.corpus import corpus_length, get_problem
 from reliquary_math.grading import compute_reward
@@ -83,3 +87,72 @@ class MathEnvironment:
         """The answer that scores 1.0, in the shape the task asks for."""
         row = self._row(index)
         return f"\\boxed{{{row['expected_answer']}}}"
+
+
+class MathData(vf.TaskData):
+    index: int
+    expected_answer: str = Field(repr=False)
+    split: Literal["train"]
+
+
+class MathTaskConfig(vf.TaskConfig):
+    pass
+
+
+class MathTask(vf.Task[MathData, vf.State, MathTaskConfig]):
+    @property
+    def key(self) -> str:
+        return f"{self.data.split}:{self.data.index}"
+
+    @vf.reward(weight=1.0)
+    async def boxed_answer(self, trace: vf.Trace) -> float:
+        return compute_reward(
+            {"expected_answer": self.data.expected_answer},
+            trace.last_reply or "",
+        )
+
+    async def validate(self, runtime: vf.Runtime) -> bool:
+        """The reference answer scores 1.0 and a wrong one does not.
+
+        A grader that accepted anything would pass the first half alone, so
+        the well-formed wrong answer has to score zero as well.
+        """
+        del runtime
+        problem = {"expected_answer": self.data.expected_answer}
+        good = compute_reward(
+            problem, f"\\boxed{{{self.data.expected_answer}}}"
+        )
+        bad = compute_reward(problem, "\\boxed{__not_the_answer__}")
+        return good == 1.0 and bad == 0.0
+
+
+class MathConfig(vf.TasksetConfig):
+    split: Literal["train"] = "train"
+    task: MathTaskConfig = MathTaskConfig()
+    prompt_template: str = DEFAULT_PROMPT
+
+
+class MathTaskset(vf.Taskset[MathTask, MathConfig]):
+    INFINITE = False
+
+    def load(self) -> Iterator[MathTask]:
+        environment = MathEnvironment(
+            self.config.split, self.config.prompt_template
+        )
+        for index in range(len(environment)):
+            task = environment.task(index)
+            row = get_problem(index)
+            yield MathTask(
+                MathData(
+                    idx=index,
+                    prompt=task["prompt"],
+                    network_allow=[],
+                    index=index,
+                    expected_answer=row["expected_answer"],
+                    split=self.config.split,
+                ),
+                self.config.task,
+            )
+
+
+__all__ = ["MathEnvironment", "MathTaskset"]

@@ -1,5 +1,8 @@
+import asyncio
 import importlib
 import pkgutil
+
+from reliquary_math.taskset import MathConfig
 
 
 def test_package_imports() -> None:
@@ -250,3 +253,44 @@ def test_index_is_bounded_by_the_corpus(monkeypatch) -> None:
     assert len(environment) == 10
     with pytest.raises(IndexError):
         environment.task(10)
+
+
+import verifiers.v1 as vf
+
+from reliquary_math import MathEnvironment as ExportedEnvironment
+from reliquary_math import MathTaskset
+
+
+def test_package_exports_exactly_two_names() -> None:
+    import reliquary_math
+
+    assert reliquary_math.__all__ == ["MathEnvironment", "MathTaskset"]
+    assert ExportedEnvironment is not None
+
+
+def test_taskset_yields_tasks_that_carry_the_index(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "reliquary_math.taskset.get_problem",
+        lambda index: {"problem": f"p{index}", "expected_answer": "2"},
+    )
+    monkeypatch.setattr("reliquary_math.taskset.corpus_length", lambda: 3)
+
+    taskset = MathTaskset(MathConfig())
+    tasks = list(taskset.load())
+
+    assert len(tasks) == 3
+    assert [task.data.idx for task in tasks] == [0, 1, 2]
+    assert tasks[0].data.prompt.startswith("Solve")
+
+
+def test_task_validate_accepts_the_reference_and_rejects_a_wrong_answer(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "reliquary_math.taskset.get_problem",
+        lambda index: {"problem": "1+1?", "expected_answer": "2"},
+    )
+    monkeypatch.setattr("reliquary_math.taskset.corpus_length", lambda: 1)
+
+    task = next(iter(MathTaskset(MathConfig()).load()))
+    assert asyncio.run(task.validate(None)) is True
