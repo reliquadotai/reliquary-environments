@@ -1,0 +1,107 @@
+# Two-GPU reference run: one training GPU and one inference GPU.
+max_steps = 100
+seq_len = 2048
+dashboard = false
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+# For a reproducible run, override this with the revision-pinned local snapshot
+# from README.md. Prime-RL v0.9.0 has no model-revision config field.
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[ckpt]
+interval = 5
+keep_last = 3
+keep_interval = 15
+
+[weight_broadcast]
+type = "filesystem"
+
+[monitors.file]
+
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-5
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 32
+group_size = 16
+max_off_policy_steps = 8
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.renderer]
+name = "qwen3"
+
+[orchestrator.train]
+filter_zero_advantages = true
+
+[orchestrator.train.sampling]
+temperature = 1.0
+max_completion_tokens = 768
+
+# CodeConfig declares one split, "train" (opencodeinstruct-curated ships no
+# separate eval/qualification split of its own — the corpus pins in
+# environment.toml carry that distinction instead). Both sources below read
+# split = "train"; the held-out slice of `--num-examples` below is what
+# keeps eval honest, not a second split id.
+[[orchestrator.train.source]]
+name = "reliquary-code-train"
+env.taskset.id = "reliquary-code"
+env.taskset.split = "train"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 1
+
+[orchestrator.train.source.curriculum.gates.zero_signal]
+type = "advantage_range"
+reject_min = 0.0
+reject_max = 0.0
+
+[orchestrator.eval]
+interval = 15
+num_examples = 48
+group_size = 16
+skip_first_step = false
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_p = 1.0
+max_completion_tokens = 768
+
+[[orchestrator.eval.source]]
+name = "reliquary-code-eval"
+env.taskset.id = "reliquary-code"
+env.taskset.split = "train"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 1
+
+[inference]
+
+[inference.vllm]
+dtype = "bfloat16"
+max_model_len = 2048
+seed = 0
+gpu_memory_utilization = 0.9
+enable_lora = true
+max_lora_rank = 32

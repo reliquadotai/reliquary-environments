@@ -1,4 +1,6 @@
+import hashlib
 import importlib
+import json
 import pkgutil
 import time
 from pathlib import Path
@@ -325,3 +327,60 @@ def test_taskset_validate_accepts_reference_and_rejects_empty(monkeypatch) -> No
     monkeypatch.setattr("reliquary_code.taskset.corpus_length", lambda: 1)
     task = next(iter(CodeTaskset(CodeConfig()).load()))
     assert asyncio.run(task.validate(None)) is True
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "reliquary_code"
+
+
+def test_goldens_replay_offline() -> None:
+    """Every pinned index must still produce its recorded prompt, and a
+    wrong answer must still score 0. The corpus carries no reference
+    program, so there is no reference reward to pin here — only the prompt
+    hash and the wrong-answer floor."""
+    lines = (
+        PACKAGE_ROOT / "goldens" / "reference.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(lines) >= 20
+
+    environment = CodeEnvironment()
+    for line in lines:
+        golden = json.loads(line)
+        task = environment.task(golden["index"])
+        assert (
+            hashlib.sha256(task["prompt"].encode("utf-8")).hexdigest()
+            == golden["prompt_sha256"]
+        )
+        assert environment.grade(golden["index"], "no code")["reward"] == golden[
+            "wrong_reward"
+        ]
+
+
+def test_artifact_manifest_hashes_installed_files() -> None:
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+    from tools.build_artifact import build_artifact
+
+    committed = json.loads((PACKAGE_ROOT / "artifact.json").read_text())
+    regenerated = build_artifact(
+        PACKAGE_ROOT,
+        environment=committed["environment"],
+        contract=committed["contract"],
+        distribution=committed["distribution"],
+        entrypoints=committed["entrypoints"],
+    )
+    assert regenerated == committed
+
+
+def test_environment_toml_declares_the_real_pins() -> None:
+    import tomllib
+
+    declared = tomllib.loads(
+        (PACKAGE_ROOT.parent / "environment.toml").read_text(encoding="utf-8")
+    )
+    assert declared["id"] == "reliquary/code"
+    assert declared["entrypoint"] == "reliquary_code:CodeTaskset"
+    assert declared["compatibility_entrypoint"] == "reliquary_code:CodeEnvironment"
+    assert declared["provenance"]["port"] == "generator-identical-new-identity"
+    assert declared["data"]["license"] == "cc-by-4.0"
+    assert corpus.OCI_REVISION in declared["data"]["train"]

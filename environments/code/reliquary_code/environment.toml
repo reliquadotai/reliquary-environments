@@ -1,0 +1,40 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/code"
+version = "0.1.0a1"
+taskset = "reliquary-code"
+entrypoint = "reliquary_code:CodeTaskset"
+compatibility_entrypoint = "reliquary_code:CodeEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["open_code_instruct"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 1
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["passing_cases"]
+
+[data]
+train = "hf:R0mAI/opencodeinstruct-curated@d3caaefc3b46f8642b251f9efaeccf0d1e95b0a7"
+eval = "hf:R0mAI/opencodeinstruct-curated@d3caaefc3b46f8642b251f9efaeccf0d1e95b0a7"
+qualification = "hf:R0mAI/opencodeinstruct-curated@d3caaefc3b46f8642b251f9efaeccf0d1e95b0a7"
+redistributable = true
+license = "cc-by-4.0"
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary"
+source_commit = "10c2a4d9"
+source_environment = "opencodeinstruct"
+port = "generator-identical-new-identity"
