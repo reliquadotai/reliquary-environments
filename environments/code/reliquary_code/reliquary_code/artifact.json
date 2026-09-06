@@ -4,21 +4,21 @@
   "contract": "reliquary/python-cases/v1",
   "distribution": {
     "name": "reliquary-code",
-    "version": "0.1.0a1"
+    "version": "0.1.0a2"
   },
   "entrypoints": {
     "taskset": "reliquary_code:CodeTaskset",
     "replay": "reliquary_code:CodeEnvironment"
   },
-  "source_manifest_sha256": "2cee95cd7a37f1ab0197e2f1d815f28d2f8a8087ec4f2d6b61b4c9361164f469",
+  "source_manifest_sha256": "ab70b7efc053eb2cdb036077c69a822529b2bcb7affab805262ca263de35af02",
   "files": {
     "reliquary_code/__init__.py": "26f1af765505cbab8ed2fc6055813688842ef6af2867b250835043486295f782",
     "reliquary_code/cases.py": "79e19d2bf52f01c68846100f7ebbf5caae3bfcdd4eb80ed8ac72e56053e6da9f",
-    "reliquary_code/corpus.py": "28f61538632464eb127d9c53daaef2903bcafd272ec9d519251baeefb3a7b70b",
+    "reliquary_code/corpus.py": "9b97392ae5ae81b1e1e6c6b427591cba865583b4b809939a82b6899623ecdb00",
     "reliquary_code/extraction.py": "7b3da077ac9f397a5ebd41f6c14e8649f3f21f4abd9e342677cf3b1a340f8e1b",
     "reliquary_code/goldens/reference.jsonl": "07c87c16ab2c537d2b9a8302c2e8da12ffbd6ad4c843c39d05d2e1b1409a7788",
     "reliquary_code/runner.py": "cb04a1eb49ba507471e9d8317c234be4c476cc5e0d4effadf0821d5a02cc5738",
-    "reliquary_code/taskset.py": "54b1513aa18ce50b119b45652d4102a3f70044b6fc51c5342f96a63b284f74c8",
+    "reliquary_code/taskset.py": "52adb21a7819298571281ee2d6b884bec46188c5c917d2c6b3e8d78de23d5ac8",
     "reliquary_code/virtual_parquet.py": "d3da8bcf1551280d59e21225c3269ea81da4486d7ba964adfdca5e12b39dd492"
   }
 }

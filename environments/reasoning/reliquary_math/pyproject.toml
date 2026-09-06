@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reliquary-math"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "OpenMathInstruct-2 problems with value- and structure-aware answer checking for verifiable RL"
 readme = "README.md"
 license = "MIT"

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reliquary-code"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "OpenCodeInstruct problems graded by executing the model's Python against pinned tests"
 readme = "README.md"
 license = "MIT"
