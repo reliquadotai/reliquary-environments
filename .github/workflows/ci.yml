@@ -28,6 +28,29 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/tool_use/reliquary_stateful_tools/.wheel-venv/bin/validate reliquary-stateful-tools -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
 
+  reliquary-logic:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/reasoning/reliquary_logic
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run pytest
+      - run: uv run validate reliquary-logic -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+      - run: uv build --clear
+      - run: uv venv --python 3.12 .wheel-venv
+      - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_logic-0.1.0a1-py3-none-any.whl
+      - name: Verify installed wheel and packaged golden
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/environments/reasoning/reliquary_logic/.wheel-venv/bin/python -c "import hashlib,importlib.resources,json; import verifiers.v1 as vf; from reliquary_logic import LogicEnvironment; from reliquary_logic.taskset import TASK_COUNT; root=importlib.resources.files('reliquary_logic'); artifact=json.loads(root.joinpath('artifact.json').read_text()); assert all(hashlib.sha256(root.parent.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in artifact['files'].items()); assert len(root.joinpath('goldens/reference.jsonl').read_text().splitlines())==3; assert len(LogicEnvironment())==TASK_COUNT; e=LogicEnvironment(); assert e.grade(0, e.reference_completion(0))['reward']==1.0; config=vf.taskset_config_type('reliquary-logic'); assert len(list(vf.load_taskset(config(id='reliquary-logic')).head(3)))==3"
+      - name: Validate installed wheel
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/environments/reasoning/reliquary_logic/.wheel-venv/bin/validate reliquary-logic -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+
   prime-rl-v0-9:
     runs-on: ubuntu-22.04
     steps:
@@ -59,5 +82,12 @@ jobs:
           uv pip install --python .prime-rl/.venv/bin/python --no-deps "${{ runner.temp }}/reliquary_stateful_tools-0.1.0a1-py3-none-any.whl"
       - name: Load environment through pinned Verifiers
         run: .prime-rl/.venv/bin/python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary-stateful-tools'); t=vf.load_taskset(c(id='reliquary-stateful-tools', split='train')); assert len(list(t.head(3))) == 3"
+      - name: Install the logic environment from this checkout
+        run: uv pip install --python .prime-rl/.venv/bin/python --no-deps "$GITHUB_WORKSPACE/environments/reasoning/reliquary_logic"
+      - name: Load both environments through pinned Verifiers
+        run: |
+          .prime-rl/.venv/bin/python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary-logic'); t=vf.load_taskset(c(id='reliquary-logic', split='train')); assert len(list(t.head(3))) == 3"
       - name: Validate Prime-RL config
         run: .prime-rl/.venv/bin/rl @ "$GITHUB_WORKSPACE/environments/tool_use/reliquary_stateful_tools/examples/prime_rl/rl.toml" --dry-run True --output-dir "${{ runner.temp }}/prime-output" --run.name reliquary-prime-compatibility
+      - name: Validate the logic Prime-RL config
+        run: .prime-rl/.venv/bin/rl @ "$GITHUB_WORKSPACE/environments/reasoning/reliquary_logic/examples/prime_rl/rl.toml" --dry-run True --output-dir "${{ runner.temp }}/prime-output-logic" --run.name reliquary-logic-prime-compatibility
