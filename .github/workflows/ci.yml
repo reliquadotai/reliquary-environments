@@ -91,3 +91,49 @@ jobs:
         run: .prime-rl/.venv/bin/rl @ "$GITHUB_WORKSPACE/environments/tool_use/reliquary_stateful_tools/examples/prime_rl/rl.toml" --dry-run True --output-dir "${{ runner.temp }}/prime-output" --run.name reliquary-prime-compatibility
       - name: Validate the logic Prime-RL config
         run: .prime-rl/.venv/bin/rl @ "$GITHUB_WORKSPACE/environments/reasoning/reliquary_logic/examples/prime_rl/rl.toml" --dry-run True --output-dir "${{ runner.temp }}/prime-output-logic" --run.name reliquary-logic-prime-compatibility
+
+  math:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/reasoning/reliquary_math
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run pytest
+      - run: uv run validate reliquary-math -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+      - run: uv build --clear
+      - run: uv venv --python 3.12 .wheel-venv
+      - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_math-0.1.0a2-py3-none-any.whl
+      - name: Verify installed wheel and packaged golden
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/environments/reasoning/reliquary_math/.wheel-venv/bin/python -c "import hashlib,importlib.resources,json; import verifiers.v1 as vf; from reliquary_math import MathEnvironment; root=importlib.resources.files('reliquary_math'); artifact=json.loads(root.joinpath('artifact.json').read_text()); assert all(hashlib.sha256(root.parent.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in artifact['files'].items()); assert len(root.joinpath('goldens/reference.jsonl').read_text().splitlines())==24; assert len(MathEnvironment())==13972791; config=vf.taskset_config_type('reliquary-math'); assert len(list(vf.load_taskset(config(id='reliquary-math')).head(3)))==3"
+      - name: Validate installed wheel
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/environments/reasoning/reliquary_math/.wheel-venv/bin/validate reliquary-math -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+
+  code:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/code/reliquary_code
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run pytest
+      - run: uv run validate reliquary-code -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+      - run: uv build --clear
+      - run: uv venv --python 3.12 .wheel-venv
+      - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_code-0.1.0a2-py3-none-any.whl
+      - name: Verify installed wheel and packaged golden
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/environments/code/reliquary_code/.wheel-venv/bin/python -c "import hashlib,importlib.resources,json; import verifiers.v1 as vf; from reliquary_code import CodeEnvironment; root=importlib.resources.files('reliquary_code'); artifact=json.loads(root.joinpath('artifact.json').read_text()); assert all(hashlib.sha256(root.parent.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in artifact['files'].items()); assert len(root.joinpath('goldens/reference.jsonl').read_text().splitlines())==24; assert len(CodeEnvironment())==2481806; config=vf.taskset_config_type('reliquary-code'); assert len(list(vf.load_taskset(config(id='reliquary-code')).head(3)))==3"
+      - name: Validate installed wheel
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/environments/code/reliquary_code/.wheel-venv/bin/validate reliquary-code -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false

@@ -13,3 +13,10 @@ The standalone port keeps the procedural task families and exact-state reward
 principle, replaces the in-process SQLite object with JSON-serializable state,
 and adds native Verifiers v1 plus a Reliquary-free synchronous JSON
 compatibility surface. The original MIT notice is retained in LICENSE.
+
+The reliquary-math and reliquary-code environments are trained on the
+following third-party corpora:
+
+OpenMathInstruct-2 (nvidia/OpenMathInstruct-2), CC-BY-4.0.
+OpenCodeInstruct (nvidia/OpenCodeInstruct), CC-BY-4.0, via the curated subset
+R0mAI/opencodeinstruct-curated.

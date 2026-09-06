@@ -1,0 +1,40 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/math"
+version = "0.1.0a2"
+taskset = "reliquary-math"
+entrypoint = "reliquary_math:MathTaskset"
+compatibility_entrypoint = "reliquary_math:MathEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["open_math_instruct_2"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 1
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["boxed_answer"]
+
+[data]
+train = "hf:nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e"
+eval = "hf:nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e"
+qualification = "hf:nvidia/OpenMathInstruct-2@469216e3f46f4dacf476b382e192485ea51a143e"
+redistributable = true
+license = "cc-by-4.0"
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary"
+source_commit = "10c2a4d907e4beaedbc72272ebf8bd92d211fc67"
+source_environment = "openmathinstruct"
+port = "generator-identical-new-identity"

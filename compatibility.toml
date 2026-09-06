@@ -21,3 +21,9 @@ revision = "cdbee75f17c01a7cc42f958dc650907174af0554"
 [releases.reliquary_stateful_tools]
 tag = "v0.1.0a1"
 wheel_sha256 = "f4d5480e57e66265faa78c53e36fa8ab781afe0ae907d7dc5749d2b0f9344155"
+
+[releases.reliquary_math]
+tag = "v0.1.0a2"
+
+[releases.reliquary_code]
+tag = "v0.1.0a2"
