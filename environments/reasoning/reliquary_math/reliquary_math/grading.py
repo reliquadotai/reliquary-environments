@@ -20,13 +20,17 @@ from typing import Optional
 # (`reliquary.constants.RAW_COMPLETION_PROMPTS` / `MATH_ANSWER_FORMAT`,
 # themselves read off `ACTIVE_PROTOCOL_PROFILE`). This package has no
 # equivalent of that profile and must not import `reliquary.*`, so both are
-# pinned here to the current v4 default: chat-template prompts (not raw
-# completions) and boxed-only answers (no legacy trailing-number fallback).
-# If core's live default ever changes, this package will not follow it
-# automatically — see task-5-report.md.
+# pinned here as module-level constants instead. Every profile from
+# `qwen3-4b-base-dapo-v4` onward (v4, v5, verifiable-v6-dev1, episode-v7-dev1,
+# logic-v8-dev1 — `reliquary/protocol/profiles.py`) declares
+# `prompt_encoding="raw"` and the openmathinstruct `answer_format="boxed"`;
+# only the legacy v2/v3 profiles use `chat_template`. This package targets
+# the v4+ lineage, so both constants are pinned to that pairing. If core's
+# live default for that lineage ever changes, this package will not follow
+# it automatically — see task-5-report.md.
 # ---------------------------------------------------------------------------
 
-_RAW_COMPLETION_PROMPTS = False
+_RAW_COMPLETION_PROMPTS = True
 _MATH_ANSWER_FORMAT = "boxed"
 
 # ---------------------------------------------------------------------------
@@ -84,7 +88,8 @@ def _normalize_answer(s: str) -> str:
     # Core reads this from a live, validator-side protocol profile
     # (`reliquary.constants.RAW_COMPLETION_PROMPTS`); this package has no
     # such profile and keeps no dependency on core, so it is pinned to the
-    # v4 default (chat-template prompts) as a module-level constant below.
+    # v4+ default (raw completions, not chat-template) as a module-level
+    # constant above.
     if _RAW_COMPLETION_PROMPTS:
         for delim in (r"\(", r"\)", r"\[", r"\]"):
             s = s.replace(delim, "")

@@ -154,6 +154,13 @@ from reliquary_math.grading import answers_equal, compute_reward
         ("2\\sqrt{2}", "\\sqrt{8}"),
         ("$12$", "12"),
         ("(1, 2)", "(1,2)"),
+        # Every protocol profile this package targets (v4 and later) sets
+        # prompt_encoding="raw", under which raw-completion answers come
+        # wrapped in inline/display LaTeX delimiters that carry no meaning
+        # of their own. Verified against Reliquary core at 10c2a4d9 with
+        # RAW_COMPLETION_PROMPTS forced True.
+        ("\\(45\\)", "45"),
+        ("\\[45\\]", "45"),
     ],
 )
 def test_equivalent_surface_forms_compare_equal(candidate: str, truth: str) -> None:
