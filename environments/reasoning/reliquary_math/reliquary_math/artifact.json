@@ -1,0 +1,22 @@
+{
+  "schema": "reliquary/environment-artifact/v1",
+  "environment": "reliquary_math_v1",
+  "contract": "reliquary/boxed-answer/v1",
+  "distribution": {
+    "name": "reliquary-math",
+    "version": "0.1.0a1"
+  },
+  "entrypoints": {
+    "taskset": "reliquary_math:MathTaskset",
+    "replay": "reliquary_math:MathEnvironment"
+  },
+  "source_manifest_sha256": "1ec7dbb5b73c7504fa019c92f4b7bc80fbbaa04a751015bec9f3b8449618b951",
+  "files": {
+    "reliquary_math/__init__.py": "83d14615756be69fb60b3add96630251ccc19f793ceadafc55ec2230b984f3c4",
+    "reliquary_math/corpus.py": "c41570f702264b3d998c923487550fbf50cf8240581dbaf13605f2dcd0b0c6d6",
+    "reliquary_math/goldens/reference.jsonl": "23bba10011d1385471b987c517d894766ebcdace7d30b233ba6dc817a9cdbd8f",
+    "reliquary_math/grading.py": "82e8933ed3e145010834c533b8a6df164aa69871a3572bd4c3bb1d461b1ab87f",
+    "reliquary_math/taskset.py": "610988e362708fb577ef95491cb1ab4e1c7e3f699aaf908ca0dfe59c0b62508a",
+    "reliquary_math/virtual_parquet.py": "d3da8bcf1551280d59e21225c3269ea81da4486d7ba964adfdca5e12b39dd492"
+  }
+}

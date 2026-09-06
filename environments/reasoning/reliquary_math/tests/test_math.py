@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import importlib
 import pkgutil
 
@@ -310,3 +311,65 @@ def test_task_validate_accepts_the_reference_and_rejects_a_wrong_answer(
 
     task = next(iter(MathTaskset(MathConfig()).load()))
     assert asyncio.run(task.validate(None)) is True
+
+
+import json
+from pathlib import Path
+
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "reliquary_math"
+
+
+def test_goldens_replay_offline() -> None:
+    """Every pinned index must still produce its recorded prompt, and the
+    dataset's own answer must still score 1.0 while a wrong one scores 0."""
+    lines = (
+        PACKAGE_ROOT / "goldens" / "reference.jsonl"
+    ).read_text(encoding="utf-8").splitlines()
+    assert len(lines) >= 20
+
+    environment = MathEnvironment()
+    for line in lines:
+        golden = json.loads(line)
+        task = environment.task(golden["index"])
+        assert (
+            hashlib.sha256(task["prompt"].encode("utf-8")).hexdigest()
+            == golden["prompt_sha256"]
+        )
+        reference = environment.reference_completion(golden["index"])
+        assert environment.grade(golden["index"], reference)["reward"] == golden[
+            "reference_reward"
+        ]
+        assert environment.grade(golden["index"], "\\boxed{__not_the_answer__}")[
+            "reward"
+        ] == golden["wrong_reward"]
+
+
+def test_artifact_manifest_hashes_installed_files() -> None:
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+    from tools.build_artifact import build_artifact
+
+    committed = json.loads((PACKAGE_ROOT / "artifact.json").read_text())
+    regenerated = build_artifact(
+        PACKAGE_ROOT,
+        environment=committed["environment"],
+        contract=committed["contract"],
+        distribution=committed["distribution"],
+        entrypoints=committed["entrypoints"],
+    )
+    assert regenerated == committed
+
+
+def test_environment_toml_declares_the_real_pins() -> None:
+    import tomllib
+
+    declared = tomllib.loads(
+        (PACKAGE_ROOT.parent / "environment.toml").read_text(encoding="utf-8")
+    )
+    assert declared["id"] == "reliquary/math"
+    assert declared["entrypoint"] == "reliquary_math:MathTaskset"
+    assert declared["compatibility_entrypoint"] == "reliquary_math:MathEnvironment"
+    assert declared["provenance"]["port"] == "generator-identical-new-identity"
+    assert declared["data"]["license"] == "cc-by-4.0"
+    assert corpus.OMI_REVISION in declared["data"]["train"]
