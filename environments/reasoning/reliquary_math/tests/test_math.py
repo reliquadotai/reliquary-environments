@@ -36,3 +36,25 @@ def test_virtual_parquet_is_importable_and_lazy() -> None:
         fs=None,
     )
     assert dataset is not None
+
+
+from reliquary_math import corpus
+
+
+def test_shard_list_is_exactly_the_full_train_split() -> None:
+    """The subset directories (train_1M/2M/5M) duplicate rows already in the
+    full split. Naming the 32 files explicitly makes that class of mistake
+    impossible instead of guarding it with a flag."""
+    assert len(corpus.TRAIN_SHARDS) == 32
+    assert corpus.TRAIN_SHARDS[0] == "data/train-00000-of-00032.parquet"
+    assert corpus.TRAIN_SHARDS[-1] == "data/train-00031-of-00032.parquet"
+    assert all(name.startswith("data/train-") for name in corpus.TRAIN_SHARDS)
+    assert not any("train_1M" in name for name in corpus.TRAIN_SHARDS)
+    assert not any("train_2M" in name for name in corpus.TRAIN_SHARDS)
+    assert not any("train_5M" in name for name in corpus.TRAIN_SHARDS)
+    assert len(set(corpus.TRAIN_SHARDS)) == 32
+
+
+def test_pins_are_the_ones_core_uses() -> None:
+    assert corpus.OMI_REPO == "nvidia/OpenMathInstruct-2"
+    assert corpus.OMI_REVISION == "469216e3f46f4dacf476b382e192485ea51a143e"
