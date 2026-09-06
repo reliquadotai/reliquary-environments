@@ -5,6 +5,7 @@ import pytest
 
 from reliquary_code import corpus
 from reliquary_code.extraction import extract_python
+from reliquary_code.runner import run_cases
 
 
 def test_no_module_imports_reliquary_core() -> None:
@@ -75,3 +76,74 @@ def test_entry_function_is_preferred_when_named() -> None:
         "```python\ndef solve():\n    return 2\n```"
     )
     assert "def solve" in extract_python(completion, entry_name="solve")
+
+
+CASES = [
+    {"input": "1\n", "expected_output": "2\n"},
+    {"input": "2\n", "expected_output": "3\n"},
+]
+
+INCREMENT = "import sys\nprint(int(sys.stdin.read().strip()) + 1)\n"
+
+
+def test_correct_source_passes_every_case() -> None:
+    assert run_cases(INCREMENT, CASES) == [True, True]
+
+
+def test_wrong_source_fails_every_case() -> None:
+    assert run_cases("print(999)\n", CASES) == [False, False]
+
+
+def test_a_cpu_bomb_is_killed_and_scored_false() -> None:
+    assert run_cases("while True:\n    pass\n", CASES[:1], cpu_seconds=1) == [False]
+
+
+def test_a_sleeping_process_is_killed_by_the_wall_clock() -> None:
+    """A sleeper burns no CPU, so RLIMIT_CPU alone would never fire."""
+    source = "import time\ntime.sleep(30)\n"
+    assert run_cases(source, CASES[:1], cpu_seconds=5, wall_seconds=1.0) == [False]
+
+
+def test_a_memory_bomb_is_killed_and_scored_false() -> None:
+    source = "x = bytearray(2 * 1024 * 1024 * 1024)\n"
+    assert run_cases(source, CASES[:1], memory_bytes=64 * 1024 * 1024) == [False]
+
+
+def test_each_case_gets_a_fresh_process() -> None:
+    """RLIMIT_CPU is cumulative for the life of a process: if a worker
+    served both cases, a legal-but-costly first case would leave a CPU debt
+    that an innocent, equally legal second case inherits — and gets
+    SIGKILLed for. That is the exact failure mode described in the runner's
+    module docstring (12% of code submissions lost in production).
+
+    The brief's version of this test collected a `pids` list it never
+    asserted on; its only real assertions were two unrelated output
+    mismatches ("blocked"/"reached" strings copied from the network test it
+    also called), so it would pass against a pooled implementation and
+    proved nothing about process freshness.
+
+    This version proves freshness through the public `run_cases` API by
+    reproducing the production incident directly: two cases, each alone
+    burning 0.6 CPU-seconds against a 1-CPU-second budget — individually
+    legal, but 1.2s combined would blow a *shared* 1s budget. If each case
+    gets its own fresh process (its own fresh RLIMIT_CPU accounting), both
+    finish comfortably inside the budget and pass. If the two cases shared
+    one process, the second case would inherit the first case's CPU debt and
+    be SIGKILLed, turning `[True, True]` into `[True, False]`. Timing is
+    measured with `time.process_time()` (CPU time, not wall clock) so the
+    test is not flaky under a loaded machine.
+    """
+    source = (
+        "import sys, time\n"
+        "target = float(sys.stdin.read().strip())\n"
+        "start = time.process_time()\n"
+        "while time.process_time() - start < target:\n"
+        "    pass\n"
+        "print('done')\n"
+    )
+    cases = [
+        {"input": "0.6", "expected_output": "done"},
+        {"input": "0.6", "expected_output": "done"},
+    ]
+    assert run_cases(source, cases, cpu_seconds=1) == [True, True]
+
