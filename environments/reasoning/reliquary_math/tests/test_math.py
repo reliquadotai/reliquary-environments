@@ -152,9 +152,7 @@ from reliquary_math.grading import answers_equal, compute_reward
         ("\\frac{3}{4}", "0.75"),
         ("0.5", "\\frac{1}{2}"),
         ("2\\sqrt{2}", "\\sqrt{8}"),
-        ("x = 5", "5"),
         ("$12$", "12"),
-        ("1,000", "1000"),
         ("(1, 2)", "(1,2)"),
     ],
 )
@@ -164,7 +162,19 @@ def test_equivalent_surface_forms_compare_equal(candidate: str, truth: str) -> N
 
 @pytest.mark.parametrize(
     "candidate,truth",
-    [("45", "46"), ("\\frac{3}{4}", "0.74"), ("(1, 2)", "(2, 1)"), ("", "5")],
+    [
+        ("45", "46"),
+        ("\\frac{3}{4}", "0.74"),
+        ("(1, 2)", "(2, 1)"),
+        ("", "5"),
+        # Verified against Reliquary core at 10c2a4d9: core's grader does
+        # not strip an "x =" prefix or a thousands separator, so these two
+        # read like equivalent forms but are not. Pinned here rather than
+        # dropped so the port stays honest about where core is stricter
+        # than it looks.
+        ("x = 5", "5"),
+        ("1,000", "1000"),
+    ],
 )
 def test_different_answers_compare_unequal(candidate: str, truth: str) -> None:
     assert answers_equal(candidate, truth) is False
