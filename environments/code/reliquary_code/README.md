@@ -13,12 +13,21 @@ extracted code passes.
 ## Isolation
 
 Grading runs model-written Python in a fresh, resource-limited subprocess per
-test case (`reliquary_code/runner.py`): CPU time, address space, process
-count and file size are capped, and a wall-clock timeout backstops the CPU
-limit for processes that sleep instead of spending CPU. Each case gets its
-own subprocess — never a pooled worker — because `RLIMIT_CPU` is cumulative
-for the life of a process, and a shared worker would eventually be killed on
-an innocent case after a costly-but-legal earlier one.
+test case (`reliquary_code/runner.py`): CPU time, address space and file
+size are capped, and a wall-clock timeout backstops the CPU limit for
+processes that sleep instead of spending CPU. Each case gets its own
+subprocess — never a pooled worker — because `RLIMIT_CPU` is cumulative for
+the life of a process, and a shared worker would eventually be killed on an
+innocent case after a costly-but-legal earlier one.
+
+Process count is **not** capped. `RLIMIT_NPROC` was tried and removed: on
+Linux it is scoped to the real UID rather than to this process's subtree, so
+on a box where that UID already owns hundreds of processes a legitimate
+`subprocess`- or `multiprocessing`-using submission hits `EAGAIN` on its
+first fork and is scored False for reasons that have nothing to do with its
+own behaviour. Containment of runaway forks instead comes from
+`start_new_session=True` plus `os.killpg` on the process group at timeout,
+which reaches forked descendants directly.
 
 This is weaker than the gVisor-sandboxed grader service Reliquary core uses,
 and it does **not** block network access: a plain `subprocess` with a

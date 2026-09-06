@@ -373,3 +373,12 @@ def test_environment_toml_declares_the_real_pins() -> None:
     assert declared["provenance"]["port"] == "generator-identical-new-identity"
     assert declared["data"]["license"] == "cc-by-4.0"
     assert corpus.OMI_REVISION in declared["data"]["train"]
+
+
+def test_repository_compatibility_declares_this_package() -> None:
+    import tomllib
+
+    root = Path(__file__).resolve().parents[4]
+    declared = tomllib.loads((root / "compatibility.toml").read_text())
+    assert "reliquary_math" in declared["releases"]
+    assert declared["releases"]["reliquary_math"]["tag"] == "v0.1.0a2"
