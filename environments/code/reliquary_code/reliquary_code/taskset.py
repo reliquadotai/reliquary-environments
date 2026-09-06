@@ -32,6 +32,20 @@ DEFAULT_PROMPT = (
     "Give the final program in the last fenced Python code block."
 )
 
+# A deliberately wrong but syntactically valid completion: it defines a
+# callable (so extraction and case dispatch actually run it) but returns a
+# constant no real corpus case expects. Used both by `CodeTask.validate`
+# (to prove the failing half runs through `run_cases` for real, not the
+# `if not source.strip()` short-circuit that a plain "no code" string hits
+# before ever executing anything) and by the goldens test, so the two stay
+# in lockstep.
+WRONG_BUT_VALID_COMPLETION = (
+    "```python\n"
+    "def _wrong_answer(*args, **kwargs):\n"
+    "    return '__reliquary_golden_wrong_answer__'\n"
+    "```"
+)
+
 
 def _reward(row: dict[str, Any], completion: str) -> float:
     cases = list(row["structured_cases"])
@@ -100,10 +114,13 @@ class CodeEnvironment:
     def replay(self, index: int, completion: str) -> dict[str, Any]:
         return {"reward": self.grade(index, completion)}
 
-    def reference_completion(self, index: int) -> str:
-        """There is no reference program in this corpus, so replay uses a
-        deliberately failing body: goldens pin that a wrong answer scores 0,
-        and the passing half is covered by the runner tests."""
+    def known_wrong_completion(self, index: int) -> str:
+        """There is no reference program in this corpus (unlike
+        `reliquary_math`'s `reference_completion`, which returns an answer
+        that scores 1.0): this is a deliberately failing probe, not a
+        reference. Goldens pin that it scores 0; the passing half is
+        covered by the runner tests and by the real-corpus-row correctness
+        test in `test_code.py`."""
         del index
         return "```python\nraise SystemExit(1)\n```"
 
@@ -131,15 +148,21 @@ class CodeTask(vf.Task[CodeData, vf.State, CodeTaskConfig]):
         )
 
     async def validate(self, runtime: vf.Runtime) -> bool:
-        """An empty answer must score zero, and the case list must be usable.
+        """A well-formed wrong answer must score zero, and the case list
+        must be usable.
 
-        There is no reference program to check the other direction with, so
-        this asserts the failing half and that the cases actually run.
+        There is no reference program to check the passing direction with
+        (see `CodeEnvironment.known_wrong_completion`), so this asserts the
+        failing half — using `WRONG_BUT_VALID_COMPLETION`, which extracts to
+        real source and actually runs through `run_cases`, rather than a
+        bare "no code" string that short-circuits at the
+        `if not source.strip()` check in `_reward` before `run_cases` is
+        ever called.
         """
         del runtime
         row = {"structured_cases": self.data.structured_cases}
-        empty = _reward(row, "no code")
-        return empty == 0.0 and len(self.data.structured_cases) > 0
+        wrong = _reward(row, WRONG_BUT_VALID_COMPLETION)
+        return wrong == 0.0 and len(self.data.structured_cases) > 0
 
 
 class CodeConfig(vf.TasksetConfig):

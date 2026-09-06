@@ -7,12 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from reliquary_code import corpus
+from reliquary_code import corpus, taskset
 from reliquary_code.extraction import extract_python
 from reliquary_code.runner import run_cases
 
 
 def test_no_module_imports_reliquary_core() -> None:
+    """The port is a copy, not a dependency. A stray `import reliquary`
+    would make the package silently unusable outside the core checkout."""
     import reliquary_code
 
     for info in pkgutil.walk_packages(
@@ -21,6 +23,7 @@ def test_no_module_imports_reliquary_core() -> None:
         source = importlib.util.find_spec(info.name).origin
         assert source is not None
         text = open(source, encoding="utf-8").read()
+        assert "import reliquary\n" not in text
         assert "from reliquary." not in text
         assert "import reliquary." not in text
 
@@ -28,6 +31,20 @@ def test_no_module_imports_reliquary_core() -> None:
 def test_pins_are_the_ones_core_uses() -> None:
     assert corpus.OCI_REPO == "R0mAI/opencodeinstruct-curated"
     assert corpus.OCI_REVISION == "d3caaefc3b46f8642b251f9efaeccf0d1e95b0a7"
+
+
+def test_malformed_structured_cases_yields_empty_list_not_a_crash() -> None:
+    """Fidelity gap fix: core's `_row_cases` (opencodeinstruct.py) wraps the
+    JSON decode in try/except and filters non-dicts. This port used to do a
+    bare `json.loads(raw)`, so one malformed row would abort the whole
+    `CodeTaskset.load()` instead of yielding an empty case list."""
+    assert corpus._row_cases({"structured_cases": "not json"}) == []
+    assert corpus._row_cases({"structured_cases": ""}) == []
+    assert corpus._row_cases({"structured_cases": '{"not": "a list"}'}) == []
+    assert corpus._row_cases({}) == []
+    assert corpus._row_cases(
+        {"structured_cases": '[1, "skip", {"a": 1}]'}
+    ) == [{"a": 1}]
 
 
 def test_plain_fence_is_extracted() -> None:
@@ -370,6 +387,31 @@ def test_wrong_but_valid_completion_scores_zero_on_a_real_corpus_row() -> None:
     assert sum(1 for ok in results if ok) / len(results) == 0.0
 
 
+def test_correct_completion_scores_one_on_a_real_corpus_row() -> None:
+    """The uncovered direction: the goldens pin that a wrong answer scores
+    0 against every pinned index, but nothing pinned that a genuinely
+    correct program scores 1.0 against a real corpus row. Row 0 is a
+    balanced-brackets problem (see the wrong-answer test above); this is a
+    real, correct solution to it, graded end-to-end through
+    `CodeEnvironment` so extraction and case execution both run for real,
+    not just `run_cases` in isolation."""
+    completion = (
+        "```python\n"
+        "def is_balanced_brackets(expression):\n"
+        "    pairs = {')': '(', ']': '[', '}': '{'}\n"
+        "    stack = []\n"
+        "    for ch in expression:\n"
+        "        if ch in pairs.values():\n"
+        "            stack.append(ch)\n"
+        "        elif ch in pairs:\n"
+        "            if not stack or stack.pop() != pairs[ch]:\n"
+        "                return False\n"
+        "    return not stack\n"
+        "```"
+    )
+    assert CodeEnvironment().grade(0, completion)["reward"] == 1.0
+
+
 import asyncio
 
 from reliquary_code import CodeEnvironment, CodeTaskset
@@ -428,35 +470,47 @@ def test_package_exports_exactly_two_names() -> None:
     assert reliquary_code.__all__ == ["CodeEnvironment", "CodeTaskset"]
 
 
-def test_taskset_validate_accepts_reference_and_rejects_empty(monkeypatch) -> None:
+def test_taskset_validate_true_when_cases_present_and_wrong_answer_scores_zero(
+    monkeypatch,
+) -> None:
+    """There is no reference completion for code (see `CodeEnvironment.
+    known_wrong_completion`), so `validate` has nothing to check the passing
+    direction with. This pins what it does check: a well-formed wrong
+    answer actually runs through `run_cases` and scores 0, on a non-empty
+    case list."""
     monkeypatch.setattr("reliquary_code.taskset.get_problem", lambda index: ROW)
     monkeypatch.setattr("reliquary_code.taskset.corpus_length", lambda: 1)
     task = next(iter(CodeTaskset(CodeConfig()).load()))
     assert asyncio.run(task.validate(None)) is True
 
 
+def test_taskset_validate_false_when_case_list_is_empty(monkeypatch) -> None:
+    empty_row = {"input": ROW["input"], "structured_cases": []}
+    monkeypatch.setattr("reliquary_code.taskset.get_problem", lambda index: empty_row)
+    monkeypatch.setattr("reliquary_code.taskset.corpus_length", lambda: 1)
+    task = next(iter(CodeTaskset(CodeConfig()).load()))
+    assert asyncio.run(task.validate(None)) is False
+
+
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "reliquary_code"
 
-# A deliberately wrong but syntactically valid completion: it defines a
-# callable (so extraction and case dispatch actually run it) but returns a
-# constant no real corpus case expects. Replaces the old goldens' "no code"
-# probe, which extracted to an empty string and short-circuited in
-# `taskset._reward` before ever reaching `run_cases` — proving nothing
-# about case execution (see runner.py's module docstring).
-WRONG_BUT_VALID_COMPLETION = (
-    "```python\n"
-    "def _wrong_answer(*args, **kwargs):\n"
-    "    return '__reliquary_golden_wrong_answer__'\n"
-    "```"
-)
+# Shared with `CodeTask.validate` (see taskset.py) so the goldens and the
+# taskset's own self-check exercise the identical wrong-but-valid probe.
+WRONG_BUT_VALID_COMPLETION = taskset.WRONG_BUT_VALID_COMPLETION
 
 
-def test_goldens_replay_offline() -> None:
+def test_goldens_replay_against_pinned_corpus() -> None:
     """Every pinned index must still produce its recorded prompt, and a
     wrong-but-valid completion must still score 0 by actually running
     through case execution. The corpus carries no reference program, so
     there is no reference reward to pin here — only the prompt hash and the
-    wrong-answer floor."""
+    wrong-answer floor.
+
+    Not offline: `task()` and `grade()` both resolve through `get_problem`,
+    which issues an HTTP range read for any row not already cached (see
+    `VirtualParquetDataset.get_row`). Verified directly: with an unroutable
+    `HF_ENDPOINT` and `HF_HUB_OFFLINE=1` this raises `PromptSourceUnavailable`
+    rather than passing from a local cache alone."""
     lines = (
         PACKAGE_ROOT / "goldens" / "reference.jsonl"
     ).read_text(encoding="utf-8").splitlines()

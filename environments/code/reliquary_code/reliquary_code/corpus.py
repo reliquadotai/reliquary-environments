@@ -38,8 +38,28 @@ def get_problem(index: int) -> dict[str, Any]:
     # instead of cases -- caught generating this package's goldens against
     # the real corpus, since every unit test up to this point injected
     # already-decoded fixture rows.
-    raw_cases = row["structured_cases"]
     return {
         "input": str(row["input"]),
-        "structured_cases": json.loads(raw_cases) if raw_cases else [],
+        "structured_cases": _row_cases(row),
     }
+
+
+def _row_cases(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """Decode the JSON-encoded ``structured_cases`` column defensively.
+
+    Ported from core's ``_row_cases`` (reliquary/environment/
+    opencodeinstruct.py): one malformed or oddly-shaped row must yield an
+    empty case list, not abort the whole ``CodeTaskset.load()`` with a bare
+    ``json.loads`` exception.
+    """
+    raw = row.get("structured_cases", [])
+    if isinstance(raw, str):
+        if not raw:
+            return []
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(raw, list):
+        return []
+    return [dict(case) for case in raw if isinstance(case, dict)]
