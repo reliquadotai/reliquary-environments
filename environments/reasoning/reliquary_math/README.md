@@ -20,9 +20,13 @@ uv run python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary
 ```
 
 The package exports `MathTaskset` for Verifiers and `MathEnvironment` for
-synchronous, Reliquary-compatible replay. It performs no network access at
-grading time (the corpus is read once, ahead of time, through a pinned
-row-group-streaming loader) and imports no Reliquary code.
+synchronous, Reliquary-compatible replay. It imports no Reliquary code. Row
+data is fetched lazily: `task()` and `grade()` both resolve through
+`get_problem`, which reads one row-group at a time from the pinned corpus
+(`reliquary_math/virtual_parquet.py`) and caches it. The first touch of any
+row still not in that cache — or in Hugging Face's local disk cache — issues
+an HTTP range read, so grading can hit the network unless the rows involved
+were already read.
 
 ## Provenance
 
@@ -31,7 +35,10 @@ The task corpus is `nvidia/OpenMathInstruct-2`, pinned at revision
 own `cc-by-4.0` licence — separate from this package's MIT licence. Twenty
 four goldens in `reliquary_math/goldens/reference.jsonl` pin specific corpus
 indices, their rendered prompt hash, and the reward the dataset's own
-reference answer must keep scoring (`1.0`, against `0.0` for a
-well-formed wrong answer), so a change to the grader or the loader that
-silently drifts is caught by `uv run pytest` offline, without touching the
-network again.
+reference answer must keep scoring (`1.0`, against `0.0` for a well-formed
+wrong answer), so a change to the grader or the loader that silently drifts
+is caught by `uv run pytest`'s
+`tests/test_math.py::test_goldens_replay_against_pinned_corpus`. That test
+is not offline: it fetches each golden index's row through the same
+`get_problem` path graded rollouts use, so it needs network access (or an
+already-warm Hugging Face cache) the same way grading does.

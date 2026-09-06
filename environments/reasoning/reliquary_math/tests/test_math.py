@@ -319,9 +319,15 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "reliquary_math"
 
 
-def test_goldens_replay_offline() -> None:
+def test_goldens_replay_against_pinned_corpus() -> None:
     """Every pinned index must still produce its recorded prompt, and the
-    dataset's own answer must still score 1.0 while a wrong one scores 0."""
+    dataset's own answer must still score 1.0 while a wrong one scores 0.
+
+    Not offline: `task()` and `grade()` both resolve through `get_problem`,
+    which issues an HTTP range read for any row not already cached (see
+    `VirtualParquetDataset.get_row`). Verified directly: with an unroutable
+    `HF_ENDPOINT` and `HF_HUB_OFFLINE=1` this raises `PromptSourceUnavailable`
+    rather than passing from a local cache alone."""
     lines = (
         PACKAGE_ROOT / "goldens" / "reference.jsonl"
     ).read_text(encoding="utf-8").splitlines()

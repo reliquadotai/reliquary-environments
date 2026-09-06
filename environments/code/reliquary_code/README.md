@@ -49,9 +49,13 @@ uv run python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary
 ```
 
 The package exports `CodeTaskset` for Verifiers and `CodeEnvironment` for
-synchronous, Reliquary-compatible replay. It performs no network access at
-grading time (the corpus is read once, ahead of time, through a pinned
-row-group-streaming loader) and imports no Reliquary code.
+synchronous, Reliquary-compatible replay. It imports no Reliquary code. Row
+data is fetched lazily: `task()` and `grade()` both resolve through
+`get_problem`, which reads one row-group at a time from the pinned corpus
+(`reliquary_code/virtual_parquet.py`) and caches it. The first touch of any
+row still not in that cache — or in Hugging Face's local disk cache — issues
+an HTTP range read, so grading can hit the network unless the rows involved
+were already read.
 
 ## Provenance
 
@@ -60,9 +64,14 @@ The task corpus is `R0mAI/opencodeinstruct-curated`, pinned at revision
 own `cc-by-4.0` licence — separate from this package's MIT licence. This
 curated subset carries no reference program to check a submission against,
 only per-problem structured test cases, so unlike `reliquary-math` there is
-no reward this package can pin at `1.0`. Twenty four goldens in
+no reward this package can pin at `1.0` from a golden alone (see
+`test_correct_completion_scores_one_on_a_real_corpus_row` in `test_code.py`
+for a synthetic correct solution instead). Twenty four goldens in
 `reliquary_code/goldens/reference.jsonl` instead pin specific corpus
 indices, their rendered prompt hash, and the reward a well-formed non-answer
 must keep scoring (`0.0`), so a change to the extractor, the runner, or the
-loader that silently drifts is caught by `uv run pytest` offline, without
-touching the network again.
+loader that silently drifts is caught by `uv run pytest`'s
+`tests/test_code.py::test_goldens_replay_against_pinned_corpus`. That test
+is not offline: it fetches each golden index's row through the same
+`get_problem` path grading uses, so it needs network access (or an
+already-warm Hugging Face cache) the same way grading does.

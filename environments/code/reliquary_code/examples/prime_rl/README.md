@@ -29,7 +29,8 @@ unsandboxed subprocess runtime. This matters more here than for a
 text-only taskset: `reliquary_code`'s own subprocess runner does **not**
 block network access on its own (see the package README's Isolation
 section), so Docker's enforcement is the only thing actually closing that
-gap in this reference run.
+gap in this reference run. Set `RELIQUARY_ENVS_PATH` to a checkout of this
+repository (`reliquary-environments`) before running the block below.
 
 ```bash
 git clone --branch v0.9.0 --depth 1 \
@@ -43,11 +44,20 @@ test "$(git -C prime-rl/deps/pydantic-config rev-parse HEAD)" = "65b15dffba82d4b
 test "$(git -C prime-rl/deps/prime-envs rev-parse HEAD)" = "26dafdc9582576975ec576f893be7319028daf51"
 uv sync --project prime-rl --frozen --package prime-rl --extra gpu --no-dev
 uv pip install --python prime-rl/.venv/bin/python --no-deps \
-  "https://github.com/reliquadotai/reliquary-environments/releases/download/v0.1.0a1/reliquary_code-0.1.0a1-py3-none-any.whl#sha256=15233377bedf462d4521f8580afca431a8466c82f17884cb23bf35e7addb3569"
+  -e "$RELIQUARY_ENVS_PATH/environments/code/reliquary_code"
 ```
 
-Use the environment's release wheel after `uv sync`; a later sync can remove
-it because it is not part of Prime-RL's lock. The commands below call the
+`reliquary-code` has never had a tagged release, so there is no `v0.1.0a2`
+GitHub release to fetch a wheel from — installing from a release-wheel URL
+is not possible yet. The command above installs the package directly from
+its directory in this repository instead (the same source `uv sync
+--locked` in the package's own README installs). Once `v0.1.0a2` is cut,
+switch the last line to fetch that release's wheel
+(`reliquary_code-0.1.0a2-py3-none-any.whl`) the way
+`reliquary-stateful-tools`'s example already does.
+
+Use the environment's package after `uv sync`; a later sync can remove it
+because it is not part of Prime-RL's lock. The commands below call the
 virtual-environment binaries directly for the same reason.
 
 Download the exact model snapshot. Prime-RL v0.9.0 accepts a model name or
