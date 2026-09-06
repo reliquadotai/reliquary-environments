@@ -204,3 +204,49 @@ def test_reward_refuses_an_unsafe_expression() -> None:
     sympy evaluation."""
     problem = {"expected_answer": "7"}
     assert compute_reward(problem, "\\boxed{__import__('os').system('id')}") == 0.0
+
+
+from reliquary_math.taskset import DEFAULT_PROMPT, MathEnvironment
+
+
+def test_reference_completion_scores_one_and_a_wrong_answer_scores_zero(
+    monkeypatch,
+) -> None:
+    """Both halves matter: a grader that accepted anything would pass the
+    first on its own."""
+    monkeypatch.setattr(
+        "reliquary_math.taskset.get_problem",
+        lambda index: {"problem": "1+1?", "expected_answer": "2"},
+    )
+    monkeypatch.setattr("reliquary_math.taskset.corpus_length", lambda: 10)
+    environment = MathEnvironment()
+
+    assert environment.grade(0, environment.reference_completion(0))["reward"] == 1.0
+    assert environment.grade(0, "\\boxed{99}")["reward"] == 0.0
+
+
+def test_task_renders_the_problem_into_the_template(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "reliquary_math.taskset.get_problem",
+        lambda index: {"problem": "1+1?", "expected_answer": "2"},
+    )
+    monkeypatch.setattr("reliquary_math.taskset.corpus_length", lambda: 10)
+    environment = MathEnvironment(prompt_template="Q: {problem} A:")
+
+    assert environment.task(0)["prompt"] == "Q: 1+1? A:"
+
+
+def test_default_prompt_asks_for_a_boxed_answer() -> None:
+    assert "\\boxed" in DEFAULT_PROMPT
+
+
+def test_index_is_bounded_by_the_corpus(monkeypatch) -> None:
+    monkeypatch.setattr("reliquary_math.taskset.corpus_length", lambda: 10)
+    monkeypatch.setattr(
+        "reliquary_math.taskset.get_problem",
+        lambda index: {"problem": str(index), "expected_answer": "2"},
+    )
+    environment = MathEnvironment()
+    assert len(environment) == 10
+    with pytest.raises(IndexError):
+        environment.task(10)
