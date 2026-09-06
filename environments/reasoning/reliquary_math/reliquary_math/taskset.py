@@ -140,12 +140,12 @@ class MathTaskset(vf.Taskset[MathTask, MathConfig]):
             self.config.split, self.config.prompt_template
         )
         for index in range(len(environment)):
-            task = environment.task(index)
-            row = get_problem(index)
+            row = environment._row(index)
+            prompt = environment.prompt_template.format(problem=row["problem"])
             yield MathTask(
                 MathData(
                     idx=index,
-                    prompt=task["prompt"],
+                    prompt=prompt,
                     network_allow=[],
                     index=index,
                     expected_answer=row["expected_answer"],

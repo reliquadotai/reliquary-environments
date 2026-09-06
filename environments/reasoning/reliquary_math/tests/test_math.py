@@ -255,8 +255,6 @@ def test_index_is_bounded_by_the_corpus(monkeypatch) -> None:
         environment.task(10)
 
 
-import verifiers.v1 as vf
-
 from reliquary_math import MathEnvironment as ExportedEnvironment
 from reliquary_math import MathTaskset
 
@@ -281,6 +279,24 @@ def test_taskset_yields_tasks_that_carry_the_index(monkeypatch) -> None:
     assert len(tasks) == 3
     assert [task.data.idx for task in tasks] == [0, 1, 2]
     assert tasks[0].data.prompt.startswith("Solve")
+
+
+def test_taskset_load_reads_each_row_exactly_once(monkeypatch) -> None:
+    """`load()` needs both the prompt and the ground truth from one row;
+    fetching it twice per index would be wasted work at best and a real
+    second read for a consumer that seeks non-sequentially."""
+    calls: list[int] = []
+
+    def counting_get_problem(index: int) -> dict[str, str]:
+        calls.append(index)
+        return {"problem": f"p{index}", "expected_answer": "2"}
+
+    monkeypatch.setattr("reliquary_math.taskset.get_problem", counting_get_problem)
+    monkeypatch.setattr("reliquary_math.taskset.corpus_length", lambda: 3)
+
+    list(MathTaskset(MathConfig()).load())
+
+    assert calls == [0, 1, 2]
 
 
 def test_task_validate_accepts_the_reference_and_rejects_a_wrong_answer(
