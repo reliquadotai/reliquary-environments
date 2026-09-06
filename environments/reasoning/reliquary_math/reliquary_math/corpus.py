@@ -11,7 +11,6 @@ therefore explicit and pinned by a test.
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
 
 from reliquary_math.virtual_parquet import VirtualParquetDataset
 
@@ -46,7 +45,7 @@ def corpus_length() -> int:
     return len(load_corpus())
 
 
-def get_problem(index: int) -> dict[str, Any]:
+def get_problem(index: int) -> dict[str, str]:
     """Row `index` of the pinned corpus, addressed by position.
 
     Position is the corpus identity: the same index resolves to the same row
