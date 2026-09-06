@@ -82,12 +82,31 @@ def test_entry_function_is_preferred_when_named() -> None:
     assert "def solve" in extract_python(completion, entry_name="solve")
 
 
+# ---------------------------------------------------------------------------
+# Runner: the real OpenCodeInstruct corpus ships function-call cases, not
+# stdin/stdout pairs — see reliquary_code/runner.py's module docstring for
+# the defect this replaced. Every case below names an entrypoint and calls
+# it with `args`/`kwargs`; grading compares the return value to `expected`.
+# ---------------------------------------------------------------------------
+
 CASES = [
-    {"input": "1\n", "expected_output": "2\n"},
-    {"input": "2\n", "expected_output": "3\n"},
+    {
+        "entry": {"kind": "function", "name": "increment"},
+        "args": [1],
+        "kwargs": {},
+        "expected": 2,
+        "compare": "exact",
+    },
+    {
+        "entry": {"kind": "function", "name": "increment"},
+        "args": [2],
+        "kwargs": {},
+        "expected": 3,
+        "compare": "exact",
+    },
 ]
 
-INCREMENT = "import sys\nprint(int(sys.stdin.read().strip()) + 1)\n"
+INCREMENT = "def increment(n):\n    return n + 1\n"
 
 
 def test_correct_source_passes_every_case() -> None:
@@ -95,22 +114,65 @@ def test_correct_source_passes_every_case() -> None:
 
 
 def test_wrong_source_fails_every_case() -> None:
-    assert run_cases("print(999)\n", CASES) == [False, False]
+    wrong = "def increment(n):\n    return 999\n"
+    assert run_cases(wrong, CASES) == [False, False]
 
 
 def test_a_cpu_bomb_is_killed_and_scored_false() -> None:
-    assert run_cases("while True:\n    pass\n", CASES[:1], cpu_seconds=1) == [False]
+    source = "def increment(n):\n    while True:\n        pass\n"
+    assert run_cases(source, CASES[:1], cpu_seconds=1) == [False]
 
 
 def test_a_sleeping_process_is_killed_by_the_wall_clock() -> None:
-    """A sleeper burns no CPU, so RLIMIT_CPU alone would never fire."""
+    """A sleeper burns no CPU, so RLIMIT_CPU alone would never fire.
+
+    Case execution runs submitted code through `cases.evaluate_call`'s
+    sandbox, which only allows importing a fixed safe module list (see
+    `cases._ALLOWED_IMPORT_ROOTS`) — `time` is not on it, so a case cannot
+    sleep without importing something the sandbox rejects, and there is no
+    case-format way around that. This exercises the same wall-clock
+    guarantee `run_cases` relies on at the layer that actually enforces it:
+    `_spawn`, which is generic over what `source` contains and is not
+    itself sandboxed (the sandbox is `cases.evaluate_call`'s doing, layered
+    on top by the worker script `run_cases` hands to `_spawn`).
+    """
+    from reliquary_code.runner import _spawn
+
     source = "import time\ntime.sleep(30)\n"
-    assert run_cases(source, CASES[:1], cpu_seconds=5, wall_seconds=1.0) == [False]
+    wall_seconds = 1.0
+    started = time.monotonic()
+    completed = _spawn(
+        source, "", cpu_seconds=5, memory_bytes=512 * 1024 * 1024, wall_seconds=wall_seconds
+    )
+    elapsed = time.monotonic() - started
+    assert completed.returncode != 0
+    assert elapsed < wall_seconds + 4.0
 
 
 def test_a_memory_bomb_is_killed_and_scored_false() -> None:
-    source = "x = bytearray(2 * 1024 * 1024 * 1024)\n"
+    source = "def increment(n):\n    return len(bytearray(2 * 1024 * 1024 * 1024))\n"
     assert run_cases(source, CASES[:1], memory_bytes=64 * 1024 * 1024) == [False]
+
+
+def _iterations_for(seconds: float) -> int:
+    """Calibrate a pure busy-loop iteration count against CPU time.
+
+    `time` is not on `cases._ALLOWED_IMPORT_ROOTS`, so submitted code
+    cannot self-time with `time.process_time()` the way the old
+    stdin/stdout version of this test did. Calibrating in the test process
+    (unsandboxed) and baking a literal iteration count into the submitted
+    source keeps the test's original point — CPU-time-targeted, not
+    wall-clock-targeted, so it is not flaky under a loaded machine — without
+    needing the submitted code to time itself.
+    """
+    probe = 2_000_000
+    start = time.process_time()
+    total = 0
+    for i in range(probe):
+        total += i
+    elapsed = time.process_time() - start or 1e-6
+    rate = probe / elapsed
+    return max(1, int(rate * seconds))
 
 
 def test_each_case_gets_a_fresh_process() -> None:
@@ -128,26 +190,36 @@ def test_each_case_gets_a_fresh_process() -> None:
 
     This version proves freshness through the public `run_cases` API by
     reproducing the production incident directly: two cases, each alone
-    burning 0.6 CPU-seconds against a 1-CPU-second budget — individually
+    burning ~0.6 CPU-seconds against a 1-CPU-second budget — individually
     legal, but 1.2s combined would blow a *shared* 1s budget. If each case
     gets its own fresh process (its own fresh RLIMIT_CPU accounting), both
     finish comfortably inside the budget and pass. If the two cases shared
     one process, the second case would inherit the first case's CPU debt and
-    be SIGKILLed, turning `[True, True]` into `[True, False]`. Timing is
-    measured with `time.process_time()` (CPU time, not wall clock) so the
-    test is not flaky under a loaded machine.
+    be SIGKILLed, turning `[True, True]` into `[True, False]`.
     """
+    iterations = _iterations_for(0.6)
     source = (
-        "import sys, time\n"
-        "target = float(sys.stdin.read().strip())\n"
-        "start = time.process_time()\n"
-        "while time.process_time() - start < target:\n"
-        "    pass\n"
-        "print('done')\n"
+        "def busy(n):\n"
+        "    total = 0\n"
+        f"    for i in range({iterations}):\n"
+        "        total += i\n"
+        "    return 'done'\n"
     )
     cases = [
-        {"input": "0.6", "expected_output": "done"},
-        {"input": "0.6", "expected_output": "done"},
+        {
+            "entry": {"kind": "function", "name": "busy"},
+            "args": [0],
+            "kwargs": {},
+            "expected": "done",
+            "compare": "exact",
+        },
+        {
+            "entry": {"kind": "function", "name": "busy"},
+            "args": [0],
+            "kwargs": {},
+            "expected": "done",
+            "compare": "exact",
+        },
     ]
     assert run_cases(source, cases, cpu_seconds=1) == [True, True]
 
@@ -272,6 +344,31 @@ def test_a_forked_grandchild_does_not_survive_the_wall_clock_kill() -> None:
     )
 
 
+def test_wrong_but_valid_completion_scores_zero_on_a_real_corpus_row() -> None:
+    """Regression test for the empty-stdin defect this module used to have.
+
+    `run_cases` used to grade `case["input"]` / `case["expected_output"]` —
+    fields the real corpus never sets, since it ships function-call cases
+    (see `corpus.get_problem`). Both `.get()` calls silently returned `""`,
+    so a wrong answer's empty stdout compared equal to an empty expected
+    string and every case passed: a deliberately wrong but syntactically
+    valid completion scored 1.0 against a real corpus row. This is exactly
+    that input — a completion that defines a callable but returns a
+    constant unrelated to any of the row's real cases — replayed against
+    real corpus row 0. It must score 0.0.
+    """
+    row = corpus.get_problem(0)
+    cases = row["structured_cases"]
+    assert cases, "corpus row 0 must actually carry cases for this test to mean anything"
+
+    wrong_but_valid = (
+        "def _wrong_answer(*args, **kwargs):\n"
+        "    return '__reliquary_wrong_answer_sentinel__'\n"
+    )
+    results = run_cases(wrong_but_valid, cases)
+    assert results == [False] * len(cases)
+    assert sum(1 for ok in results if ok) / len(results) == 0.0
+
 
 import asyncio
 
@@ -279,10 +376,22 @@ from reliquary_code import CodeEnvironment, CodeTaskset
 from reliquary_code.taskset import CodeConfig
 
 ROW = {
-    "input": "Read an integer and print it plus one.",
+    "input": "Add one to the given integer and return it.",
     "structured_cases": [
-        {"input": "1\n", "expected_output": "2\n"},
-        {"input": "5\n", "expected_output": "6\n"},
+        {
+            "entry": {"kind": "function", "name": "increment"},
+            "args": [1],
+            "kwargs": {},
+            "expected": 2,
+            "compare": "exact",
+        },
+        {
+            "entry": {"kind": "function", "name": "increment"},
+            "args": [5],
+            "kwargs": {},
+            "expected": 6,
+            "compare": "exact",
+        },
     ],
 }
 
@@ -292,20 +401,17 @@ def test_reward_is_the_fraction_of_passing_cases(monkeypatch) -> None:
     monkeypatch.setattr("reliquary_code.taskset.corpus_length", lambda: 1)
     environment = CodeEnvironment()
 
-    good = "```python\nimport sys\nprint(int(sys.stdin.read().strip()) + 1)\n```"
+    good = "```python\ndef increment(n):\n    return n + 1\n```"
     assert environment.grade(0, good)["reward"] == 1.0
-    assert environment.grade(0, "```python\nprint(0)\n```")["reward"] == 0.0
+    wrong = "```python\ndef increment(n):\n    return 0\n```"
+    assert environment.grade(0, wrong)["reward"] == 0.0
 
 
 def test_half_passing_scores_half(monkeypatch) -> None:
     monkeypatch.setattr("reliquary_code.taskset.get_problem", lambda index: ROW)
     monkeypatch.setattr("reliquary_code.taskset.corpus_length", lambda: 1)
     environment = CodeEnvironment()
-    source = (
-        "```python\nimport sys\n"
-        "v = int(sys.stdin.read().strip())\n"
-        "print(2 if v == 1 else 0)\n```"
-    )
+    source = "```python\ndef increment(n):\n    return 2 if n == 1 else 0\n```"
     assert environment.grade(0, source)["reward"] == 0.5
 
 
@@ -313,7 +419,7 @@ def test_prompt_carries_the_case_contract(monkeypatch) -> None:
     monkeypatch.setattr("reliquary_code.taskset.get_problem", lambda index: ROW)
     monkeypatch.setattr("reliquary_code.taskset.corpus_length", lambda: 1)
     task = CodeEnvironment().task(0)
-    assert "Read an integer" in task["prompt"]
+    assert "Add one to the given integer" in task["prompt"]
 
 
 def test_package_exports_exactly_two_names() -> None:
@@ -331,12 +437,26 @@ def test_taskset_validate_accepts_reference_and_rejects_empty(monkeypatch) -> No
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "reliquary_code"
 
+# A deliberately wrong but syntactically valid completion: it defines a
+# callable (so extraction and case dispatch actually run it) but returns a
+# constant no real corpus case expects. Replaces the old goldens' "no code"
+# probe, which extracted to an empty string and short-circuited in
+# `taskset._reward` before ever reaching `run_cases` — proving nothing
+# about case execution (see runner.py's module docstring).
+WRONG_BUT_VALID_COMPLETION = (
+    "```python\n"
+    "def _wrong_answer(*args, **kwargs):\n"
+    "    return '__reliquary_golden_wrong_answer__'\n"
+    "```"
+)
+
 
 def test_goldens_replay_offline() -> None:
     """Every pinned index must still produce its recorded prompt, and a
-    wrong answer must still score 0. The corpus carries no reference
-    program, so there is no reference reward to pin here — only the prompt
-    hash and the wrong-answer floor."""
+    wrong-but-valid completion must still score 0 by actually running
+    through case execution. The corpus carries no reference program, so
+    there is no reference reward to pin here — only the prompt hash and the
+    wrong-answer floor."""
     lines = (
         PACKAGE_ROOT / "goldens" / "reference.jsonl"
     ).read_text(encoding="utf-8").splitlines()
@@ -350,9 +470,10 @@ def test_goldens_replay_offline() -> None:
             hashlib.sha256(task["prompt"].encode("utf-8")).hexdigest()
             == golden["prompt_sha256"]
         )
-        assert environment.grade(golden["index"], "no code")["reward"] == golden[
-            "wrong_reward"
-        ]
+        assert (
+            environment.grade(golden["index"], WRONG_BUT_VALID_COMPLETION)["reward"]
+            == golden["wrong_reward"]
+        )
 
 
 def test_artifact_manifest_hashes_installed_files() -> None:
