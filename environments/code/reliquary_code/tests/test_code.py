@@ -269,3 +269,59 @@ def test_a_forked_grandchild_does_not_survive_the_wall_clock_kill() -> None:
         "the wall-clock kill: it escaped the timeout"
     )
 
+
+
+import asyncio
+
+from reliquary_code import CodeEnvironment, CodeTaskset
+from reliquary_code.taskset import CodeConfig
+
+ROW = {
+    "input": "Read an integer and print it plus one.",
+    "structured_cases": [
+        {"input": "1\n", "expected_output": "2\n"},
+        {"input": "5\n", "expected_output": "6\n"},
+    ],
+}
+
+
+def test_reward_is_the_fraction_of_passing_cases(monkeypatch) -> None:
+    monkeypatch.setattr("reliquary_code.taskset.get_problem", lambda index: ROW)
+    monkeypatch.setattr("reliquary_code.taskset.corpus_length", lambda: 1)
+    environment = CodeEnvironment()
+
+    good = "```python\nimport sys\nprint(int(sys.stdin.read().strip()) + 1)\n```"
+    assert environment.grade(0, good)["reward"] == 1.0
+    assert environment.grade(0, "```python\nprint(0)\n```")["reward"] == 0.0
+
+
+def test_half_passing_scores_half(monkeypatch) -> None:
+    monkeypatch.setattr("reliquary_code.taskset.get_problem", lambda index: ROW)
+    monkeypatch.setattr("reliquary_code.taskset.corpus_length", lambda: 1)
+    environment = CodeEnvironment()
+    source = (
+        "```python\nimport sys\n"
+        "v = int(sys.stdin.read().strip())\n"
+        "print(2 if v == 1 else 0)\n```"
+    )
+    assert environment.grade(0, source)["reward"] == 0.5
+
+
+def test_prompt_carries_the_case_contract(monkeypatch) -> None:
+    monkeypatch.setattr("reliquary_code.taskset.get_problem", lambda index: ROW)
+    monkeypatch.setattr("reliquary_code.taskset.corpus_length", lambda: 1)
+    task = CodeEnvironment().task(0)
+    assert "Read an integer" in task["prompt"]
+
+
+def test_package_exports_exactly_two_names() -> None:
+    import reliquary_code
+
+    assert reliquary_code.__all__ == ["CodeEnvironment", "CodeTaskset"]
+
+
+def test_taskset_validate_accepts_reference_and_rejects_empty(monkeypatch) -> None:
+    monkeypatch.setattr("reliquary_code.taskset.get_problem", lambda index: ROW)
+    monkeypatch.setattr("reliquary_code.taskset.corpus_length", lambda: 1)
+    task = next(iter(CodeTaskset(CodeConfig()).load()))
+    assert asyncio.run(task.validate(None)) is True
