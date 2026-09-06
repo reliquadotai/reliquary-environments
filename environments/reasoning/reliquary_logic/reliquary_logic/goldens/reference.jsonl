@@ -1,0 +1,3 @@
+{"index":16,"split":"train","task_id":"c2d7e0c4136440a4","family":"boolean_expressions","prompt_sha256":"76abe2b7e4bc38a56b3a9cea31d51d518befb727fcd7cbcd61219483e981df61","state_digest":"fb843d724bd7c3ee968eaad82bf3e32b9410fcb9f31559859243227d6c58e3e3"}
+{"index":24,"split":"eval","task_id":"ca2113fbd0376085","family":"dyck_language","prompt_sha256":"504b0969bb7cc6b74d9507d495bd138048d8220296a6b0877c3879c44e2c8b46","state_digest":"fa12b2caf949319ba22d75c42a6ad1bc9ccf4b7612aa6bfe860450757924c34e"}
+{"index":12,"split":"qualification","task_id":"9afaf7f509417f1c","family":"numbrix","prompt_sha256":"247f547263f698b973066aea657771452f090f8282e6e32b5d40551024c517df","state_digest":"6a937330b82ae4ca2b5444fd0dc7b8651ca35619abb74abb037bdf07e3d8cea4"}

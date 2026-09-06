@@ -1,0 +1,53 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/logic"
+version = "0.1.0a1"
+taskset = "reliquary-logic"
+entrypoint = "reliquary_logic:LogicTaskset"
+compatibility_entrypoint = "reliquary_logic:LogicEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = [
+  "boolean_expressions",
+  "cryptarithm",
+  "dyck_language",
+  "dyck_language_errors",
+  "math_path",
+  "numbrix",
+  "object_properties",
+  "operation",
+  "space_reasoning",
+  "time_sequence",
+  "web_of_lies",
+  "word_sorting_mistake",
+]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 1
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["exact_answer"]
+
+[data]
+train = "procedural:logic-v1:train"
+eval = "procedural:logic-v1:eval"
+qualification = "procedural:logic-v1:qualification"
+redistributable = true
+license = "MIT"
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary"
+source_commit = "f4a6a23ad8831e5014a4c0f51450cb2f079ef338"
+source_environment = "reliquarylogic_v1"
+port = "generator-identical-new-identity"
