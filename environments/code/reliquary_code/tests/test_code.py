@@ -1,5 +1,7 @@
 import importlib
 import pkgutil
+import time
+from pathlib import Path
 
 import pytest
 
@@ -146,4 +148,89 @@ def test_each_case_gets_a_fresh_process() -> None:
         {"input": "0.6", "expected_output": "done"},
     ]
     assert run_cases(source, cases, cpu_seconds=1) == [True, True]
+
+
+def test_two_evaluations_get_different_process_ids() -> None:
+    """Names the invariant directly: two independent evaluations of a
+    PID-printing program must report different PIDs, because each gets its
+    own fresh subprocess. `test_each_case_gets_a_fresh_process` above proves
+    the *consequence* (a shared CPU budget would kill an innocent case);
+    this proves the *invariant* itself, which is faster to read for anyone
+    changing the runner later.
+
+    `run_cases`'s public API only returns booleans, with nowhere to carry a
+    PID back to the caller, so this goes one layer down to `_spawn` — the
+    same per-case entry point `run_cases` calls once per case — to read the
+    real child's stdout.
+    """
+    from reliquary_code.runner import _spawn
+
+    source = "import os, sys\nsys.stdout.write(str(os.getpid()))\n"
+    first = _spawn(
+        source, "", cpu_seconds=5, memory_bytes=512 * 1024 * 1024, wall_seconds=5.0
+    )
+    second = _spawn(
+        source, "", cpu_seconds=5, memory_bytes=512 * 1024 * 1024, wall_seconds=5.0
+    )
+    assert first.stdout.strip() != second.stdout.strip()
+
+
+def _process_state(pid: int) -> str | None:
+    """The Linux process state character for `pid`, or `None` if it is gone
+    (already reaped)."""
+    try:
+        status = Path(f"/proc/{pid}/status").read_text()
+    except OSError:
+        return None
+    return next(
+        line.split()[1] for line in status.splitlines() if line.startswith("State:")
+    )
+
+
+def test_a_forked_grandchild_does_not_survive_the_wall_clock_kill() -> None:
+    """A prior version of this runner relied on `RLIMIT_NPROC` for fork-bomb
+    containment. That limit is scoped to the real UID on Linux, not to this
+    process's subtree, so it did not actually bound what a case's own
+    process tree could do — and independently broke legitimate
+    `subprocess`/`multiprocessing` submissions on a busy host (see
+    `runner._limits`). The real gap it was covering: `subprocess.run`'s
+    default timeout handling kills only the immediate child, so a forked
+    grandchild can outlive the wall-clock kill entirely.
+
+    This drives `_spawn` directly with a source that forks a grandchild
+    that sleeps far longer than `wall_seconds`, and polls `/proc` for the
+    grandchild's state after `_spawn` returns. `os.kill(pid, 0)` alone can't
+    tell "killed, not yet reaped" from "still alive and sleeping": a zombie
+    still answers signal 0 (its PID slot persists until reaped). Reading the
+    state character distinguishes actually-still-running (`S`/`R`) from
+    killed (gone, `Z` zombie, or the transient `X`/`x` dead state Linux
+    reports mid-teardown).
+    """
+    source = (
+        "import os, sys, time\n"
+        "child = os.fork()\n"
+        "if child == 0:\n"
+        "    time.sleep(30)\n"
+        "    os._exit(0)\n"
+        "sys.stdout.write(str(child))\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(30)\n"
+    )
+    from reliquary_code.runner import _spawn
+
+    completed = _spawn(
+        source, "", cpu_seconds=5, memory_bytes=512 * 1024 * 1024, wall_seconds=1.0
+    )
+    grandchild_pid = int(completed.stdout.strip())
+
+    deadline = time.monotonic() + 3.0
+    state = _process_state(grandchild_pid)
+    while state in ("S", "R") and time.monotonic() < deadline:
+        time.sleep(0.05)
+        state = _process_state(grandchild_pid)
+
+    assert state not in ("S", "R"), (
+        f"grandchild {grandchild_pid} is still alive (state={state!r}) after "
+        "the wall-clock kill: it escaped the timeout"
+    )
 
