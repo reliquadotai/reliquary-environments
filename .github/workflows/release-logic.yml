@@ -1,0 +1,73 @@
+name: reproducible-logic-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["logic-v*"]
+  pull_request:
+    paths:
+      - "environments/reasoning/reliquary_logic/**"
+      - "compatibility.toml"
+      - "scripts/build_logic_release.py"
+      - ".github/workflows/release-logic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.11.10"
+          python-version: "3.12"
+      - name: Build twice and check reviewed digest
+        run: uv run --no-project --python 3.12 python scripts/build_logic_release.py --output "${{ runner.temp }}/logic-release"
+      - name: Install the exact native API and the built wheel
+        run: |
+          uv venv --python 3.12 "${{ runner.temp }}/logic-venv"
+          uv pip install --python "${{ runner.temp }}/logic-venv/bin/python" 'verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b2e4e8157783b2c0dffc7821044c87f29f1c3ccf' 'pytest==8.4.2'
+          uv pip install --python "${{ runner.temp }}/logic-venv/bin/python" --no-deps "${{ runner.temp }}/logic-release/"*.whl
+      - name: Test installed wheel and native Verifiers Docker validation
+        working-directory: ${{ runner.temp }}
+        run: |
+          "${{ runner.temp }}/logic-venv/bin/python" -m pytest "$GITHUB_WORKSPACE/environments/reasoning/reliquary_logic/tests" --import-mode=importlib
+          "${{ runner.temp }}/logic-venv/bin/validate" reliquary-logic -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: logic-release-${{ github.sha }}
+          path: ${{ runner.temp }}/logic-release/
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/logic-v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: logic-release-${{ github.sha }}
+          path: release
+      - name: Publish a new release only; never replace a tag or asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          release = json.loads(Path('release/release.json').read_text())
+          assert release['tag'] == os.environ['RELEASE_TAG']
+          assert release['source_commit'] == subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          PY
+          (cd release && sha256sum -c SHA256SUMS)
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release already exists; refusing replacement" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" release/* --verify-tag --title "Reliquary Logic $RELEASE_TAG" --notes "Pinned standalone Logic wheel. See release.json for exact source, artifact, Verifiers and reproducible build identities. CPU qualification does not establish GPU readiness."

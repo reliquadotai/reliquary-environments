@@ -260,9 +260,8 @@ def test_declared_families_match_the_generator() -> None:
 def test_prime_rl_reference_config_and_pins() -> None:
     """The training lane must name this taskset and the repository's pins.
 
-    Nothing here downloads a release: the logic wheel has none yet, so CI
-    installs it from the checkout rather than asserting a hash that names no
-    published artifact.
+    CI builds the reviewed wheel from this exact checkout and checks its hash;
+    publication is a separate tag-triggered gate.
     """
     environment_root = Path(__file__).parents[1]
     config = tomllib.loads(
@@ -273,6 +272,10 @@ def test_prime_rl_reference_config_and_pins() -> None:
     )
 
     assert compatibility["prime_rl"]["version"] == "0.9.0"
+    project = tomllib.loads((environment_root / "pyproject.toml").read_text())
+    assert project["project"]["dependencies"] == ["verifiers==0.3.1"]
+    assert project["tool"]["uv"]["sources"]["verifiers"]["rev"] == compatibility["verifiers"]["source_commit"]
+    assert compatibility["releases"]["reliquary_logic"]["tag"] == "logic-v" + project["project"]["version"]
     assert (
         compatibility["verifiers"]["source_commit"]
         == compatibility["prime_rl"]["verifiers_commit"]
