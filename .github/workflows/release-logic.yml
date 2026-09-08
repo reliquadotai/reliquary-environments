@@ -70,4 +70,4 @@ jobs:
             echo "Release already exists; refusing replacement" >&2
             exit 1
           fi
-          gh release create "$RELEASE_TAG" release/* --verify-tag --title "Reliquary Logic $RELEASE_TAG" --notes "Pinned standalone Logic wheel. See release.json for exact source, artifact, Verifiers and reproducible build identities. CPU qualification does not establish GPU readiness."
+          gh release create "$RELEASE_TAG" release/* --verify-tag --prerelease --latest=false --title "Reliquary Logic $RELEASE_TAG" --notes "Pinned standalone Logic wheel. See release.json for exact source, artifact, Verifiers and reproducible build identities. CPU qualification does not establish GPU readiness."
