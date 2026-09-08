@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.13"
-dependencies = ["verifiers>=0.3.1,<0.4"]
+dependencies = ["verifiers==0.3.1"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "License :: OSI Approved :: MIT License",
@@ -30,3 +30,6 @@ addopts = ["-q", "--strict-markers"]
 
 [tool.uv]
 required-version = ">=0.11.1"
+
+[tool.uv.sources]
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf" }

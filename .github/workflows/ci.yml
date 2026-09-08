@@ -16,6 +16,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked
+      - run: uv pip install 'verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b2e4e8157783b2c0dffc7821044c87f29f1c3ccf'
       - run: uv run pytest
       - run: uv run validate reliquary-stateful-tools -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
@@ -82,8 +83,10 @@ jobs:
           uv pip install --python .prime-rl/.venv/bin/python --no-deps "${{ runner.temp }}/reliquary_stateful_tools-0.1.0a1-py3-none-any.whl"
       - name: Load environment through pinned Verifiers
         run: .prime-rl/.venv/bin/python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary-stateful-tools'); t=vf.load_taskset(c(id='reliquary-stateful-tools', split='train')); assert len(list(t.head(3))) == 3"
-      - name: Install the logic environment from this checkout
-        run: uv pip install --python .prime-rl/.venv/bin/python --no-deps "$GITHUB_WORKSPACE/environments/reasoning/reliquary_logic"
+      - name: Build the reviewed Logic wheel twice from this source
+        run: uv run --no-project --python 3.12 python scripts/build_logic_release.py --output "${{ runner.temp }}/logic-release"
+      - name: Install the reviewed Logic wheel
+        run: uv pip install --python .prime-rl/.venv/bin/python --no-deps "${{ runner.temp }}/logic-release/"*.whl
       - name: Load both environments through pinned Verifiers
         run: |
           .prime-rl/.venv/bin/python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary-logic'); t=vf.load_taskset(c(id='reliquary-logic', split='train')); assert len(list(t.head(3))) == 3"

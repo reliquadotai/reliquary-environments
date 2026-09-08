@@ -56,7 +56,9 @@ The generator is vendored unchanged from `reliquarylogic_v1`: same seeding,
 same puzzles, verified task-for-task. What is new here is the package
 identity, the disjoint train/eval/qualification splits, and the Verifiers
 surface. Measurements taken against the core environment therefore carry
-over.
+over only when the exact generator positions, prompt template and parser also
+match. The standalone splits and answer parser differ from historical core
+versions; those measurements do not qualify this release for production.
 
 The package exports `LogicTaskset` for Verifiers and `prime-rl`, and
 `LogicEnvironment` for synchronous Reliquary-compatible replay. It imports no
@@ -66,3 +68,21 @@ Reliquary code.
 `replay`, `reference_completion` — and deliberately not the episode contract
 its tool-use sibling implements: one turn means there is no `reset` and no
 `step` to expose.
+
+## Pinned release qualification
+
+`uv.lock` pins the native Verifiers v1 API to commit
+`b2e4e8157783b2c0dffc7821044c87f29f1c3ccf`. The optional standalone wheel
+uses `hatchling==1.27.0` and a fixed `SOURCE_DATE_EPOCH`; the repository's
+`scripts/build_logic_release.py` builds it twice and compares exact bytes.
+`compatibility.toml` records the reviewed wheel and artifact hashes. The
+`reproducible-logic-release` workflow tests the installed wheel, validates it
+through the native Docker runtime and publishes only a new `logic-v*` tag.
+No existing release or asset is overwritten. A branch artifact is a release
+candidate until that workflow has published the matching tag.
+
+This package and Stateful Tools establish interoperability for two reviewed,
+deterministic first-party Tasksets. They do not establish compatibility with
+every environment in the Prime catalog. Each additional environment requires
+an explicit ABI, deterministic authoritative checker, resource policy, frozen
+artifact and conformance qualification.
