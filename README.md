@@ -22,3 +22,9 @@ uv build
 The embedded `reliquary_stateful_tools_v1` and `reliquarylogic_v1` implementations remain in the core repository for historical replay. This repository versions forward; it does not move or rewrite those consensus artifacts. `reliquary-logic` vendors its generator unchanged, so its puzzles are task-for-task identical to the core environment's.
 
 The pinned [Prime-RL v0.9.0 training lane](environments/tool_use/reliquary_stateful_tools/examples/prime_rl) uses the package directly through Verifiers. It remains non-production until GPU qualification is complete.
+
+See [Prime / Verifiers compatibility](docs/prime-verifiers-compatibility.md) for
+the exact tested API and wheel pins, installed-package commands, supported
+directions and onboarding steps for another environment. Native Verifiers
+support does not automatically qualify every Prime environment for Reliquary
+consensus.

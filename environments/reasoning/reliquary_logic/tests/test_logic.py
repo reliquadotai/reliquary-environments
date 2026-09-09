@@ -228,6 +228,26 @@ def test_a_taskset_split_carries_through_to_the_task() -> None:
     )
 
 
+@pytest.mark.parametrize("split", SPLITS)
+def test_native_framework_score_and_wire_roundtrip(split: str) -> None:
+    """Exercise reward discovery/weighting, not just the decorated Python method."""
+    config = vf.taskset_config_type("reliquary-logic")
+    task = next(iter(vf.load_taskset(config(id="reliquary-logic", split=split))))
+    environment = LogicEnvironment(split)
+    for completion, expected in ((environment.reference_completion(0), 1.0), ("", 0.0)):
+        trace = _trace(task, completion)
+        for value in (trace, vf.WireTrace.model_validate_json(trace.model_dump_json())):
+            asyncio.run(task.score(value))
+            assert value.reward == expected
+            assert set(value.rewards) == {"verified_answer"}
+            assert value.rewards["verified_answer"].weight == 1.0
+    # A supplied few-shot answer is not a sampled model response.
+    trace = _trace(task, environment.reference_completion(0))
+    trace.nodes[0].sampled = False
+    asyncio.run(task.score(trace))
+    assert trace.reward == 0.0
+
+
 def test_artifact_manifest_hashes_installed_files() -> None:
     package_root = importlib.resources.files("reliquary_logic")
     root = package_root.parent
