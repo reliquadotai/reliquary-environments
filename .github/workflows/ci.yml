@@ -17,11 +17,14 @@ jobs:
           python-version: "3.12"
       - run: uv sync --locked
       - run: uv pip install 'verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b2e4e8157783b2c0dffc7821044c87f29f1c3ccf'
-      - run: uv run pytest
-      - run: uv run validate reliquary-stateful-tools -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+      - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
+      - run: uv run --no-sync pytest
+      - run: uv run --no-sync validate reliquary-stateful-tools -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
       - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_stateful_tools-0.1.0a1-py3-none-any.whl
+      - run: uv pip install --python .wheel-venv/bin/python --no-deps 'verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b2e4e8157783b2c0dffc7821044c87f29f1c3ccf'
+      - run: .wheel-venv/bin/python ../../../scripts/check_verifiers_pin.py
       - name: Verify installed wheel and packaged golden
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/tool_use/reliquary_stateful_tools/.wheel-venv/bin/python -c "import hashlib,importlib.resources,json; import verifiers.v1 as vf; from reliquary_stateful_tools import StatefulToolsEnvironment; root=importlib.resources.files('reliquary_stateful_tools'); artifact=json.loads(root.joinpath('artifact.json').read_text()); assert all(hashlib.sha256(root.parent.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in artifact['files'].items()); assert len(root.joinpath('goldens/reference.jsonl').read_text().splitlines())==3; assert len(StatefulToolsEnvironment())==1<<31; config=vf.taskset_config_type('reliquary-stateful-tools'); assert len(list(vf.load_taskset(config(id='reliquary-stateful-tools')).head(3)))==3"
@@ -40,11 +43,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: uv sync --locked
+      - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run pytest
       - run: uv run validate reliquary-logic -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
       - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_logic-0.1.0a1-py3-none-any.whl
+      - run: uv pip install --python .wheel-venv/bin/python --no-deps 'verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b2e4e8157783b2c0dffc7821044c87f29f1c3ccf'
+      - run: .wheel-venv/bin/python ../../../scripts/check_verifiers_pin.py
       - name: Verify installed wheel and packaged golden
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/reasoning/reliquary_logic/.wheel-venv/bin/python -c "import hashlib,importlib.resources,json; import verifiers.v1 as vf; from reliquary_logic import LogicEnvironment; from reliquary_logic.taskset import TASK_COUNT; root=importlib.resources.files('reliquary_logic'); artifact=json.loads(root.joinpath('artifact.json').read_text()); assert all(hashlib.sha256(root.parent.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in artifact['files'].items()); assert len(root.joinpath('goldens/reference.jsonl').read_text().splitlines())==3; assert len(LogicEnvironment())==TASK_COUNT; e=LogicEnvironment(); assert e.grade(0, e.reference_completion(0))['reward']==1.0; config=vf.taskset_config_type('reliquary-logic'); assert len(list(vf.load_taskset(config(id='reliquary-logic')).head(3)))==3"

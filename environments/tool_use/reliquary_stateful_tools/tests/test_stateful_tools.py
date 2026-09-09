@@ -6,6 +6,7 @@ import tomllib
 from pathlib import Path
 
 import verifiers.v1 as vf
+import pytest
 
 import reliquary_stateful_tools as package
 from reliquary_stateful_tools.taskset import (
@@ -15,8 +16,8 @@ from reliquary_stateful_tools.taskset import (
 
 
 def _trace(task: vf.Task, actions: list[dict], state: dict | None = None) -> vf.Trace:
-    environment = StatefulToolsEnvironment()
-    world = environment.reset(0, 0)["state"]
+    environment = StatefulToolsEnvironment(task.data.split)
+    world = environment.reset(task.data.idx or 0, 0)["state"]
     nodes = []
     parent = None
     for position, action in enumerate(actions):
@@ -151,6 +152,32 @@ def test_compatibility_contract_is_deterministic_and_fail_closed() -> None:
     assert bad["done"] is True
     assert bad["termination_reason"] == "invalid_action"
     assert environment.grade(7, bad["state"], [])["reward"] == 0.0
+
+
+@pytest.mark.parametrize("split", ("train", "eval", "qualification"))
+def test_native_framework_score_and_wire_roundtrip(split: str) -> None:
+    config = vf.taskset_config_type("reliquary-stateful-tools")
+    task = next(iter(vf.load_taskset(config(id="reliquary-stateful-tools", split=split))))
+    module = __import__("reliquary_stateful_tools.taskset", fromlist=["_build_task"])
+    actions = module._build_task(0, split)["private"]["reference_actions"]
+    for selected, expected in ((actions, 1.0), ([{"final": "done"}], 0.0)):
+        trace = _trace(task, selected)
+        for value in (trace, vf.WireTrace.model_validate_json(trace.model_dump_json())):
+            asyncio.run(task.score(value))
+            assert value.reward == expected
+            assert set(value.rewards) == {"verified_outcome"}
+            assert value.rewards["verified_outcome"].weight == 1.0
+    # An abandoned successful branch cannot rescue the final failed branch.
+    trace = _trace(task, actions)
+    trace.nodes.append(vf.MessageNode(parent=None, sampled=True,
+        message=vf.AssistantMessage(content="done")))
+    asyncio.run(task.score(trace))
+    assert trace.reward == 0.0
+    trace = _trace(task, actions)
+    for node in trace.nodes:
+        node.sampled = False
+    asyncio.run(task.score(trace))
+    assert trace.reward == 0.0
 
 
 def test_mutations_are_idempotent_for_transport_retries() -> None:
