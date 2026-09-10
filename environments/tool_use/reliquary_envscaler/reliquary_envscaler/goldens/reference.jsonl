@@ -1,0 +1,3 @@
+{"index":0,"task_id":"env_148_rl-task_1","env_id":"env_148_rl","tools":15,"checks":12,"prompt_sha256":"e5148a0fd4ed8630a38c31ef2edfa7c31b1b2e915c16f4413b6efa6bfcb74b47"}
+{"index":250,"task_id":"env_154_rl-task_18","env_id":"env_154_rl","tools":21,"checks":39,"prompt_sha256":"66371d359633a572367f13498600f9ad38f7b8ea96b8590ec01de23dde58265a"}
+{"index":1250,"task_id":"env_165_rl-task_50","env_id":"env_165_rl","tools":16,"checks":36,"prompt_sha256":"0c8e24304842c7b39b3a165e3f3b893612dc635e488b8c5fe06f294aca9d219f"}

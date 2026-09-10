@@ -1,0 +1,47 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/envscaler"
+version = "0.1.0a1"
+taskset = "reliquary-envscaler"
+entrypoint = "reliquary_envscaler:EnvScalerTaskset"
+compatibility_entrypoint = "reliquary_envscaler:EnvScalerToolsEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["envscaler_rl"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 12
+max_observation_bytes = 65536
+# Worlds and checkers are dataset-carried Python, executed at reset and at
+# grading. This environment must run sandboxed.
+executes_untrusted_source = true
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["checklist_flipped"]
+
+[data]
+train = "envscaler:rl-scenarios:250.."
+eval = "envscaler:rl-scenarios:..250"
+redistributable = false
+license = "MIT"
+# 60 MB, fetched rather than shipped; the loader refuses a corpus that is not
+# 191 worlds and 2,550 scenarios, since a short file shifts every index.
+worlds = "XXHStudyHard/EnvScaler-191-Env"
+scenarios = "XXHStudyHard/EnvScaler-RL-Scenario"
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary"
+source_commit = "680e88d90b0642d992c1dbfa896c8034f35a68f8"
+source_environment = "envscaler_tools_v1"
+upstream = "https://github.com/RUC-NLPIR/EnvScaler"
+port = "vendored-episode-contract"

@@ -1,0 +1,23 @@
+{
+  "schema": "reliquary/environment-artifact/v1",
+  "environment": "reliquary_envscaler_v2",
+  "contract": "reliquary/episode-json/v1",
+  "distribution": {
+    "name": "reliquary-envscaler",
+    "version": "0.1.0a1"
+  },
+  "entrypoints": {
+    "taskset": "reliquary_envscaler:EnvScalerTaskset",
+    "replay": "reliquary_envscaler:EnvScalerToolsEnvironment"
+  },
+  "source_manifest_sha256": "2b87c3ef422d9a0f6ffa32ddb29a85b98dbebff41ed17d6e56f9a14b51c9102d",
+  "files": {
+    "reliquary_envscaler/__init__.py": "5aeae556287b868255417a19573a926352fb064f1df0d5dc8ee0bbd7042f4b7d",
+    "reliquary_envscaler/corpus.py": "c268bd26b8497b24fbf58fbd8e80d1356ef004f1c8b78d151ea1163af10979e8",
+    "reliquary_envscaler/episode.py": "5887acece12c8ee112aaf147e6716b42f6ac4e56728e63f4b12b78a91a5de1a2",
+    "reliquary_envscaler/shims.py": "82d46cfa6b50b4d477415e805783fa1d762a658f979e4270b70ed8d50f01797e",
+    "reliquary_envscaler/environment.py": "7a7cc66ac63d1ac6341fd7174fce871ebc329dc38dd0bfcd8e631709794a18e5",
+    "reliquary_envscaler/taskset.py": "85a364c20f85a86cb2adb79f4279ea12a8524f43ba7c1a7b0efa0fe0ebd5b658",
+    "reliquary_envscaler/goldens/reference.jsonl": "4c4e0bc835135d048b2acaf0aed4ec12978e81af0df248e7e81c22a212f9e8ac"
+  }
+}
