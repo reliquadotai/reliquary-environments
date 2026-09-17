@@ -11,6 +11,7 @@ Each package has no dependency on Reliquary core and exposes:
 | --- | --- |
 | [`reliquary-stateful-tools`](environments/tool_use/reliquary_stateful_tools) | A deterministic multi-turn CRM world with exact state-based rewards. |
 | [`reliquary-logic`](environments/reasoning/reliquary_logic) | Twelve families of procedurally generated logic puzzle, graded on typed JSON rather than free text. |
+| [`reliquary-telecom-solo`](environments/tool_use/reliquary_telecom_solo) | τ²-bench's telecom domain in solo mode: 2,285 support tickets scored by predicates over the device and the carrier's records. |
 
 ```bash
 cd environments/<area>/<package>
