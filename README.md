@@ -37,10 +37,25 @@ into satisfying a constraint, and a maths environment ends up answering from the
 A rationale is required alongside the value so that whoever changes it knows what it was
 weighed against, and CI refuses an environment that declares neither.
 
-Declaring is not enforcing: a Verifiers run carries it as
-`env.agent.sampling.chat_template_kwargs.enable_thinking`, and a harness with its own
-prompt encoding applies it there. What this repository guarantees is that the intent
-travels with the task rather than with the run.
+Declaring is not enforcing. A prime-rl run applies it through the renderer, which also
+decides how the chat template is written:
+
+```toml
+[orchestrator.renderer]
+name = "qwen3"
+enable_thinking = true
+```
+
+**Name the renderer.** Auto-resolution falls back to a default renderer with no tool
+support for any model outside its map, so a tool environment run without an explicit
+renderer loses tool calling silently. And the name is per model family, not per vendor:
+a Qwen3.5 model needs `qwen35`, whose template differs from `qwen3`'s. Only Qwen3.6 and
+later expose `preserve_thinking`, the knob deciding whether earlier turns keep their
+reasoning in a multi-turn episode.
+
+CI checks that a shipped example asks for the mode its environment declared. The two
+files drift the moment one is edited alone, and the drift is silent — the run simply
+trains a mode the environment did not ask for.
 
 The embedded `reliquary_stateful_tools_v1` and `reliquarylogic_v1` implementations remain in the core repository for historical replay. This repository versions forward; it does not move or rewrite those consensus artifacts. `reliquary-logic` vendors its generator unchanged, so its puzzles are task-for-task identical to the core environment's.
 

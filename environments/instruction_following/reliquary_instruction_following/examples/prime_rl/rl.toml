@@ -48,7 +48,12 @@ max_off_policy_steps = 8
 type = "grpo"
 
 [orchestrator.renderer]
+# Set explicitly: left to auto-resolution a model outside the renderer map
+# falls back to the default renderer, which has no tool support.
 name = "qwen3"
+# Mirrors [policy] reasoning in environment.toml. A Qwen3.5 model needs the
+# "qwen35" renderer instead; the template differs.
+enable_thinking = true
 
 [orchestrator.train]
 filter_zero_advantages = true

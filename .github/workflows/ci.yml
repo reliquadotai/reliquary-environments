@@ -19,6 +19,7 @@ jobs:
       - run: uv pip install 'verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b2e4e8157783b2c0dffc7821044c87f29f1c3ccf'
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
       - run: uv run --no-sync pytest
       - run: uv run --no-sync validate reliquary-stateful-tools -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
@@ -46,6 +47,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
       - run: uv run pytest
       - run: uv run validate reliquary-logic -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
@@ -73,6 +75,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
       - run: uv run --no-sync pytest
       - run: uv run --no-sync validate reliquary-telecom-solo -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
@@ -96,6 +99,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync --locked
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
       - run: uv run pytest
       - run: uv run validate reliquary-envscaler -n 2 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
@@ -156,6 +160,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
       - run: uv run --no-sync pytest
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
