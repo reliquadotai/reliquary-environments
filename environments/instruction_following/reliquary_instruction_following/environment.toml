@@ -62,3 +62,19 @@ upstream = "https://github.com/allenai/open-instruct"
 upstream_path = "open_instruct/IFEvalG"
 upstream_license = "Apache-2.0"
 port = "vendored-checkers"
+
+[policy]
+# How the policy should be prompted. The environment knows whether its task
+# rewards deliberation; the harness running it does not.
+reasoning = "thinking"
+reasoning_rationale = """
+Contested, and set deliberately. Nemotron-Cascade 1 runs this stage
+directly, arguing a rule verifier will pay for a bad answer and that a
+long chain of thought gives a policy more room to find one. Nemotron-
+Cascade 2 reverses it four months later, reaching state of the art on
+IFBench with deliberation on and publishing no numbers for the degradation
+it claims. Neither ran the matched comparison. Thinking is chosen because
+the failure to watch for is an answer that satisfies every constraint
+while saying nothing, which a sample makes visible; flip this if it
+appears.
+"""

@@ -45,3 +45,12 @@ source_commit = "680e88d90b0642d992c1dbfa896c8034f35a68f8"
 source_environment = "envscaler_tools_v1"
 upstream = "https://github.com/RUC-NLPIR/EnvScaler"
 port = "vendored-episode-contract"
+
+[policy]
+# How the policy should be prompted. The environment knows whether its task
+# rewards deliberation; the harness running it does not.
+reasoning = "thinking"
+reasoning_rationale = """
+Twelve turns against a world the policy discovers as it goes, where the
+deliberation is what repairs the plan.
+"""

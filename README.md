@@ -20,6 +20,47 @@ uv run pytest
 uv build
 ```
 
+## How the policy is prompted
+
+Every environment declares, in its `environment.toml`, whether its task is meant to be
+answered after deliberation or directly:
+
+```toml
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """…"""
+```
+
+The environment knows this; the harness running it does not. Left to a harness-wide
+default, a format environment ends up rewarding a long chain of thought that talks itself
+into satisfying a constraint, and a maths environment ends up answering from the hip.
+A rationale is required alongside the value so that whoever changes it knows what it was
+weighed against, and CI refuses an environment that declares neither.
+
+Declaring is not enforcing. A prime-rl run applies it through the renderer, which also
+decides how the chat template is written:
+
+```toml
+[orchestrator.renderer]
+name = "qwen3"
+enable_thinking = true
+```
+
+**Name the renderer.** Auto-resolution falls back to a default renderer with no tool
+support for any model outside its map, so a tool environment run without an explicit
+renderer loses tool calling silently. And the name is per model family, not per vendor:
+a Qwen3.5 model needs `qwen35`, whose template differs from `qwen3`'s. Only Qwen3.6 and
+later expose `preserve_thinking`, the knob deciding whether earlier turns keep their
+reasoning in a multi-turn episode.
+
+Two environments are exempt: `reliquary-logic` and `reliquary-stateful-tools` ship under
+reviewed release pins that bind their `environment.toml` bytes, so adding a field there is
+an act of release rather than an ordinary commit. They declare a mode when next cut.
+
+CI checks that a shipped example asks for the mode its environment declared. The two
+files drift the moment one is edited alone, and the drift is silent — the run simply
+trains a mode the environment did not ask for.
+
 The embedded `reliquary_stateful_tools_v1` and `reliquarylogic_v1` implementations remain in the core repository for historical replay. This repository versions forward; it does not move or rewrite those consensus artifacts. `reliquary-logic` vendors its generator unchanged, so its puzzles are task-for-task identical to the core environment's.
 
 The pinned [Prime-RL v0.9.0 training lane](environments/tool_use/reliquary_stateful_tools/examples/prime_rl) uses the package directly through Verifiers. It remains non-production until GPU qualification is complete.
