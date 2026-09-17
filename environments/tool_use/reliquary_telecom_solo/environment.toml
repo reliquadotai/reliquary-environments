@@ -60,3 +60,12 @@ upstream = "https://github.com/sierra-research/tau2-bench"
 upstream_path = "src/tau2/domains/telecom"
 upstream_license = "MIT"
 port = "solo-mode-vendored"
+
+[policy]
+# How the policy should be prompted. The environment knows whether its task
+# rewards deliberation; the harness running it does not.
+reasoning = "thinking"
+reasoning_rationale = """
+Twenty dependent steps against a device database, with a twenty-kilobyte
+troubleshooting manual to hold in working memory.
+"""

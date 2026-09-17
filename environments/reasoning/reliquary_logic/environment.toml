@@ -51,3 +51,13 @@ source_repository = "https://github.com/reliquadotai/reliquary"
 source_commit = "f4a6a23ad8831e5014a4c0f51450cb2f079ef338"
 source_environment = "reliquarylogic_v1"
 port = "generator-identical-new-identity"
+
+[policy]
+# How the policy should be prompted. The environment knows whether its task
+# rewards deliberation; the harness running it does not.
+reasoning = "thinking"
+reasoning_rationale = """
+A puzzle answered without working through it is answered by guessing:
+these families have exact typed answers a direct reply reaches only by
+luck.
+"""
