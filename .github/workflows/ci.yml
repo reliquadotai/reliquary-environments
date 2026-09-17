@@ -115,3 +115,23 @@ jobs:
         run: .prime-rl/.venv/bin/rl @ "$GITHUB_WORKSPACE/environments/tool_use/reliquary_stateful_tools/examples/prime_rl/rl.toml" --dry-run True --output-dir "${{ runner.temp }}/prime-output" --run.name reliquary-prime-compatibility
       - name: Validate the logic Prime-RL config
         run: .prime-rl/.venv/bin/rl @ "$GITHUB_WORKSPACE/environments/reasoning/reliquary_logic/examples/prime_rl/rl.toml" --dry-run True --output-dir "${{ runner.temp }}/prime-output-logic" --run.name reliquary-logic-prime-compatibility
+
+  instruction-following:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/instruction_following/reliquary_instruction_following
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
+      - run: uv run --no-sync pytest
+      - run: uv build --clear
+      - run: uv venv --python 3.12 .wheel-venv
+      - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_instruction_following-0.1.0a1-py3-none-any.whl
+      - name: Verify installed wheel and packaged goldens
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/environments/instruction_following/reliquary_instruction_following/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/instruction_following/reliquary_instruction_following/scripts/verify_wheel.py
