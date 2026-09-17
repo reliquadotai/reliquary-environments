@@ -1,0 +1,28 @@
+{
+  "schema": "reliquary/environment-artifact/v1",
+  "environment": "reliquary_instruction_following_v1",
+  "contract": "reliquary/checked-answer/v1",
+  "distribution": {
+    "name": "reliquary-instruction-following",
+    "version": "0.1.0a1"
+  },
+  "entrypoints": {
+    "taskset": "reliquary_instruction_following:InstructionFollowingTaskset",
+    "replay": "reliquary_instruction_following:InstructionFollowingEnvironment"
+  },
+  "source_manifest_sha256": "a862701b7f6a345ef2c7863f48e523f17ec770453f9fbeb7d45d4ef6a74712a8",
+  "files": {
+    "reliquary_instruction_following/__init__.py": "7cc9929cff5778cd7b2fad08613641b2150a77e7642aab9a4b13425248fb76c0",
+    "reliquary_instruction_following/_ifeval/LICENSE": "b998a796c55d006a974a48c73aa32674e6901e8d49aa98d74722e0c1063b40b6",
+    "reliquary_instruction_following/_ifeval/__init__.py": "ef1344644577aa2855a67e4adc0bd4e9dacce2a9d86303a495f93c9561de4cd3",
+    "reliquary_instruction_following/_ifeval/instructions.py": "e7f3458935671300486806340a2b0772a9bdbcf1bbb800328a62622e7988a4a6",
+    "reliquary_instruction_following/_ifeval/instructions_registry.py": "9bc62fc59c5cdba5ad36ea722de8eeaa2647d2ba913aa8a437edbc5018df06c1",
+    "reliquary_instruction_following/_ifeval/instructions_util.py": "62a5b902adf5b1f8813ff373c21967bff763466ff00180b6eb51d97c8acc2e60",
+    "reliquary_instruction_following/corpus.py": "4f9a0ef1ad5b5d8a697149e6dcbe52c04df818cbc3f6d011891b9d7a80d6bfd7",
+    "reliquary_instruction_following/data/prompts.jsonl.gz": "d7826bb207c3e38a7a1ba32b0f31fe534b1e900f4accc73c91b925702308a588",
+    "reliquary_instruction_following/environment.py": "6185de755e468f5613c6254d8f12ff735e536d90003eb53a2f0775db4a0e483d",
+    "reliquary_instruction_following/goldens/reference.jsonl": "68297e7ab06780c4bbfb8dff6e2d9fc1b96e265593a9d5dac56d41dab9c5174f",
+    "reliquary_instruction_following/grading.py": "c8cbe67ee9557eaf002bf054111b1a9284522e6b7226994d1c0108dbdb97cf7a",
+    "reliquary_instruction_following/taskset.py": "cd3a81ccd41c62d59df4ac0a39fa99cf9fb59aabe027379d2ce8407b729259bd"
+  }
+}

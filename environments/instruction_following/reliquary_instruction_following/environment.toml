@@ -1,0 +1,64 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/instruction-following"
+version = "0.1.0a1"
+taskset = "reliquary-instruction-following"
+entrypoint = "reliquary_instruction_following:InstructionFollowingTaskset"
+compatibility_entrypoint = "reliquary_instruction_following:InstructionFollowingEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = [
+  "change_case",
+  "combination",
+  "copy",
+  "count",
+  "detectable_content",
+  "detectable_format",
+  "first_word",
+  "keywords",
+  "last_word",
+  "length_constraints",
+  "letters",
+  "paragraphs",
+  "punctuation",
+  "startend",
+]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 1
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["all_constraints_followed"]
+
+[data]
+train = "nemotron-if-rl:v1:train"
+eval = "nemotron-if-rl:v1:eval"
+qualification = "nemotron-if-rl:v1:qualification"
+redistributable = true
+license = "odc-by"
+# Shipped in the wheel rather than fetched: the corpus is the task, and a row
+# that arrived differently is a different environment. The digest covers the
+# decompressed body of `data/prompts.jsonl.gz`.
+source = "nvidia/Nemotron-Cascade-2-RL-data"
+source_split = "IF-RL"
+source_url = "https://huggingface.co/datasets/nvidia/Nemotron-Cascade-2-RL-data"
+rows = 37196
+sha256 = "d685f4a7f435931538bc800d4b34a977c445949fc15fdc1c6b8b65bd9ac08093"
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary-environments"
+upstream = "https://github.com/allenai/open-instruct"
+upstream_path = "open_instruct/IFEvalG"
+upstream_license = "Apache-2.0"
+port = "vendored-checkers"
