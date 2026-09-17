@@ -10,7 +10,7 @@
     "taskset": "reliquary_telecom_solo:TelecomSoloTaskset",
     "replay": "reliquary_telecom_solo:TelecomSoloEnvironment"
   },
-  "source_manifest_sha256": "b8539daa2c2a49b6d955eed3384422f167176cecd3b956a22e0a6727111e21c2",
+  "source_manifest_sha256": "78d8ff23b2c68178235f52e2dfc883589bc9d7bcd80f9cb683bfc22306669e07",
   "files": {
     "reliquary_telecom_solo/__init__.py": "82ae48dd43a14a64fd52695bfe268461cf8643a1c53d86a4beeb79fcdc76d421",
     "reliquary_telecom_solo/_tau2/LICENSE": "e67c5aa0074dfcaefd3c3a1aedb94cb539234aecd15d5a972574e3200e6252fe",
