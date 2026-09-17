@@ -1,0 +1,36 @@
+{
+  "schema": "reliquary/environment-artifact/v1",
+  "environment": "reliquary_telecom_solo_v1",
+  "contract": "reliquary/episode-json/v1",
+  "distribution": {
+    "name": "reliquary-telecom-solo",
+    "version": "0.1.0a1"
+  },
+  "entrypoints": {
+    "taskset": "reliquary_telecom_solo:TelecomSoloTaskset",
+    "replay": "reliquary_telecom_solo:TelecomSoloEnvironment"
+  },
+  "source_manifest_sha256": "b8539daa2c2a49b6d955eed3384422f167176cecd3b956a22e0a6727111e21c2",
+  "files": {
+    "reliquary_telecom_solo/__init__.py": "82ae48dd43a14a64fd52695bfe268461cf8643a1c53d86a4beeb79fcdc76d421",
+    "reliquary_telecom_solo/_tau2/LICENSE": "e67c5aa0074dfcaefd3c3a1aedb94cb539234aecd15d5a972574e3200e6252fe",
+    "reliquary_telecom_solo/_tau2/__init__.py": "f6176f208e1f5a14af3d5d7b0d2faee17171f81be92e28ffcbd3d4c1e1e9bc15",
+    "reliquary_telecom_solo/_tau2/data_model.py": "0223406353ae469cdc85f44a45a248fbe71e2f3d1b59a0ff890bb3e6466844ed",
+    "reliquary_telecom_solo/_tau2/environment.py": "35fc246e276b4ae68f2ef84edaf58314c2219457f1d0657a23c05fb59cfde08f",
+    "reliquary_telecom_solo/_tau2/toolkit.py": "4a1ef1b5a550d5c022f30d70afecdc7f501cec62fb202e7da04ea4b45868d4b1",
+    "reliquary_telecom_solo/_tau2/tools.py": "b5fe051148ac4ea1d4155fe6edf123b38ab2084e7eb6fa3bd4c453d7b1c748f7",
+    "reliquary_telecom_solo/_tau2/user_data_model.py": "d3f36edb85e941ef070c3a8298e1c90a92517fcb0ae58ec23d298e7d4bd8bc54",
+    "reliquary_telecom_solo/_tau2/user_tools.py": "da6bd768a5b8b2af237e9e5b09debdf02cc67bb201c3cd582d9bf5c2ea95b238",
+    "reliquary_telecom_solo/corpus.py": "5dc7ce3f7a0f950ae26ff5e086f648d016a5a1c02722271704f508b64068f589",
+    "reliquary_telecom_solo/data/db.toml": "562d647ef9d7df8df91eafd8ee76036e707c8f9e32aaedc4a7fde06975aea2c0",
+    "reliquary_telecom_solo/data/main_policy_solo.md": "781296ae5419169cb64aac0c4fa2aa6129c78f3c1592f64abd80df6fbabb7042",
+    "reliquary_telecom_solo/data/tasks.json.gz": "0a348b750e724b783f3e9816e088be66f8f9ed409024bdf4126fbc7a4ffbed33",
+    "reliquary_telecom_solo/data/tech_support_workflow_solo.md": "b174d1f9705b5d7df49468daf99560a5633f86d23e10499a1166a7753706a412",
+    "reliquary_telecom_solo/data/tool_schemas.json": "92124e2900cbdc2820c4944494d8146daf862b73cd37a66365c51ae61d9276d9",
+    "reliquary_telecom_solo/data/user_db.toml": "4886107ea0c16f8e16d74bef91cfb557de61822afe9361f5a9b241806aea2e4c",
+    "reliquary_telecom_solo/environment.py": "0a8343bcfb416c2cc852d92a970e1ac48167c453eabb087098ecd51b48cf0da6",
+    "reliquary_telecom_solo/goldens/reference.jsonl": "5d877b8f80e46c6a056ebbf324c8c66176e5b1e9a153ba5333015323de567218",
+    "reliquary_telecom_solo/grading.py": "a1a1e70f279703a632a9ec8464cc72712aedfcebb43047029221cbaf6234e17b",
+    "reliquary_telecom_solo/taskset.py": "5e9782a0ad45bc1dbc1a622c8d991b83a484aa33bc01584f4bfd90e0835a2e67"
+  }
+}

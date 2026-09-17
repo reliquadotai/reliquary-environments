@@ -1,0 +1,62 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/telecom-solo"
+version = "0.1.0a1"
+taskset = "reliquary-telecom-solo"
+entrypoint = "reliquary_telecom_solo:TelecomSoloTaskset"
+compatibility_entrypoint = "reliquary_telecom_solo:TelecomSoloEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["mms_issue", "mobile_data_issue", "service_issue"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+# The longest reference solution is 12 calls and the 95th percentile is 9; with
+# the stop call that is a floor of 13 for an agent that already knows the
+# answer. The rest is diagnosis, which the workflow policy prescribes as a
+# sequence of reads before any change. 40 leaves room for three passes.
+max_turns = 40
+# The widest observation a tool can return is a customer's twelve bills with
+# their line items, measured at 1,572 bytes. 8 KiB is comfortable headroom and
+# still small enough that a runaway tool result is caught rather than paid for.
+max_observation_bytes = 8192
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["env_assertions", "actions"]
+
+[data]
+train = "tau2-telecom:v1:train"
+eval = "tau2-telecom:v1:eval"
+qualification = "tau2-telecom:v1:qualification"
+redistributable = true
+license = "MIT"
+# Shipped in the wheel rather than fetched. The tickets, the starting databases
+# and the policy are all the task: a ticket that arrived differently is a
+# different problem at the same index. The digest covers the decompressed body
+# of `data/tasks.json.gz`, which is `tasks_full.json` byte for byte.
+source = "sierra-research/tau2-bench"
+source_path = "data/tau2/domains/telecom/tasks_full.json"
+source_url = "https://github.com/sierra-research/tau2-bench"
+rows = 2285
+sha256 = "37e562e1ae3242577407e1303b1548bc64e7ea68e37d36173e6747990ceaf8a4"
+db_sha256 = "562d647ef9d7df8df91eafd8ee76036e707c8f9e32aaedc4a7fde06975aea2c0"
+user_db_sha256 = "4886107ea0c16f8e16d74bef91cfb557de61822afe9361f5a9b241806aea2e4c"
+main_policy_sha256 = "781296ae5419169cb64aac0c4fa2aa6129c78f3c1592f64abd80df6fbabb7042"
+workflow_policy_sha256 = "b174d1f9705b5d7df49468daf99560a5633f86d23e10499a1166a7753706a412"
+tool_schemas_sha256 = "92124e2900cbdc2820c4944494d8146daf862b73cd37a66365c51ae61d9276d9"
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary-environments"
+upstream = "https://github.com/sierra-research/tau2-bench"
+upstream_path = "src/tau2/domains/telecom"
+upstream_license = "MIT"
+port = "solo-mode-vendored"
