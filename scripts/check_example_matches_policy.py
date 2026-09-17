@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check that the shipped run example prompts the policy the way the task asks.
 
+import sys as _sys; from pathlib import Path as _Path; _sys.path.insert(0, str(_Path(__file__).resolve().parent))
+
 Two files declare the same intent: `environment.toml` says whether the task
 rewards deliberation, and the run example has to ask the renderer for it. They
 drift the moment one is edited alone, and the drift is silent — the run simply
@@ -14,11 +16,18 @@ import sys
 import tomllib
 from pathlib import Path
 
+from check_reasoning_mode import released
+
 
 def main() -> None:
     descriptor = Path("environment.toml")
     if not descriptor.is_file():
         raise SystemExit("run this from an environment directory")
+    if released(descriptor):
+        # Its descriptor is bound by a reviewed release pin; it declares a mode
+        # when it is next cut.
+        print(json.dumps({"released": True}))
+        return
     reasoning = tomllib.loads(descriptor.read_text())["policy"]["reasoning"]
 
     example = Path("examples/prime_rl/rl.toml")

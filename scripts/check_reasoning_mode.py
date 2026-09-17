@@ -20,10 +20,27 @@ from pathlib import Path
 MODES = ("thinking", "direct")
 
 
+def released(descriptor: Path) -> bool:
+    """Whether a reviewed release pin binds this descriptor's bytes.
+
+    `build_logic_release.py` binds `environment.toml` into the published
+    artifact, so adding a field to a released environment is an act of release
+    rather than an ordinary commit. Those declare their mode when they are next
+    cut, not by breaking their own pin here.
+    """
+    root = Path(__file__).resolve().parents[1]
+    releases = tomllib.loads((root / "compatibility.toml").read_text()).get("releases", {})
+    package = tomllib.loads(descriptor.read_text())["taskset"].replace("-", "_")
+    return package in releases
+
+
 def main() -> None:
     descriptor = Path("environment.toml")
     if not descriptor.is_file():
         raise SystemExit("run this from an environment directory")
+    if released(descriptor):
+        print(json.dumps({"reasoning": None, "released": True}))
+        return
     policy = tomllib.loads(descriptor.read_text()).get("policy") or {}
     reasoning = policy.get("reasoning")
     if reasoning not in MODES:

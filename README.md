@@ -53,6 +53,10 @@ a Qwen3.5 model needs `qwen35`, whose template differs from `qwen3`'s. Only Qwen
 later expose `preserve_thinking`, the knob deciding whether earlier turns keep their
 reasoning in a multi-turn episode.
 
+Two environments are exempt: `reliquary-logic` and `reliquary-stateful-tools` ship under
+reviewed release pins that bind their `environment.toml` bytes, so adding a field there is
+an act of release rather than an ordinary commit. They declare a mode when next cut.
+
 CI checks that a shipped example asks for the mode its environment declared. The two
 files drift the moment one is edited alone, and the drift is silent — the run simply
 trains a mode the environment did not ask for.
