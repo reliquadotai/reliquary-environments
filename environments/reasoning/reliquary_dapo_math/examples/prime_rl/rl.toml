@@ -1,0 +1,115 @@
+# Two-GPU reference run: one training GPU and one inference GPU.
+max_steps = 100
+# Long enough to hold the prompt and the budget `environment.toml` declares.
+# The problems are short — 257 characters on average — and everything else in
+# the window is the derivation.
+seq_len = 32768
+dashboard = false
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+# For a reproducible run, override this with the revision-pinned local snapshot
+# from README.md. Prime-RL v0.9.0 has no model-revision config field.
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[ckpt]
+interval = 5
+keep_last = 3
+keep_interval = 15
+
+[weight_broadcast]
+type = "filesystem"
+
+[monitors.file]
+
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-5
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 32
+group_size = 16
+max_off_policy_steps = 8
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.renderer]
+# Set explicitly: left to auto-resolution a model outside the renderer map
+# falls back to the default renderer, which has no tool support.
+name = "qwen3"
+# Mirrors [policy] reasoning in environment.toml. A Qwen3.5 model needs the
+# "qwen35" renderer instead; the template differs.
+enable_thinking = true
+
+[orchestrator.train]
+filter_zero_advantages = true
+
+[orchestrator.train.sampling]
+temperature = 1.0
+# The budget from [policy] max_new_tokens, and the reason it is not 8,192:
+# competition maths does not fit in 8k, and a rollout cut mid-derivation
+# scores zero for a reason that has nothing to do with the problem. Measured
+# at 16 rollouts per prompt, raising the ceiling here takes the share of
+# groups carrying any gradient from 54.2% to 75.0%.
+max_completion_tokens = 24576
+
+[[orchestrator.train.source]]
+name = "reliquary-dapo-math-train"
+env.taskset.id = "reliquary-dapo-math"
+env.taskset.split = "train"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 1
+
+[orchestrator.train.source.curriculum.gates.zero_signal]
+type = "advantage_range"
+reject_min = 0.0
+reject_max = 0.0
+
+[orchestrator.eval]
+interval = 15
+num_examples = 48
+group_size = 16
+skip_first_step = false
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_p = 1.0
+max_completion_tokens = 24576
+
+[[orchestrator.eval.source]]
+name = "reliquary-dapo-math-eval"
+env.taskset.id = "reliquary-dapo-math"
+env.taskset.split = "eval"
+env.agent.harness.id = "null"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 1
+
+[inference]
+
+[inference.vllm]
+dtype = "bfloat16"
+max_model_len = 32768
+seed = 0
+gpu_memory_utilization = 0.9
+enable_lora = true
+max_lora_rank = 32
