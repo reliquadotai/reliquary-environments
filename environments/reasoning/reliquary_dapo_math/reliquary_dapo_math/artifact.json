@@ -1,0 +1,23 @@
+{
+  "schema": "reliquary/environment-artifact/v1",
+  "environment": "reliquary_dapo_math_v1",
+  "contract": "reliquary/boxed-answer/v1",
+  "distribution": {
+    "name": "reliquary-dapo-math",
+    "version": "0.1.0a1"
+  },
+  "entrypoints": {
+    "taskset": "reliquary_dapo_math:DapoMathTaskset",
+    "replay": "reliquary_dapo_math:DapoMathEnvironment"
+  },
+  "source_manifest_sha256": "607aafd74e788dffbd8919b73861102ba072014203e8c73eda2f523d394a478c",
+  "files": {
+    "reliquary_dapo_math/__init__.py": "d2dfe40bed3916b6aa0dc000376e67e3526e91da07a08fe9e5b20a243aeade40",
+    "reliquary_dapo_math/corpus.py": "73a29c17114009e8e3ebc37583f134525eddf110a3fc6f7c25f3d6523b980874",
+    "reliquary_dapo_math/data/problems.jsonl.gz": "bdbc03c8512668f456efefe61ebbd0de5832bc7da470f68ea57013134d594d7e",
+    "reliquary_dapo_math/environment.py": "6a21534a7c440a4ccadecf900e49a6fe085d4d2872cf3efde7d8b7053faa8c1a",
+    "reliquary_dapo_math/goldens/reference.jsonl": "e1a670c6506d80afe15e1e0ec0a1b40a8b7dc586284d0bd09949c21bd847e151",
+    "reliquary_dapo_math/grading.py": "648325ff2be7f6a08b1e526bf8915ad577bf312efe1df3e43dfffac5efe00cf3",
+    "reliquary_dapo_math/taskset.py": "392fd8266132def1df0b5e1498f0603b6a4bc6bb3e38c4c82cf567834e1b9969"
+  }
+}

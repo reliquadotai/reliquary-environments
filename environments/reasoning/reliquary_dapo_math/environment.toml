@@ -1,0 +1,80 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/dapo-math"
+version = "0.1.0a1"
+taskset = "reliquary-dapo-math"
+entrypoint = "reliquary_dapo_math:DapoMathTaskset"
+compatibility_entrypoint = "reliquary_dapo_math:DapoMathEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["dapo_math"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 1
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["exact_answer"]
+
+[data]
+train = "dapo-math-17k:v1:train"
+eval = "dapo-math-17k:v1:eval"
+qualification = "dapo-math-17k:v1:qualification"
+redistributable = true
+license = "apache-2.0"
+# Shipped in the wheel rather than fetched: the corpus is the task, and a
+# problem that arrived differently is a different environment. `sha256` covers
+# the decompressed body of `data/problems.jsonl.gz`; `source_sha256` covers the
+# parquet it was built from, so the derivation can be rerun and compared.
+source = "BytedTsinghua-SIA/DAPO-Math-17k"
+source_path = "data/dapo-math-17k.parquet"
+source_url = "https://huggingface.co/datasets/BytedTsinghua-SIA/DAPO-Math-17k"
+source_sha256 = "534375d6bb8630d22ab46a56e11f2ffec1d288d8f7d04099bc82d68948705941"
+# The published file repeats each problem a hundred times or more. `rows` is
+# what it holds, `problems` what is distinct in it, and `virtual_length` what
+# ships — the difference is the environment's whole reason for deduplicating.
+rows = 1791700
+problems = 17188
+virtual_length = 17171
+sha256 = "ca4d0d6f2014aa932324938df5229b0e11a1f94d3a4bd9bfc4295ce4306bfa8e"
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary-environments"
+upstream = "https://github.com/BytedTsinghua-SIA/DAPO"
+upstream_license = "Apache-2.0"
+port = "deduplicated-corpus"
+
+[policy]
+# How the policy should be prompted. The environment knows whether its task
+# rewards deliberation; the harness running it does not.
+reasoning = "thinking"
+reasoning_rationale = """
+Competition maths is the one task where the published comparisons agree.
+Every reasoning model reports the same gap on AIME and MATH between a
+chain of thought and an answer given directly, and it is not a few points.
+Nothing here grades the reasoning — only the last boxed integer is read —
+so deliberation costs tokens and never costs reward.
+"""
+# What the task needs in order to be measured at all, rather than what a
+# harness happens to allow.
+max_new_tokens = 24576
+max_new_tokens_rationale = """
+Measured on the policy this environment trains, 16 rollouts per prompt.
+Under an 8,192-token ceiling the environment scores 16.6% and 45.8% of
+groups fail unanimously; at 24,576 it scores 28.9%, unanimous failure falls
+to 22.9%, and the share of groups carrying any gradient rises from 54.2% to
+75.0%. The difference is not difficulty but truncation: a rollout cut in
+the middle of a derivation scores zero for a reason that has nothing to do
+with the problem, so a harness granting less reads a difficulty this corpus
+does not have.
+"""
