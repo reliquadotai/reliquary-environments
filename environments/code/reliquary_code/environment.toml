@@ -1,0 +1,78 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/code"
+version = "0.1.0a2"
+taskset = "reliquary-code"
+entrypoint = "reliquary_code:CodeTaskset"
+compatibility_entrypoint = "reliquary_code:CodeEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["open_code_instruct"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 1
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["passing_cases"]
+
+[data]
+# The three roles read the same pinned rows, and the repetition is deliberate
+# rather than an oversight. Row order is this corpus's identity: index `i` here
+# is index `i` in Reliquary core at the same revision, which is what lets this
+# package stand in for core's `opencodeinstruct` without invalidating a single
+# archived rollout. Hash-derived splits, as the siblings ship, would buy an
+# honest eval slice at the cost of that correspondence. The held-out slice a
+# training run needs is taken by `--num-examples`, not by a second split id.
+train = "hf:R0mAI/opencodeinstruct-curated@d3caaefc3b46f8642b251f9efaeccf0d1e95b0a7"
+eval = "hf:R0mAI/opencodeinstruct-curated@d3caaefc3b46f8642b251f9efaeccf0d1e95b0a7"
+qualification = "hf:R0mAI/opencodeinstruct-curated@d3caaefc3b46f8642b251f9efaeccf0d1e95b0a7"
+redistributable = true
+license = "cc-by-4.0"
+rows = 2481806
+virtual_length = 2481806
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary"
+source_commit = "10c2a4d907e4beaedbc72272ebf8bd92d211fc67"
+source_environment = "opencodeinstruct"
+port = "generator-identical-new-identity"
+
+[policy]
+# How the policy should be prompted. The environment knows whether its task
+# rewards deliberation; the harness running it does not.
+reasoning = "thinking"
+reasoning_rationale = """
+This environment was repaired precisely so that reasoning is safe here, so
+asking for it is not a preference. Under "last fenced block wins", a rollout
+that closed with a usage demo or a test block had that span executed instead
+of its implementation — 13.1% of code rollouts at the v5 cutover — and a
+correct solution scored zero. Group-relative advantage turned those zeros into
+"never open a second block", which the policy generalised into "never reason".
+The extractor now selects the last block that defines the entry function, so
+deliberation costs tokens and cannot cost reward.
+"""
+# What the task needs in order to be measured at all, rather than what a
+# harness happens to allow.
+max_new_tokens = 8192
+max_new_tokens_rationale = """
+Measured on the policy this environment trains, 16 rollouts per prompt, 96
+prompts strided across the whole corpus. At 8,192 tokens the band carrying any
+gradient is 45.8%; at 24,576 it falls to 42.7%. Raising the budget is not
+neutral here, it is worse, and the failure split says why: in-band failures at
+8,192 are 50.7% truncation, at 24,576 only 17.7%, and the groups that stop
+being truncated do not become harder, they become unanimous — the too-easy
+share rises from 21.9% to 24.0%. The budget was never the constraint. A Python
+function that passes its cases is short, and the sibling maths environment
+needs 24,576 for the opposite and equally measured reason: a derivation is not.
+"""
