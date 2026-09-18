@@ -114,6 +114,21 @@ class CodeEnvironment:
     def replay(self, index: int, completion: str) -> dict[str, Any]:
         return {"reward": self.grade(index, completion)}
 
+    def admission_reward_cases(self, index: int) -> list[dict[str, Any]]:
+        """Hand the cases over instead of grading with them.
+
+        `grade` runs the candidate's Python in this package's own subprocess,
+        under its own rlimits, which is right for a test or a local eval and
+        wrong for a validator: those limits are not a containment boundary,
+        as the README says plainly. A validator asks for the cases instead and
+        sends them to the grading service it already runs, so the corpus and
+        the task definition stay here while execution stays there.
+
+        The cases are copied on the way out, because the caller is free to
+        mutate what it receives and the corpus is cached.
+        """
+        return [dict(case) for case in self._row(index)["structured_cases"]]
+
     def known_wrong_completion(self, index: int) -> str:
         """There is no reference program in this corpus (unlike
         `reliquary_math`'s `reference_completion`, which returns an answer

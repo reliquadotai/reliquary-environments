@@ -498,6 +498,38 @@ def test_prompt_carries_the_case_contract(monkeypatch) -> None:
     assert "Add one to the given integer" in task["prompt"]
 
 
+def test_the_cases_can_be_handed_over_instead_of_graded_with() -> None:
+    """A validator does not grade with this package's runner: its limits are
+    not a containment boundary, and it says so. It asks for the cases and
+    sends them to the grading service it already runs."""
+    environment = taskset.CodeEnvironment()
+    cases = environment.admission_reward_cases(0)
+    assert isinstance(cases, list) and cases
+    assert all(isinstance(case, dict) for case in cases)
+    assert all("entry" in case for case in cases)
+
+
+def test_handed_over_cases_are_copies() -> None:
+    """The corpus is cached, so a caller mutating what it received must not
+    reach back into it."""
+    environment = taskset.CodeEnvironment()
+    first = environment.admission_reward_cases(0)
+    first[0]["expected"] = "tampered"
+    assert environment.admission_reward_cases(0)[0]["expected"] != "tampered"
+
+
+def test_handed_over_cases_are_the_ones_grading_uses() -> None:
+    """If the two diverged, a validator would execute one set of cases while
+    the package's own replay checked another, and an honest miner would be
+    rejected on a reward mismatch neither side could explain."""
+    environment = taskset.CodeEnvironment()
+    from reliquary_code import corpus
+
+    assert environment.admission_reward_cases(3) == (
+        corpus.get_problem(3)["structured_cases"]
+    )
+
+
 def test_package_exports_exactly_two_names() -> None:
     import reliquary_code
 

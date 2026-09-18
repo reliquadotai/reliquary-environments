@@ -58,7 +58,17 @@ assert extract_python(reasoned) == "print(solve(1))"
 environment = CodeEnvironment("train")
 assert environment.max_turns == 1
 assert environment.validator_authoritative_reward is True
-surface = {"task", "grade", "replay", "known_wrong_completion"}
+surface = {
+    "task",
+    "grade",
+    "replay",
+    "known_wrong_completion",
+    # The relay a validator uses instead of `grade`: it takes the cases and
+    # runs them in the service it already operates, rather than trusting this
+    # package's rlimits with model-written Python. Missing from the wheel, an
+    # environment would be admitted and then supply nothing.
+    "admission_reward_cases",
+}
 assert surface <= set(dir(CodeEnvironment)), sorted(surface - set(dir(CodeEnvironment)))
 
 print("wheel verified")
