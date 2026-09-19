@@ -397,7 +397,7 @@ def test_the_manifest_declares_the_budget_the_task_needs() -> None:
     policy = _manifest()["policy"]
     assert policy["reasoning"] == "thinking"
     assert policy["reasoning_rationale"].strip()
-    assert policy["max_new_tokens"] == 24576
+    assert policy["max_new_tokens"] == 32768
     assert policy["max_new_tokens_rationale"].strip()
 
     run = tomllib.loads(

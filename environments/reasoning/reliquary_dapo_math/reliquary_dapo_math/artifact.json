@@ -10,7 +10,7 @@
     "taskset": "reliquary_dapo_math:DapoMathTaskset",
     "replay": "reliquary_dapo_math:DapoMathEnvironment"
   },
-  "source_manifest_sha256": "607aafd74e788dffbd8919b73861102ba072014203e8c73eda2f523d394a478c",
+  "source_manifest_sha256": "21164099d0d8c6cddfd3434f1230c897492d433956a6f387749c4fbdb3ef2f1e",
   "files": {
     "reliquary_dapo_math/__init__.py": "d2dfe40bed3916b6aa0dc000376e67e3526e91da07a08fe9e5b20a243aeade40",
     "reliquary_dapo_math/corpus.py": "73a29c17114009e8e3ebc37583f134525eddf110a3fc6f7c25f3d6523b980874",

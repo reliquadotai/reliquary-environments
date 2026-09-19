@@ -67,14 +67,24 @@ so deliberation costs tokens and never costs reward.
 """
 # What the task needs in order to be measured at all, rather than what a
 # harness happens to allow.
-max_new_tokens = 24576
+max_new_tokens = 32768
 max_new_tokens_rationale = """
-Measured on the policy this environment trains, 16 rollouts per prompt.
-Under an 8,192-token ceiling the environment scores 16.6% and 45.8% of
-groups fail unanimously; at 24,576 it scores 28.9%, unanimous failure falls
-to 22.9%, and the share of groups carrying any gradient rises from 54.2% to
-75.0%. The difference is not difficulty but truncation: a rollout cut in
-the middle of a derivation scores zero for a reason that has nothing to do
-with the problem, so a harness granting less reads a difficulty this corpus
-does not have.
+Measured on the policy this environment trains, 16 rollouts per prompt, 96
+problems strided across the corpus. Three ceilings, one probe:
+
+  8,192   16.6% solved,  45.8% of groups fail unanimously
+ 24,576   28.4% solved,  26.0% unanimous, 41.0% of rollouts truncated
+ 32,768   30.9% solved,  17.7% unanimous, 33.7% truncated
+
+Every column improves together, which is what says the ceiling is still the
+binding constraint and not the corpus. What it buys is not mainly the extra
+answers: it is the groups. A group whose sixteen rollouts all run out of room
+scores zero everywhere, carries no variance, and is discarded before it trains
+anything — so a third of the measured gain at each step is dead groups coming
+back to life.
+
+The first version of this file declared 24,576 on the two-point comparison
+alone. That was already an improvement over 8,192 and still left 41% of
+rollouts cut mid-derivation. Competition mathematics does not fit in a budget
+chosen for answering a question.
 """
