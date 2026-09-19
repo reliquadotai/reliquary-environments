@@ -28,7 +28,7 @@
     "reliquary_telecom_solo/data/tech_support_workflow_solo.md": "b174d1f9705b5d7df49468daf99560a5633f86d23e10499a1166a7753706a412",
     "reliquary_telecom_solo/data/tool_schemas.json": "92124e2900cbdc2820c4944494d8146daf862b73cd37a66365c51ae61d9276d9",
     "reliquary_telecom_solo/data/user_db.toml": "4886107ea0c16f8e16d74bef91cfb557de61822afe9361f5a9b241806aea2e4c",
-    "reliquary_telecom_solo/environment.py": "6aadaf59760fc8a8c8f4e1ccbc78d0f47c469739d3684a0130294e1c2e564b24",
+    "reliquary_telecom_solo/environment.py": "5c9ed6949eca030ef8fecd30df2bc6de33c91c9fac2365f106da3ab82266b466",
     "reliquary_telecom_solo/goldens/reference.jsonl": "8fdfab9e53e59e0a4ae9b0ff8394c73b5561dace5263a39b0f48fa27b7aa1f34",
     "reliquary_telecom_solo/grading.py": "a1a1e70f279703a632a9ec8464cc72712aedfcebb43047029221cbaf6234e17b",
     "reliquary_telecom_solo/taskset.py": "889d0031e59f56efb226691bea6dc9427df0dceae90160eb3b74b96c445e4ae8"

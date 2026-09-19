@@ -112,6 +112,23 @@ def build_world(task: Task) -> TelecomSoloWorld:
     return world
 
 
+def _world(state: Mapping[str, Any]) -> TelecomSoloWorld:
+    """The live world an episode's state describes.
+
+    The state holds the two databases as JSON rather than the world object,
+    because a consumer of the replay surface refuses anything that is not plain
+    JSON: a live object crossing that boundary is what it exists to stop, and a
+    state that is data can change process or be read back without depending on
+    one. The world is nothing but those two databases with tools over them, so
+    it rebuilds exactly — its digest survives forty round trips unchanged, and
+    forty cost about sixteen milliseconds together.
+    """
+    return TelecomSoloWorld(
+        TelecomDB.model_validate(state["db"]),
+        TelecomUserDB.model_validate(state["user_db"]),
+    )
+
+
 def _snapshot(world: TelecomSoloWorld) -> dict[str, Any]:
     """Both databases as JSON, for an episode record that has to travel."""
     return {
@@ -217,7 +234,7 @@ class TelecomSoloEnvironment:
         return {
             "state": {
                 "seed": int(seed),
-                "world": build_world(self._task(index)),
+                **_snapshot(build_world(self._task(index))),
                 "calls": [],
                 "errors": 0,
                 "stopped": False,
@@ -244,7 +261,7 @@ class TelecomSoloEnvironment:
             state["stopped"] = True
             return {"ok": True, "content": STOP_TOKEN}
 
-        world: TelecomSoloWorld = state["world"]
+        world = _world(state)
         state["calls"].append({"tool": tool, "arguments": dict(arguments)})
         try:
             if not world.has_tool(tool):
@@ -254,7 +271,12 @@ class TelecomSoloEnvironment:
             content = to_json_str(world.call(tool, dict(arguments)))
         except Exception as error:  # noqa: BLE001 - upstream reports, never raises
             state["errors"] = int(state["errors"]) + 1
+            # A failing call can still have written to the world before it
+            # raised, and upstream keeps whatever it wrote — so the state has
+            # to take the world as it now is, not as it was before the call.
+            state.update(_snapshot(world))
             return {"ok": False, "content": f"Error: {error}"}
+        state.update(_snapshot(world))
         return {"ok": True, "content": content}
 
     def step(
@@ -307,7 +329,7 @@ class TelecomSoloEnvironment:
         actions: Sequence[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         del actions
-        report = grade(self._task(index), state["world"], state["calls"])
+        report = grade(self._task(index), _world(state), state["calls"])
         # The replay surface speaks the consumer's contract, which accepts these
         # five fields and refuses any other: an unknown field is how contract
         # drift gets caught, so the consumer is right to be strict. The full
@@ -346,7 +368,7 @@ class TelecomSoloEnvironment:
         reward = self.grade(index, state)
         return {
             "task": self.task(index),
-            "state": _snapshot(state["world"]),
+            "state": {"db": state["db"], "user_db": state["user_db"]},
             "events": events,
             "actions": applied,
             "termination_reason": reason,
