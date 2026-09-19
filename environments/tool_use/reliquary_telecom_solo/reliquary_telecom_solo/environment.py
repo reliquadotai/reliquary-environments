@@ -13,6 +13,7 @@ actions returns the same reward and, which matters more, the same transcript.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -119,6 +120,51 @@ def _snapshot(world: TelecomSoloWorld) -> dict[str, Any]:
     }
 
 
+# What a consumer of the replay surface is promised about a grade — and no
+# more, because the consumer refuses fields it does not know.
+_REPLAY_REPORT_FIELDS = (
+    "reward",
+    "success",
+    "checks",
+    "state_digest",
+    "environment_error",
+)
+
+
+def _replay_task_id(task: Task) -> str:
+    """An identifier the replay consumer can hold.
+
+    Upstream names a ticket after every fault injected into it —
+    `[mms_issue]airplane_mode_on|bad_network_preference|...` — which runs to 215
+    characters, and the consumer caps an id at 128. Over half the corpus
+    exceeds it, and it fails per task rather than at load, so it would have
+    surfaced mid-window on whichever long ticket was drawn first. The digest
+    of the key is unique and always fits; the key itself moves to the metadata,
+    where the reader who wants it will look. The consumer does not recover the
+    task from this id — it keeps the source index separately — so shortening
+    it changes nothing about which ticket is replayed.
+    """
+    return hashlib.sha256(task.key.encode("utf-8")).hexdigest()
+
+
+def _replay_tool(schema: Mapping[str, Any]) -> dict[str, Any]:
+    """A tool as the replay surface's consumer describes one.
+
+    `tool_schemas()` keeps the OpenAI shape — a `{"type": "function",
+    "function": {...}}` envelope, with `x-side` and `x-mutates-state`
+    extensions — because the Verifiers taskset and the chat APIs read it that
+    way. The replay consumer wants the three fields a tool actually has to
+    have, and refuses the rest: the envelope, and two extensions it has no
+    field to hold. Nothing it uses is dropped.
+    """
+    function = schema["function"]
+    return {
+        "name": function["name"],
+        "description": function["description"],
+        "parameters": dict(function["parameters"]),
+    }
+
+
 class TelecomSoloEnvironment:
     """Synchronous, JSON-shaped ABI used by Reliquary replay and local tests."""
 
@@ -142,10 +188,13 @@ class TelecomSoloEnvironment:
     def task(self, index: int) -> dict[str, Any]:
         task = self._task(index)
         return {
-            "id": task.key,
+            "id": _replay_task_id(task),
             "prompt": prompt_for(task),
-            "tools": [dict(schema) for schema in tool_schemas()],
+            "tools": [_replay_tool(schema) for schema in tool_schemas()],
             "metadata": {
+                # The readable name, kept: it lists every fault injected into
+                # the ticket, which is what a person debugging a rollout wants.
+                "key": task.key,
                 "task_family": TASK_FAMILY,
                 "family": task.family,
                 "reward_basis": list(task.reward_basis),
@@ -258,7 +307,23 @@ class TelecomSoloEnvironment:
         actions: Sequence[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         del actions
-        return grade(self._task(index), state["world"], state["calls"])
+        report = grade(self._task(index), state["world"], state["calls"])
+        # The replay surface speaks the consumer's contract, which accepts these
+        # five fields and refuses any other: an unknown field is how contract
+        # drift gets caught, so the consumer is right to be strict. The full
+        # report, breakdown and checker version included, stays available from
+        # `grading.grade` for anyone reading it directly.
+        projected = {field: report[field] for field in _REPLAY_REPORT_FIELDS}
+        # Upstream's digest is two hashes joined by a colon — the carrier's
+        # records and the customer's device, each hashed on its own side — and
+        # the consumer takes one SHA-256. Folding the pair into a single hash
+        # keeps what it is for: equal worlds give equal digests, and a change to
+        # either database changes it. The vendored code that produces the pair
+        # is left as upstream wrote it.
+        projected["state_digest"] = hashlib.sha256(
+            report["state_digest"].encode("utf-8")
+        ).hexdigest()
+        return projected
 
     def replay(
         self,

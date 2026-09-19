@@ -488,7 +488,11 @@ class TelecomSoloTaskset(vf.Taskset[TelecomSoloTask, TelecomSoloConfig]):
                     idx=index,
                     prompt=task["prompt"],
                     network_allow=[],
-                    task_id=task["id"],
+                    # The readable key, not the replay id: the replay surface
+                    # shortens it to a digest for a consumer that caps ids at
+                    # 128 characters, and Verifiers has no such cap. Taking
+                    # the key keeps this path exactly as it was.
+                    task_id=metadata["key"],
                     family=metadata["family"],
                     reward_basis=tuple(metadata["reward_basis"]),
                     assertions=metadata["assertions"],
