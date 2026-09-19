@@ -3,7 +3,7 @@ max_steps = 100
 # Long enough to hold the prompt and the budget `environment.toml` declares.
 # The problems are short — 257 characters on average — and everything else in
 # the window is the derivation.
-seq_len = 32768
+seq_len = 40960
 dashboard = false
 
 [deployment]
@@ -68,7 +68,7 @@ temperature = 1.0
 # scores zero for a reason that has nothing to do with the problem. Measured
 # at 16 rollouts per prompt, raising the ceiling here takes the share of
 # groups carrying any gradient from 54.2% to 75.0%.
-max_completion_tokens = 24576
+max_completion_tokens = 32768
 
 [[orchestrator.train.source]]
 name = "reliquary-dapo-math-train"
@@ -93,7 +93,7 @@ skip_first_step = false
 [orchestrator.eval.sampling]
 temperature = 1.0
 top_p = 1.0
-max_completion_tokens = 24576
+max_completion_tokens = 32768
 
 [[orchestrator.eval.source]]
 name = "reliquary-dapo-math-eval"
@@ -108,7 +108,7 @@ env.agent.max_turns = 1
 
 [inference.vllm]
 dtype = "bfloat16"
-max_model_len = 32768
+max_model_len = 40960
 seed = 0
 gpu_memory_utilization = 0.9
 enable_lora = true

@@ -10,7 +10,7 @@
     "taskset": "reliquary_instruction_following:InstructionFollowingTaskset",
     "replay": "reliquary_instruction_following:InstructionFollowingEnvironment"
   },
-  "source_manifest_sha256": "6201bfa22d342408da2632f888d47bb5bb710d0eda5bbb77960e2c694163caf2",
+  "source_manifest_sha256": "0d6d219c2165eabdfc1c774f80e52ab20968ca4ab1de8fa0528902b0b79c03a2",
   "files": {
     "reliquary_instruction_following/__init__.py": "7cc9929cff5778cd7b2fad08613641b2150a77e7642aab9a4b13425248fb76c0",
     "reliquary_instruction_following/_ifeval/LICENSE": "b998a796c55d006a974a48c73aa32674e6901e8d49aa98d74722e0c1063b40b6",

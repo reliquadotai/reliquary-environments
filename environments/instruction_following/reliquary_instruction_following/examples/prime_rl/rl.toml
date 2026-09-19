@@ -1,6 +1,7 @@
 # Two-GPU reference run: one training GPU and one inference GPU.
 max_steps = 100
-seq_len = 2048
+# Room for the 8,192-token budget environment.toml declares, plus its prompt.
+seq_len = 16384
 dashboard = false
 
 [deployment]
@@ -53,7 +54,7 @@ type = "grpo"
 name = "qwen3"
 # Mirrors [policy] reasoning in environment.toml. A Qwen3.5 model needs the
 # "qwen35" renderer instead; the template differs.
-enable_thinking = true
+enable_thinking = false
 
 [orchestrator.train]
 filter_zero_advantages = true
@@ -64,7 +65,7 @@ temperature = 1.0
 # A budget that truncates mid-answer does not produce a near miss: it breaks
 # whichever constraint speaks about the end of the text, and the group learns
 # from a length accident rather than from the instruction.
-max_completion_tokens = 1024
+max_completion_tokens = 8192
 
 [[orchestrator.train.source]]
 name = "reliquary-instruction-following-train"
@@ -89,7 +90,7 @@ skip_first_step = false
 [orchestrator.eval.sampling]
 temperature = 1.0
 top_p = 1.0
-max_completion_tokens = 1024
+max_completion_tokens = 8192
 
 [[orchestrator.eval.source]]
 name = "reliquary-instruction-following-eval"
@@ -104,7 +105,7 @@ env.agent.max_turns = 1
 
 [inference.vllm]
 dtype = "bfloat16"
-max_model_len = 2048
+max_model_len = 16384
 seed = 0
 gpu_memory_utilization = 0.9
 enable_lora = true

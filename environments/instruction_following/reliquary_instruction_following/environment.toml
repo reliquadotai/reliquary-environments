@@ -66,15 +66,37 @@ port = "vendored-checkers"
 [policy]
 # How the policy should be prompted. The environment knows whether its task
 # rewards deliberation; the harness running it does not.
-reasoning = "thinking"
+reasoning = "direct"
 reasoning_rationale = """
-Contested, and set deliberately. Nemotron-Cascade 1 runs this stage
-directly, arguing a rule verifier will pay for a bad answer and that a
-long chain of thought gives a policy more room to find one. Nemotron-
-Cascade 2 reverses it four months later, reaching state of the art on
-IFBench with deliberation on and publishing no numbers for the degradation
-it claims. Neither ran the matched comparison. Thinking is chosen because
-the failure to watch for is an answer that satisfies every constraint
-while saying nothing, which a sample makes visible; flip this if it
-appears.
+Flipped from thinking on the matched comparison the two published positions
+never ran. Nemotron-Cascade 1 runs this stage directly; Cascade 2 reverses it
+with deliberation on and no numbers for the difference. The first version of
+this file chose thinking and said to flip it if the evidence appeared. It did:
+
+  same 48 prompts, same policy, 16 rollouts, graded identically
+  thinking   10.2% solved,  4.2% of groups carry gradient, 1,274 words
+  direct     21.5% solved, 37.5% of groups carry gradient,   242 words
+
+The cause is specific to how this environment grades, not to deliberation as
+such. Every verifier reads the whole completion — there is no answer span to
+extract — so under thinking it checks a thousand words of reasoning against
+constraints written for the answer: all lowercase, no commas, an exact number
+of paragraphs. A policy that closed its reasoning block cleanly would not pay
+this, and the comparison should be rerun on one; the policy measured here
+never closes it, in 0 of 3,072 rollouts across three environments.
+
+The sibling that grades a world instead of a string goes the other way:
+telecom-solo scores 28.1% band thinking and 25.0% direct, because what the
+model writes there never reaches the grade. Deliberation costs only where the
+grader reads it.
+"""
+# What the task needs in order to be measured at all, rather than what a
+# harness happens to allow.
+max_new_tokens = 8192
+max_new_tokens_rationale = """
+Measured direct, 48 prompts, 16 rollouts. The longest completion that ended on
+its own ran to 3,364 words, about 4,500 tokens, and the median is 214. The
+8.9% that reach the ceiling are loops rather than long answers — nothing that
+finishes comes near it — so a higher ceiling would buy room for degeneracy
+and nothing else.
 """
