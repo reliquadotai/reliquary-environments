@@ -564,14 +564,37 @@ def test_the_prompt_carries_the_ticket_and_the_solo_policy() -> None:
 
 
 def test_the_task_identity_follows_the_ticket() -> None:
-    """A task is named after the ticket it grades, whatever index it sits at."""
-    keys = {
-        split: [TelecomSoloEnvironment(split).task(i)["id"] for i in range(5)]
+    """A task is named after the ticket it grades, whatever index it sits at.
+
+    Named by a digest of the ticket's key rather than the key itself: upstream
+    keys list every injected fault and run to 215 characters, past the 128 a
+    replay consumer accepts. The readable key travels in the metadata.
+    """
+    import hashlib
+
+    tasks = {
+        split: [TelecomSoloEnvironment(split).task(i) for i in range(5)]
         for split in corpus.SPLITS
     }
-    for split, ids in keys.items():
-        assert ids == [task.key for task in corpus.rows(split)[:5]]
-    assert len({key for ids in keys.values() for key in ids}) == 15
+    for split, issued in tasks.items():
+        expected = [task.key for task in corpus.rows(split)[:5]]
+        assert [task["metadata"]["key"] for task in issued] == expected
+        assert [task["id"] for task in issued] == [
+            hashlib.sha256(key.encode("utf-8")).hexdigest() for key in expected
+        ]
+    ids = {task["id"] for issued in tasks.values() for task in issued}
+    assert len(ids) == 15
+    assert all(len(task_id) <= 128 for task_id in ids)
+
+
+def test_every_task_id_fits_a_replay_consumer() -> None:
+    """Over half of upstream's keys exceed 128 characters, and the failure is
+    per task rather than at load — so the check is over the whole corpus, not a
+    sample, or it would pass on the short tickets and miss the long ones."""
+    for split in corpus.SPLITS:
+        environment = TelecomSoloEnvironment(split)
+        for index in range(len(environment)):
+            assert 1 <= len(environment.task(index)["id"]) <= 128
 
 
 def test_state_is_not_shared_between_episodes() -> None:
