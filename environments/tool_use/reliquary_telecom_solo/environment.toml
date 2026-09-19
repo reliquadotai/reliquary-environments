@@ -68,4 +68,39 @@ reasoning = "thinking"
 reasoning_rationale = """
 Twenty dependent steps against a device database, with a twenty-kilobyte
 troubleshooting manual to hold in working memory.
+
+Measured, not only argued. Same 32 tickets, same policy, 16 episodes each:
+thinking reaches a 28.1% band and ends 49% of episodes by calling `done`;
+direct reaches 25.0% and ends only 30% that way, looping to the forty-turn
+limit eight times as often. Without deliberation the policy acts more — 27
+calls against 21 — and plans less.
+
+This is the opposite of what instruction-following measured, and the
+difference is what each one grades. That environment reads the whole
+completion, so reasoning is judged against constraints written for the
+answer. This one reads the device and the carrier's records after the last
+call, so nothing the model writes reaches the grade — deliberation is free
+here, and it helps.
+"""
+# What the task needs in order to be measured at all, rather than what a
+# harness happens to allow. Per TURN: this is an episode, and each turn is one
+# generation ending in a tool call.
+max_new_tokens = 4096
+max_new_tokens_rationale = """
+Measured per turn over 11,308 turns with the ceiling raised to 16,384 so that
+nothing stopped at the old cap. Median 223 tokens, p99 2,001. The fraction of
+turns a ceiling would cut:
+
+   2,048   0.93%
+   4,096   0.14%
+   8,192   0.11%
+  16,384   0.11%
+
+Everything above 4,096 buys three hundredths of a percent, and the twelve
+turns that reach 16,384 are loops that would reach any ceiling. Of 244
+episodes ending on an invalid action, 12 had their last turn cut; the rest
+chose prose over a call, which is a behaviour and not a budget.
+
+A whole episode generates 8,068 tokens at the median, 22,494 at p99 and
+24,324 at most, which is the figure an episode-level cap has to clear.
 """
