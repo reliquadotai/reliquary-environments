@@ -20,7 +20,7 @@
     "reliquary_telecom_solo/_tau2/toolkit.py": "4a1ef1b5a550d5c022f30d70afecdc7f501cec62fb202e7da04ea4b45868d4b1",
     "reliquary_telecom_solo/_tau2/tools.py": "b5fe051148ac4ea1d4155fe6edf123b38ab2084e7eb6fa3bd4c453d7b1c748f7",
     "reliquary_telecom_solo/_tau2/user_data_model.py": "d3f36edb85e941ef070c3a8298e1c90a92517fcb0ae58ec23d298e7d4bd8bc54",
-    "reliquary_telecom_solo/_tau2/user_tools.py": "da6bd768a5b8b2af237e9e5b09debdf02cc67bb201c3cd582d9bf5c2ea95b238",
+    "reliquary_telecom_solo/_tau2/user_tools.py": "336c224eab2180da6f31fc73b7441e6c923a5235372eda0964c347c16579a1a7",
     "reliquary_telecom_solo/corpus.py": "5dc7ce3f7a0f950ae26ff5e086f648d016a5a1c02722271704f508b64068f589",
     "reliquary_telecom_solo/data/db.toml": "562d647ef9d7df8df91eafd8ee76036e707c8f9e32aaedc4a7fde06975aea2c0",
     "reliquary_telecom_solo/data/main_policy_solo.md": "781296ae5419169cb64aac0c4fa2aa6129c78f3c1592f64abd80df6fbabb7042",

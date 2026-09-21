@@ -791,3 +791,26 @@ def test_artifact_manifest_hashes_installed_files() -> None:
     )
     for name, expected in artifact["files"].items():
         assert hashlib.sha256(root.joinpath(name).read_bytes()).hexdigest() == expected
+
+
+def test_apn_settings_refuse_what_is_not_settings() -> None:
+    """A bad argument must fail the call, not poison the state it is read from.
+
+    Stored unvalidated, it raised only when the next turn rebuilt the world
+    from the state — past everything that reports a failed call — and took the
+    episode with it: three of sixty-four measured on an H200 (20-09).
+    """
+    db, user_db = corpus.databases()
+    world = TelecomSoloWorld(
+        TelecomDB.model_validate(db), TelecomUserDB.model_validate(user_db)
+    )
+
+    with pytest.raises(Exception):
+        world.call("set_apn_settings", {"apn_settings": "broken"})
+
+    # The world is still readable, which is what the episode depends on.
+    TelecomUserDB.model_validate(world.user_db.model_dump(mode="json"))
+
+    world.call("set_apn_settings", {"apn_settings": {"apn_name": "internet"}})
+    restored = TelecomUserDB.model_validate(world.user_db.model_dump(mode="json"))
+    assert restored.device.active_apn_settings.apn_name.value == "internet"

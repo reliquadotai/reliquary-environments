@@ -607,8 +607,12 @@ class TelecomUserTools(ToolKitBase):
     @is_tool(ToolType.WRITE)
     def set_apn_settings(self, apn_settings: Union[APNSettings, dict]) -> str:
         """Sets the APN settings for the phone."""
-        if isinstance(apn_settings, dict):
-            apn_settings = APNSettings(**apn_settings)
+        if not isinstance(apn_settings, APNSettings):
+            # An agent calls this with whatever it wrote. Anything that is not
+            # settings has to be refused here, where the toolkit reports it as a
+            # failed call: stored unvalidated, it only raises when the state is
+            # read back a turn later, outside anything that handles it.
+            apn_settings = APNSettings.model_validate(apn_settings)
         status_update = self._set_apn_settings(apn_settings)
         self.simulate_network_search()
         return f"{status_update}\nStatus Bar: {self._check_status_bar()}"
