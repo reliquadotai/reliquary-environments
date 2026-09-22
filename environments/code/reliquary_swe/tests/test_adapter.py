@@ -29,3 +29,13 @@ def test_the_test_command_names_the_tests_it_was_given():
     known_test = row.fail_to_pass[0]
     argv = swe_adapter.test_command(row, (known_test,))
     assert any(known_test.split("::")[0] in part for part in argv)
+
+
+def test_command_matches_the_specs_test_cmd_for_this_repo_and_version():
+    # Checked by hand against swebench==3.0.17:
+    # MAP_REPO_VERSION_TO_SPECS["astropy/astropy"]["4.3"]["test_cmd"] == "pytest -rA".
+    # Pinning both the row's version and the resulting argv catches either the
+    # corpus or the spec lookup drifting silently.
+    row = _row(INSTANCE)
+    assert row.version == "4.3"
+    assert swe_adapter.test_command(row, ()) == ["pytest", "-rA"]

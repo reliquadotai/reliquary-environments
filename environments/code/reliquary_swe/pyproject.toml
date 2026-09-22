@@ -13,6 +13,12 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
   "verifiers==0.3.1",
   "datasets>=2.19",
+  # Pinned to the 3.x line deliberately, not just at its latest patch: 4.0.0+
+  # moved to a "task repo" model where swebench needs an `image`/`log_parser`/
+  # `eval_script` already computed on the instance, which the raw
+  # SWE-bench_Verified rows this package loads do not carry. 3.x still exposes
+  # the (repo, version) -> spec API (`MAP_REPO_VERSION_TO_SPECS`) our corpus
+  # shape matches (see reliquary_swe/swe_adapter.py's module docstring).
   "swebench==3.0.17",
 ]
 classifiers = [

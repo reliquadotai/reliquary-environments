@@ -32,6 +32,7 @@ class SweRow:
     instance_id: str
     repo: str
     base_commit: str
+    version: str
     problem_statement: str
     fail_to_pass: tuple[str, ...]
     pass_to_pass: tuple[str, ...]
@@ -57,6 +58,7 @@ def load_rows(split: str = "eval") -> tuple[SweRow, ...]:
             instance_id=row["instance_id"],
             repo=row["repo"],
             base_commit=row["base_commit"],
+            version=row["version"],
             problem_statement=row["problem_statement"],
             fail_to_pass=_tests(row["FAIL_TO_PASS"]),
             pass_to_pass=_tests(row["PASS_TO_PASS"]),

@@ -10,6 +10,9 @@ def test_rows_carry_everything_grading_needs():
     assert row.instance_id
     assert row.repo
     assert len(row.base_commit) == 40
+    # MAP_REPO_VERSION_TO_SPECS is keyed by (repo, version); without this,
+    # the swebench adapter's spec lookup has to guess.
+    assert row.version.strip()
     assert row.problem_statement.strip()
     # An instance with no fail-to-pass test cannot express failure, so it
     # cannot express success either.

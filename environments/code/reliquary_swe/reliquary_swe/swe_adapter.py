@@ -22,10 +22,10 @@ implementation plan, Task 2 Step 1, for how these were found):
         same.
     swebench.harness.log_parsers.MAP_REPO_TO_PARSER -- repo -> the function that
         turns one repository's raw test output into a {test name: status} map.
-    swebench.harness.test_spec.test_spec.TestSpec -- its `instance_image_key`
-        property is the actual image-naming logic; see `image_for` for why this
-        module constructs one directly instead of going through the upstream
-        `make_test_spec` factory.
+    swebench.harness.test_spec.test_spec.TestSpec -- `instance_image_key`
+        reads only `instance_id`/`arch`/`namespace`/`instance_image_tag`; see
+        `image_for` for why this module still constructs one directly rather
+        than going through the upstream `make_test_spec` factory.
 
 3.0.17 was chosen deliberately over the 4.x/5.x line: starting at 4.0.0,
 swebench moved to a "task repo" model where `image`, `log_parser` and
@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import platform
 import shlex
-from collections import Counter
 
 from swebench.harness.constants import (
     END_TEST_OUTPUT,
@@ -67,9 +66,9 @@ def _arch(instance_id: str) -> str:
     `swebench.harness.test_spec.test_spec`): every instance is x86_64 unless
     the host itself is arm64, in which case a named few (`USE_X86`) still have
     no arm64 image and stay on x86_64. Duplicated rather than called because
-    `make_test_spec` only reaches this decision after building the (repo,
-    version) install scripts this module has no `version` to look up (see
-    `image_for`).
+    `make_test_spec` reaches this decision only after building the repo's
+    install/eval scripts first -- see `image_for` for why this module never
+    calls that factory at all.
     """
     if platform.machine() not in {"aarch64", "arm64"}:
         return "x86_64"
@@ -80,19 +79,26 @@ def image_for(row: SweRow) -> str:
     """The prebuilt evaluation image holding this instance's repository.
 
     SWE-bench Verified publishes one already-built image per instance; its
-    name and tag are `TestSpec.instance_image_key`. Going through the normal
-    factory (`make_test_spec`) to reach that property would additionally
-    require the repo's per-version install/eval scripts, which need a
-    `version` -- a field `SweRow` deliberately does not carry (Task 1: corpus
-    questions must be answerable without it). `instance_image_key` itself only
-    reads `instance_id`, `arch`, `namespace` and the tag, so this builds the
-    `TestSpec` directly with the rest left empty, reaching the real upstream
-    naming code without inventing data this row does not have.
+    name and tag are `TestSpec.instance_image_key`, which reads only
+    `instance_id`, `arch`, `namespace` and the tag -- nothing version- or
+    script-specific. Going through the normal factory (`make_test_spec`) to
+    reach that same property would build the repo's install/env/eval scripts
+    too, and building those makes real HTTP calls out to GitHub
+    (`swebench.harness.test_spec.python.get_requirements`/
+    `get_environment_yml`, both `requests.get` against
+    raw.githubusercontent.com at a pinned commit) to fetch a
+    requirements/environment file this function has no use for. Naming an
+    already-built image should not depend on GitHub being reachable, so this
+    builds the `TestSpec` directly instead, leaving every field
+    `instance_image_key` does not read (the script lists, `language`,
+    `docker_specs`) at an empty placeholder. `version` is filled in for
+    accuracy now that `SweRow` carries it, even though the property itself
+    ignores it.
     """
     spec = TestSpec(
         instance_id=row.instance_id,
         repo=row.repo,
-        version="",
+        version=row.version,
         repo_script_list=[],
         eval_script_list=[],
         env_script_list=[],
@@ -107,31 +113,32 @@ def image_for(row: SweRow) -> str:
     return spec.instance_image_key
 
 
-def _test_cmd_for_repo(repo: str) -> str:
-    """The shell test-runner invocation SWE-bench uses for `repo`.
+def _test_cmd_for(repo: str, version: str) -> str:
+    """The shell test-runner invocation SWE-bench uses for `(repo, version)`.
 
-    Upstream keys this by (repo, version) -- `MAP_REPO_VERSION_TO_SPECS[repo]
-    [version]["test_cmd"]` -- but `SweRow` carries no `version`. Almost every
-    repo uses one command across every version it has (the known exception is
-    django/django's oldest entry, which drops `--parallel`); voting for the
-    command that the repo's versions agree on most often is correct for every
-    instance except that handful, and does not require picking one version
-    arbitrarily.
+    A direct `MAP_REPO_VERSION_TO_SPECS[repo][version]["test_cmd"]` lookup --
+    upstream keys the command by version because it genuinely varies by
+    version for some repos (e.g. django/django's oldest entries drop
+    `--parallel`). Guessing across versions would be silently wrong on
+    exactly the instances that motivate keying by version in the first
+    place, so a missing pair raises instead of falling back to a nearby one.
     """
-    commands = []
-    for spec in MAP_REPO_VERSION_TO_SPECS[repo].values():
-        cmd = spec["test_cmd"]
-        # A few non-Python specs store a fallback list; grading itself takes
-        # the last entry as the one that actually produced the log (see
-        # swebench.harness.grading.get_logs_eval).
-        commands.append(cmd[-1] if isinstance(cmd, list) else cmd)
-    ((command, _count),) = Counter(commands).most_common(1)
-    return command
+    try:
+        spec = MAP_REPO_VERSION_TO_SPECS[repo][version]
+    except KeyError:
+        raise KeyError(
+            f"swebench has no test spec for (repo={repo!r}, version={version!r})"
+        ) from None
+    cmd = spec["test_cmd"]
+    # A few non-Python specs store a fallback list; grading itself takes the
+    # last entry as the one that actually produced the log (see
+    # swebench.harness.grading.get_logs_eval).
+    return cmd[-1] if isinstance(cmd, list) else cmd
 
 
 def test_command(row: SweRow, tests: tuple[str, ...]) -> list[str]:
     """An argv running exactly `tests` inside the instance's image."""
-    return [*shlex.split(_test_cmd_for_repo(row.repo)), *tests]
+    return [*shlex.split(_test_cmd_for(row.repo, row.version)), *tests]
 
 
 def parse_results(row: SweRow, stdout: str) -> dict[str, str]:
