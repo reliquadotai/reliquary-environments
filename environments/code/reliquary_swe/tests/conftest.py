@@ -1,0 +1,49 @@
+"""Shared fixtures for the container-backed SWE taskset tests.
+
+`runtime` provisions the same box the rollout pipeline would build for the
+first task's agent phase: same image, same workdir, same network policy.
+
+The network part is not automatic. `DockerRuntime.start()` always leaves a
+restricted container in a "trusted setup" state -- egress wide open -- and
+only `prepare_execution` installs the iptables redirect that actually severs
+it (see `verifiers.v1.runtimes.docker.DockerRuntime.prepare_execution`; the
+real pipeline calls it in `rollout.py`, right before the agent's turns start,
+mirrored here since these tests call `Task.setup`/`finalize` directly instead
+of going through that pipeline). Skipping this call would make
+`test_the_container_cannot_reach_the_network` pass for the wrong reason: not
+because the policy is enforced, but because nothing ever enforced it.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+
+import pytest
+import verifiers.v1 as vf
+from verifiers.v1.runtimes import provision_runtime
+
+from reliquary_swe.taskset import SweTask
+
+
+def _first_task() -> SweTask:
+    config = vf.taskset_config_type("reliquary-swe")
+    return next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+
+
+@pytest.fixture
+async def runtime() -> AsyncIterator[vf.Runtime]:
+    task = _first_task()
+    docker_config = vf.DockerConfig(
+        image=task.data.image,
+        workdir=task.data.workdir,
+        allow=task.data.network_allow,
+    )
+    async with provision_runtime(docker_config) as box:
+        # Marks the box as having been through one trusted-setup pass; a
+        # no-op here (this box is fresh, never reused across attempts) but
+        # the correct call per `prepare_execution`'s own contract.
+        await box.prepare_setup()
+        # No framework routes: this taskset's tools run as shell commands
+        # inside the box, not as HTTP calls a harness needs to reach out for.
+        await box.prepare_execution([])
+        yield box

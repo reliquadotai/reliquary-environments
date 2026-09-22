@@ -140,9 +140,35 @@ def _test_cmd_for(repo: str, version: str) -> str:
     return cmd[-1] if isinstance(cmd, list) else cmd
 
 
+# `swebench`'s own eval images never put a repository's test runner on PATH
+# for the base interpreter -- only the `testbed` conda environment has it.
+# Verified by hand in two images with unrelated test runners: `pytest` is
+# missing from PATH on `swebench/sweb.eval.x86_64.astropy_1776_astropy-12907`
+# until `conda activate testbed`, and the same holds for
+# `swebench/sweb.eval.x86_64.django_1776_django-10097` (whose test_cmd is its
+# own `tests/runtests.py`, not pytest). "testbed" is not a per-repo guess: it
+# is a literal, unconditional constant in the pinned swebench's own image
+# builder (`swebench.harness.test_spec.test_spec.make_test_spec`, which every
+# instance goes through regardless of repo or language), and the same
+# activation line is what its generated eval scripts use
+# (`swebench.harness.test_spec.python`, e.g. `make_eval_script_list`).
+_ACTIVATE_TESTBED = "source /opt/miniconda3/bin/activate && conda activate testbed"
+
+
 def test_command(row: SweRow, tests: tuple[str, ...]) -> list[str]:
-    """An argv running exactly `tests` inside the instance's image."""
-    return [*shlex.split(_test_cmd_for(row.repo, row.version)), *tests]
+    """An argv running exactly `tests` inside the instance's image.
+
+    Wrapped in the same conda activation the image's own eval scripts use
+    (see `_ACTIVATE_TESTBED`): a bare `pytest`/`./tests/runtests.py` invocation
+    finds no such command on the base interpreter's PATH, so an unwrapped argv
+    would fail to exec on every instance, produce no output, parse to no
+    results, and grade as a silent, uniform zero. The result stays an argv a
+    runtime can run directly -- `source` is a shell builtin, so activation and
+    the test command are joined into one `bash -c` string rather than chained
+    as separate argv entries.
+    """
+    argv = [*shlex.split(_test_cmd_for(row.repo, row.version)), *tests]
+    return ["bash", "-c", f"{_ACTIVATE_TESTBED} && {shlex.join(argv)}"]
 
 
 def parse_results(row: SweRow, stdout: str) -> dict[str, str]:

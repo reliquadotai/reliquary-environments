@@ -1,0 +1,114 @@
+import pytest
+import verifiers.v1 as vf
+
+from reliquary_swe.taskset import SweTask
+
+docker = pytest.mark.docker
+
+
+def _first_task() -> SweTask:
+    config = vf.taskset_config_type("reliquary-swe")
+    return next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+
+
+def _trace(task: SweTask) -> vf.Trace:
+    # `vf.Trace()` validates `task`/`agent` as required fields on this pinned
+    # commit -- there is no bare constructor. This is the minimal shape
+    # verifiers' own test suite uses (`tests/v1/test_trace.py`); `setup` and
+    # `finalize` never read `task`/`agent` themselves, only `trace.info`, so
+    # its content doesn't matter here beyond validating.
+    return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(
+            type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
+        ),
+    )
+
+
+def test_task_key_is_the_instance_id_not_a_content_hash():
+    # Instance ids are durable across dataset revisions; content hashes are
+    # not, and a run cannot be compared with an earlier one if its keys moved.
+    task = _first_task()
+    assert task.key == task.data.instance_id
+
+
+def test_every_task_refuses_the_network():
+    config = vf.taskset_config_type("reliquary-swe")
+    for task in vf.load_taskset(config(id="reliquary-swe")).head(5):
+        assert task.data.network_allow == []
+
+
+def test_every_task_names_an_image_and_a_workdir():
+    config = vf.taskset_config_type("reliquary-swe")
+    for task in vf.load_taskset(config(id="reliquary-swe")).head(5):
+        assert task.data.image
+        assert task.data.workdir
+
+
+@docker
+async def test_setup_leaves_the_repository_at_the_base_commit(runtime):
+    task = _first_task()
+    await task.setup(_trace(task), runtime)
+    head = await runtime.run(["git", "rev-parse", "HEAD"], {})
+    assert head.stdout.strip() == task.data.base_commit
+
+
+@docker
+async def test_setup_removes_history_after_the_base_commit(runtime):
+    # The published fix lives in a later commit. Leaving it reachable turns
+    # the repair task into a lookup.
+    task = _first_task()
+    await task.setup(_trace(task), runtime)
+    later = await runtime.run(
+        ["sh", "-c", f"git log --oneline {task.data.base_commit}..HEAD 2>/dev/null | wc -l"],
+        {},
+    )
+    assert later.stdout.strip() == "0"
+
+
+@docker
+async def test_the_container_cannot_reach_the_network(runtime):
+    task = _first_task()
+    await task.setup(_trace(task), runtime)
+    result = await runtime.run(
+        ["sh", "-c", "curl -s -m 5 https://raw.githubusercontent.com || echo BLOCKED"],
+        {},
+    )
+    assert "BLOCKED" in result.stdout
+
+
+@docker
+async def test_finalize_captures_an_edit_the_agent_made(runtime):
+    task = _first_task()
+    trace = _trace(task)
+    await task.setup(trace, runtime)
+    await runtime.run(
+        ["sh", "-c", "echo '# reliquary marker' >> $(git -C /testbed ls-files | head -1)"],
+        {},
+    )
+    await task.finalize(trace, runtime)
+    assert "reliquary marker" in trace.info["patch"]
+
+
+@docker
+async def test_finalize_does_not_credit_files_the_image_shipped(runtime):
+    # Untracked files present before the agent ran must stay out of the patch,
+    # or `git apply` fails in a fresh container of that same image -- which is
+    # exactly what the grading box is.
+    task = _first_task()
+    trace = _trace(task)
+    await runtime.run(["sh", "-c", "echo shipped > /testbed/shipped.txt"], {})
+    await task.setup(trace, runtime)
+    await task.finalize(trace, runtime)
+    assert "shipped.txt" not in trace.info["patch"]
+
+
+@docker
+async def test_the_patch_is_written_where_artifact_collection_finds_it(runtime):
+    from reliquary_swe.taskset import PATCH_PATH
+
+    task = _first_task()
+    trace = _trace(task)
+    await task.setup(trace, runtime)
+    await task.finalize(trace, runtime)
+    assert (await runtime.run(["ls", PATCH_PATH], {})).exit_code == 0

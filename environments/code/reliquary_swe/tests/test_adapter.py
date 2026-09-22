@@ -44,7 +44,27 @@ def test_command_matches_the_specs_test_cmd_for_this_repo_and_version():
     # corpus or the spec lookup drifting silently.
     row = _row(INSTANCE)
     assert row.version == "4.3"
-    assert swe_adapter.test_command(row, ()) == ["pytest", "-rA"]
+    assert swe_adapter.test_command(row, ()) == [
+        "bash",
+        "-c",
+        "source /opt/miniconda3/bin/activate && conda activate testbed && pytest -rA",
+    ]
+
+
+def test_command_activates_testbed_for_a_repo_with_an_unrelated_test_runner():
+    # `pytest` is astropy's own test_cmd; django uses its own tests/runtests.py.
+    # Pinning both against the same "activate testbed" wrapping is what proves
+    # the wrapping isn't an astropy-specific guess -- confirmed by hand on
+    # swebench/sweb.eval.x86_64.django_1776_django-10097 (see
+    # swe_adapter._ACTIVATE_TESTBED's comment for how).
+    row = _row("django__django-10097")
+    assert row.version == "2.2"
+    assert swe_adapter.test_command(row, ()) == [
+        "bash",
+        "-c",
+        "source /opt/miniconda3/bin/activate && conda activate testbed && "
+        "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+    ]
 
 
 # --- parse_results dispatch (not correctness) ---
