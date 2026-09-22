@@ -167,7 +167,37 @@ Two sources, pinned by revision as every other environment here pins its data:
 
 Evaluation and training corpora must not overlap by repository. Contamination
 across that boundary would make the evaluation number meaningless, and we have
-been bitten by a contaminated held-out set before.
+been bitten by a contaminated held-out set before. SWE-bench Verified is an
+evaluation set and must never be trained on.
+
+### Correction: a second corpus is a profile, not a data pin
+
+An earlier draft of this section claimed that adding a corpus is a change to
+`corpus.py` and a second data pin, touching neither the task nor the grader.
+That was wrong, and inspecting SWE-smith's actual schema is what showed it.
+SWE-smith rows carry `instance_id`, `patch`, `FAIL_TO_PASS`, `PASS_TO_PASS`,
+`image_name`, `repo` and `problem_statement` — and nothing else:
+
+- **The image is given, not derived.** `image_name` names it outright
+  (`jyangballin/swesmith.x86_64.<repo>.<commit>`), so `SweRow` should carry an
+  image field and `image_for`'s swebench derivation becomes the Verified
+  fallback rather than the rule. This is simpler, not harder.
+- **There is no `version`,** so the `MAP_REPO_VERSION_TO_SPECS` lookup that
+  resolves a test command cannot apply. A second resolution path is needed.
+- **There is no `base_commit`.** The image already sits at the state the agent
+  starts from, so `setup()`'s checkout has nothing to check out.
+- **There is no `test_patch`, and this one reaches section 6.** Grading defeats
+  test tampering by restoring the tests from the instance's own test patch
+  before running anything. SWE-smith injects its bug into the *source*, leaving
+  the tests already present and pristine in the image, so there is no patch to
+  re-apply. The property still holds — a freshly started container has pristine
+  tests by construction — but it must be obtained a different way.
+
+The consequence for implementation: **grading must treat test restoration as a
+seam, not a hardcoded step.** One strategy re-applies a test patch; the other
+restores the test paths from the pristine image. Both answer the same question —
+"make the tests be what they should be, whatever the agent did" — and the
+grader should ask that question rather than prescribe one answer.
 
 ## 9. Testing
 
