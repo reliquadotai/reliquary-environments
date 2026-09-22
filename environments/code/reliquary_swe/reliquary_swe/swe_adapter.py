@@ -22,6 +22,9 @@ implementation plan, Task 2 Step 1, for how these were found):
         same.
     swebench.harness.log_parsers.MAP_REPO_TO_PARSER -- repo -> the function that
         turns one repository's raw test output into a {test name: status} map.
+    swebench.harness.constants.TestStatus -- its `XFAIL` member is what an
+        `@pytest.mark.xfail` test parses to; see `parse_results` for why this
+        module normalizes it away rather than passing it through.
     swebench.harness.test_spec.test_spec.TestSpec -- `instance_image_key`
         reads only `instance_id`/`arch`/`namespace`/`instance_image_tag`; see
         `image_for` for why this module still constructs one directly rather
@@ -46,6 +49,7 @@ from swebench.harness.constants import (
     LATEST,
     MAP_REPO_VERSION_TO_SPECS,
     START_TEST_OUTPUT,
+    TestStatus,
     USE_X86,
 )
 from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
@@ -160,9 +164,23 @@ def parse_results(row: SweRow, stdout: str) -> dict[str, str]:
         return {}
     content = stdout.split(START_TEST_OUTPUT, 1)[1].split(END_TEST_OUTPUT, 1)[0]
     try:
-        return dict(parser(content, None))
+        status_map = dict(parser(content, None))
     except Exception:
         # A parser that cannot make sense of this content is exactly the
         # "cannot trust it" case this function's contract exists for, not a
         # bug to propagate.
         return {}
+    # swebench's own resolution semantics treat XFAIL as a pass, not a fifth
+    # status: `test_passed` (swebench/harness/grading.py:26-27) checks
+    # `sm[case] in [TestStatus.PASSED.value, TestStatus.XFAIL.value]`. A
+    # pytest-family parser emits "XFAIL" verbatim for an
+    # `@pytest.mark.xfail` test, several Verified repos use that marker, and
+    # without this normalization a genuinely resolved xfail test would fail
+    # grading's exact `== "PASSED"` check and score a resolved instance as a
+    # failure -- silently, on real corpus data. Normalizing here keeps the
+    # four-value contract this function documents rather than adding XFAIL
+    # as a fifth value grading would then also have to know about.
+    return {
+        name: "PASSED" if status == TestStatus.XFAIL.value else status
+        for name, status in status_map.items()
+    }
