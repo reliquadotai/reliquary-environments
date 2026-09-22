@@ -25,10 +25,23 @@ from verifiers.v1.runtimes import provision_runtime
 
 from reliquary_swe.taskset import SweTask
 
+# Small and already pulled on the container host (see remote-test): 15 tests,
+# ~2.3s to grade (measured on the box). Every grading golden scores this one
+# instance so the whole suite stays fast.
+GOLDEN = "astropy__astropy-12907"
+
 
 def _first_task() -> SweTask:
     config = vf.taskset_config_type("reliquary-swe")
     return next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+
+
+def _task_for(instance_id: str) -> SweTask:
+    config = vf.taskset_config_type("reliquary-swe")
+    for task in vf.load_taskset(config(id="reliquary-swe")):
+        if task.data.instance_id == instance_id:
+            return task
+    raise AssertionError(f"{instance_id} is not in the taskset")
 
 
 @asynccontextmanager
@@ -58,4 +71,14 @@ async def provisioned_runtime(task: SweTask) -> AsyncIterator[vf.Runtime]:
 @pytest.fixture
 async def runtime() -> AsyncIterator[vf.Runtime]:
     async with provisioned_runtime(_first_task()) as box:
+        yield box
+
+
+@pytest.fixture
+async def grading_runtime() -> AsyncIterator[vf.Runtime]:
+    """A pristine box provisioned from the golden instance's own image, torn
+    down after every test -- so one golden's tampering (e.g. a patch that
+    adds a conftest.py) can never leak into the next golden's box.
+    """
+    async with provisioned_runtime(_task_for(GOLDEN)) as box:
         yield box

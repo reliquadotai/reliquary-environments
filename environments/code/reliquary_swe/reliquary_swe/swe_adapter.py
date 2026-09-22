@@ -206,6 +206,18 @@ def test_command(row: SweRow) -> list[str]:
     return ["bash", "-c", f"( {_ACTIVATE_TESTBED} && {shlex.join(argv)} ) 2>&1"]
 
 
+def wrap_test_output(stdout: str) -> str:
+    """Bound raw `test_command` output in the sentinels `parse_results` looks
+    for, the way a real swebench-generated eval script echoes them around its
+    own test command -- `test_command` here runs only the bare invocation, not
+    that full generated script, so nothing else produces the boundary
+    `parse_results` requires. A caller that skips this gets an empty map back
+    from every real run, silently -- the same silent-zero shape as the conda
+    and argv defects this module's docstring records.
+    """
+    return f"{START_TEST_OUTPUT}\n{stdout}\n{END_TEST_OUTPUT}\n"
+
+
 def parse_results(row: SweRow, stdout: str) -> dict[str, str]:
     """Map each reported test name to PASSED / FAILED / ERROR / SKIPPED.
 
