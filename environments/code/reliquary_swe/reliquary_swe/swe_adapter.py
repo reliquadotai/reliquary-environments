@@ -29,6 +29,11 @@ implementation plan, Task 2 Step 1, for how these were found):
         reads only `instance_id`/`arch`/`namespace`/`instance_image_tag`; see
         `image_for` for why this module still constructs one directly rather
         than going through the upstream `make_test_spec` factory.
+    swebench.harness.test_spec.python.get_test_directives -- derives the file
+        paths (module labels, for django/django) a test command should run
+        from an instance's `test_patch`; see `test_command` for why this
+        module calls it rather than running FAIL_TO_PASS/PASS_TO_PASS entries
+        directly, which is not what the official harness does either.
 
 3.0.17 was chosen deliberately over the 4.x/5.x line: starting at 4.0.0,
 swebench moved to a "task repo" model where `image`, `log_parser` and
@@ -53,6 +58,7 @@ from swebench.harness.constants import (
     USE_X86,
 )
 from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
+from swebench.harness.test_spec.python import get_test_directives
 from swebench.harness.test_spec.test_spec import TestSpec
 
 from reliquary_swe.corpus import SweRow
@@ -155,66 +161,49 @@ def _test_cmd_for(repo: str, version: str) -> str:
 _ACTIVATE_TESTBED = "source /opt/miniconda3/bin/activate && conda activate testbed"
 
 
-# Linux's per-argv-element cap (`MAX_ARG_STRLEN`, fs/exec.c), independent of
-# the much larger total `ARG_MAX`. It binds any single argument of any
-# process a runtime execs -- including `docker` itself on the host, since
-# `verifiers.v1.runtimes.docker.DockerRuntime.run` passes each argv element
-# straight to `asyncio.create_subprocess_exec("docker", ...)` with no
-# handling for the `OSError` an argument this large raises. Measured
-# directly: folding django__django-10097's combined FAIL_TO_PASS +
-# PASS_TO_PASS list (1,870 tests, ~134 KB joined) into one argument and
-# exec'ing it raises exactly that error before the container is ever
-# reached. matplotlib__matplotlib-25122's list (2,488 tests) is ~265 KB --
-# over twice this cap -- and it is not the only instance in the corpus this
-# large.
-_MAX_ARG_STRLEN = 128 * 1024
+def test_command(row: SweRow) -> list[str]:
+    """An argv running every test file (module label, for django/django)
+    that `row.test_patch` touches, inside the instance's image.
 
+    Deliberately takes no test-name argument. FAIL_TO_PASS and PASS_TO_PASS
+    are lookup keys for scoring the already-parsed {test name: status} map,
+    never command-line arguments -- that is what the official harness itself
+    does (`swebench.harness.test_spec.python.make_eval_script_list_py`:
+    `test_command = " ".join([test_cmd, *get_test_directives(instance)])`,
+    with the individual FAIL_TO_PASS/PASS_TO_PASS names looked up afterward
+    in grading, not passed here). An earlier version of this function ran
+    FAIL_TO_PASS/PASS_TO_PASS entries directly and hit two problems that
+    both trace back to that one divergence from upstream, not to each
+    other: django/django's entries are unittest `str()` reprs its own
+    runner will not accept as a command-line label at all, and enough
+    entries corpus-wide are malformed or environment-drifted that direct
+    invocation would score differently -- and therefore incomparably --
+    from every published SWE-bench Verified number. Running directives
+    instead sidesteps both by construction and matches upstream exactly,
+    because this calls upstream's own `get_test_directives` rather than
+    reimplementing its regex and its django-specific path transform.
 
-def tests_file_contents(tests: tuple[str, ...]) -> bytes:
-    """The newline-separated bytes `test_command`'s argv reads back (via
-    `xargs -d '\\n'`) from the path the caller writes them to.
+    A handful of file paths also never approach the 128 KiB single
+    argv-element cap that inlining thousands of test names did on the
+    corpus's largest instances -- a side effect of matching upstream, not a
+    mechanism this function has to maintain itself (see
+    `test_no_argv_element_approaches_the_kernel_argument_length_cap` in
+    test_adapter.py, which still pins it).
 
-    Owning the format here, next to the command that reads it, keeps the
-    delimiter defined once rather than implicitly duplicated between a
-    writer (grading, elsewhere) and this reader. An empty `tests` encodes to
-    empty bytes on purpose: `test_command`'s `test -s` guard then refuses to
-    run anything for a file grading forgot to populate, the same way it
-    refuses a missing file.
+    The whole thing is wrapped in `( ... ) 2>&1`: `parse_results` (see its
+    own docstring) treats "the output" as one stream, mirroring upstream's
+    `get_logs_eval`, which slices a single combined log the outer harness
+    captured -- upstream never keeps stdout and stderr apart either.
+    Several repos' test runners genuinely need this merge to be usable at
+    all: django's own `unittest`-based runner (confirmed by hand, running
+    this exact command) prints every per-test result line, and its final
+    "Ran N tests" summary, to stderr -- a caller that reads only `.stdout`
+    from a runtime's `ProgramResult` would see nothing but database setup
+    and teardown noise and parse an empty, silently-wrong result.
     """
-    return ("\n".join(tests) + "\n").encode() if tests else b""
-
-
-def test_command(row: SweRow, tests_path: str) -> list[str]:
-    """An argv running exactly the tests listed at `tests_path` inside the
-    instance's image -- one per line, in the format `tests_file_contents`
-    writes and this reads back.
-
-    Test names travel through that file rather than through the command
-    line: see `_MAX_ARG_STRLEN`'s note for why an inlined list is not safe
-    for every instance in the corpus. `xargs` turns the file's lines back
-    into individually short arguments to the real test runner, so no argv
-    element this function returns grows with the size of the test list --
-    only `tests_path` does, and that stays a small, fixed-size string no
-    matter how many tests it names. Also wrapped in the same conda
-    activation the image's own eval scripts use (see `_ACTIVATE_TESTBED`):
-    the base interpreter's PATH has no `pytest`/`./tests/runtests.py` at all.
-
-    Two failure modes are refused outright rather than left to whatever the
-    runner does by default with no target tests: `test -s` refuses a
-    missing or empty file, and `xargs -r` refuses to invoke the runner at
-    all if it still ends up with zero arguments. Both make the command exit
-    non-zero instead of silently grading the wrong thing -- calling a
-    runner like django's `tests/runtests.py` with no test arguments runs
-    its *entire* suite, not zero tests, which is the failure mode this
-    guards against, not merely a symmetrical edge case.
-    """
-    prefix = shlex.join(shlex.split(_test_cmd_for(row.repo, row.version)))
-    quoted_path = shlex.quote(tests_path)
-    script = (
-        f"{_ACTIVATE_TESTBED} && test -s {quoted_path} && "
-        f'exec xargs -r -d "\\n" -a {quoted_path} -- {prefix}'
-    )
-    return ["bash", "-c", script]
+    directives = get_test_directives({"repo": row.repo, "test_patch": row.test_patch})
+    argv = [*shlex.split(_test_cmd_for(row.repo, row.version)), *directives]
+    return ["bash", "-c", f"( {_ACTIVATE_TESTBED} && {shlex.join(argv)} ) 2>&1"]
 
 
 def parse_results(row: SweRow, stdout: str) -> dict[str, str]:

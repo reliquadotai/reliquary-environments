@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 import verifiers.v1 as vf
 from swebench.harness.constants import END_TEST_OUTPUT, START_TEST_OUTPUT
@@ -10,6 +12,18 @@ docker = pytest.mark.docker
 # astropy/astropy is in swebench's MAP_REPO_VERSION_TO_SPECS and
 # MAP_REPO_TO_PARSER, so it exercises both image naming and log parsing.
 INSTANCE = "astropy__astropy-12907"
+
+# Linux's per-argv-element cap (`MAX_ARG_STRLEN`, fs/exec.c), independent of
+# the much larger `ARG_MAX`. An earlier version of `test_command` ran
+# FAIL_TO_PASS/PASS_TO_PASS names directly and blew past this on the
+# corpus's largest instances (matplotlib__matplotlib-25122's combined list
+# alone joins to ~265 KB) -- measured directly: exec of `docker` itself
+# raised `OSError: Argument list too long` before any container was
+# reached. Running upstream's own `get_test_directives` instead means an
+# argv is now a handful of file paths, never near this cap by construction
+# -- but the bound is worth pinning rather than trusting by inspection; it's
+# exactly what used to bite, silently.
+_MAX_ARG_STRLEN = 128 * 1024
 
 
 def _sentinel_wrapped(body: str) -> str:
@@ -43,71 +57,86 @@ def test_unparseable_output_yields_no_results_rather_than_raising():
     assert swe_adapter.parse_results(_row(INSTANCE), "") == {}
 
 
-def test_the_test_command_reads_tests_from_the_given_path():
-    # Test names travel through a file, not the argv -- see
-    # test_no_argv_element_approaches_the_kernel_argument_length_cap for why.
-    # All this checks is that the command actually points at the path it
-    # was given.
-    row = _row(INSTANCE)
-    argv = swe_adapter.test_command(row, "/tmp/my-tests.txt")
-    assert any("/tmp/my-tests.txt" in part for part in argv)
-
-
 def test_command_matches_the_specs_test_cmd_for_this_repo_and_version():
     # Checked by hand against swebench==3.0.17:
-    # MAP_REPO_VERSION_TO_SPECS["astropy/astropy"]["4.3"]["test_cmd"] == "pytest -rA".
-    # Pinning both the row's version and the resulting argv catches either the
-    # corpus or the spec lookup drifting silently.
+    # MAP_REPO_VERSION_TO_SPECS["astropy/astropy"]["4.3"]["test_cmd"] == "pytest -rA",
+    # and get_test_directives(row) == ["astropy/modeling/tests/test_separable.py"]
+    # (the sole file astropy__astropy-12907's test_patch touches). Pinning
+    # the row's version and the resulting argv catches the corpus, the spec
+    # lookup, or the directive derivation drifting silently.
     row = _row(INSTANCE)
     assert row.version == "4.3"
-    assert swe_adapter.test_command(row, "/tmp/tests.txt") == [
+    assert swe_adapter.test_command(row) == [
         "bash",
         "-c",
-        "source /opt/miniconda3/bin/activate && conda activate testbed && "
-        'test -s /tmp/tests.txt && exec xargs -r -d "\\n" -a /tmp/tests.txt -- pytest -rA',
+        "( source /opt/miniconda3/bin/activate && conda activate testbed && "
+        "pytest -rA astropy/modeling/tests/test_separable.py ) 2>&1",
     ]
 
 
 def test_command_activates_testbed_for_a_repo_with_an_unrelated_test_runner():
-    # `pytest` is astropy's own test_cmd; django uses its own tests/runtests.py.
-    # Pinning both against the same "activate testbed" wrapping is what proves
-    # the wrapping isn't an astropy-specific guess -- confirmed by hand on
-    # swebench/sweb.eval.x86_64.django_1776_django-10097 (see
+    # django uses its own tests/runtests.py, not pytest -- confirmed by hand
+    # on swebench/sweb.eval.x86_64.django_1776_django-10097 (see
     # swe_adapter._ACTIVATE_TESTBED's comment for how).
+    #
+    # django__django-10097's own test_patch touches only two *.txt* fixture
+    # files (tests/validators/{valid,invalid}_urls.txt), never a *.py* test
+    # module, so `get_test_directives` correctly returns `[]` for it -- not
+    # a defect in this instance or in the derivation. It means the fix this
+    # instance grades is exercised by an *existing*, unmodified test file
+    # that reads those fixtures at run time, and running with no targets at
+    # all is exactly what upstream's own eval script does too.
+    # `test_command_derives_django_directives_as_dotted_module_labels` below
+    # is the test that pins the non-empty, transformed case.
     row = _row("django__django-10097")
     assert row.version == "2.2"
-    assert swe_adapter.test_command(row, "/tmp/tests.txt") == [
+    assert swe_adapter.test_command(row) == [
         "bash",
         "-c",
-        "source /opt/miniconda3/bin/activate && conda activate testbed && "
-        'test -s /tmp/tests.txt && exec xargs -r -d "\\n" -a /tmp/tests.txt -- '
-        "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1",
+        "( source /opt/miniconda3/bin/activate && conda activate testbed && "
+        "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 ) 2>&1",
+    ]
+
+
+def test_command_derives_django_directives_as_dotted_module_labels():
+    """The case this fix's second round revealed: django/django's own test
+    runner does not accept a raw file path, let alone a FAIL_TO_PASS/
+    PASS_TO_PASS entry, as a command-line label -- only a dotted
+    `module.Class.method`-shaped one. Upstream's `get_test_directives`
+    handles this per repo (`swebench/harness/test_spec/python.py`): for
+    django/django only, it strips a touched file's `tests/` prefix and
+    `.py` suffix and turns `/` into `.`. django__django-11099's test_patch
+    touches exactly `tests/auth_tests/test_validators.py`, so its directive
+    must be the dotted label `auth_tests.test_validators` -- not that path,
+    and not any of the instance's own FAIL_TO_PASS entries (which include
+    names like
+    `test_ascii_validator (auth_tests.test_validators.UsernameValidatorsTests)`,
+    themselves unittest `str()` reprs the runner also would not accept).
+    """
+    row = _row("django__django-11099")
+    assert "diff --git a/tests/auth_tests/test_validators.py" in row.test_patch
+    assert swe_adapter.test_command(row) == [
+        "bash",
+        "-c",
+        "( source /opt/miniconda3/bin/activate && conda activate testbed && "
+        "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 "
+        "auth_tests.test_validators ) 2>&1",
     ]
 
 
 def test_no_argv_element_approaches_the_kernel_argument_length_cap():
-    # matplotlib__matplotlib-25122 carries the corpus's largest combined
-    # FAIL_TO_PASS + PASS_TO_PASS list (2,488 tests, ~265 KB joined) -- the
-    # instance whose old, inlined argv raised `OSError: Argument list too
-    # long` before ever reaching a container (see swe_adapter._MAX_ARG_STRLEN's
-    # comment for the measurement). test_command's argv is now independent of
-    # the test list's size by construction (tests travel through a file, not
-    # the command line), so this also guards against a future edit
-    # reintroducing that coupling, not just against this one instance's count.
+    # matplotlib__matplotlib-25122's combined FAIL_TO_PASS + PASS_TO_PASS
+    # list (2,488 entries) is the one that raised `OSError: Argument list
+    # too long` under the old, name-inlining test_command (see this
+    # module's `_MAX_ARG_STRLEN` comment). Running directives instead of
+    # names makes this trivially true here -- its test_patch touches
+    # exactly one file -- but "trivially true" is exactly the property
+    # worth pinning, not skipping: a future edit that went back to inlining
+    # names would fail this silently otherwise, the same way the original
+    # bug was silent.
     row = _row("matplotlib__matplotlib-25122")
-    assert len(row.fail_to_pass) + len(row.pass_to_pass) > 2000
-    argv = swe_adapter.test_command(row, "/logs/artifacts/tests.txt")
-    assert all(len(part.encode()) < swe_adapter._MAX_ARG_STRLEN for part in argv)
-
-
-def test_tests_file_contents_is_one_test_per_line():
-    assert swe_adapter.tests_file_contents(("a", "b")) == b"a\nb\n"
-
-
-def test_tests_file_contents_of_no_tests_is_empty():
-    # Empty, not "\n" -- `test_command`'s `test -s` guard must see a
-    # genuinely empty file, the same signal a missing file gives it.
-    assert swe_adapter.tests_file_contents(()) == b""
+    argv = swe_adapter.test_command(row)
+    assert all(len(part.encode()) < _MAX_ARG_STRLEN for part in argv)
 
 
 # --- parse_results dispatch (not correctness) ---
@@ -175,52 +204,73 @@ def test_xfail_is_normalized_to_passed():
 @docker
 @pytest.mark.slow
 async def test_grading_a_large_instance_end_to_end_gets_a_real_result():
-    """The regression check for finding #2: run a real, large instance's
-    full combined FAIL_TO_PASS + PASS_TO_PASS list -- comfortably over the
-    128 KiB single-argv cap when inlined -- against its real image, through
-    the file-based test_command, and check parse_results comes back with
-    real, non-empty statuses. The old, inlined-argv command didn't fail
-    this way; it never got the chance to: exec of `docker` itself raised
-    `OSError: Argument list too long` before any container was reached (see
-    swe_adapter._MAX_ARG_STRLEN's comment for the measurement), which is a
-    worse failure than the "ran fine, parsed nothing" this test's name
-    describes, not a better one.
+    """Re-verifies, under the directives scheme that replaced the file/
+    xargs indirection, the same real grading round-trip finding #2
+    originally asked for: run a real, large instance's test_command against
+    its real image and confirm parse_results comes back with real,
+    non-empty, mostly-resolving statuses -- not the "ran fine, parsed
+    nothing" signature an oversized inlined argv used to produce (or, as
+    measured directly, the `OSError` it never even got the chance to avoid
+    raising).
 
-    pydata__xarray-6744 rather than django__django-10097 or
-    matplotlib__matplotlib-25122:
-      - django's FAIL_TO_PASS/PASS_TO_PASS entries are unittest `str()`
-        reprs ("test_method (module.Class)"), which its own runner does
-        not accept as a command-line label at all -- `DiscoverRunner.
-        build_suite` passes the label straight to `TestLoader.
-        loadTestsFromName`, which wants a dotted `module.Class.method`
-        path. A separate, pre-existing defect in what "tests" means for
-        that repo, unrelated to argv size; not fixed here.
-      - matplotlib-25122's image cannot even be pulled on this box: its
-        layers contain a UID (197609) outside the docker daemon's
-        configured subordinate UID/GID range, a host config limit, not a
-        reliquary_swe bug.
-      - A number of instances across the corpus -- including
-        django__django-10097 and pydata__xarray-4687 among these five --
-        also carry FAIL_TO_PASS/PASS_TO_PASS entries that are themselves
-        malformed (parametrized pytest ids truncated at an internal comma,
-        e.g. ending "...test_isel[float64-single" with no closing `]`) or
-        that no longer resolve to a real, collectible test at this
-        instance's base commit. Both are corpus/upstream-dataset quality
-        issues, orthogonal to this fix; xarray-6744 happens to carry
-        neither for its FAIL_TO_PASS/PASS_TO_PASS set, which is why it was
-        chosen, not because every instance is this clean.
+    Checked against PASS_TO_PASS, not FAIL_TO_PASS: FAIL_TO_PASS entries
+    describe tests the instance's own test_patch introduces or changes, and
+    this task never applies test_patch (that's grading's job, in a
+    different container -- see the module's own docstring). PASS_TO_PASS
+    entries are existing tests that must already be collectible and
+    passing on the bare base commit with no patch involved at all, which is
+    exactly the state this test leaves the repo in.
     """
     row = _row("pydata__xarray-6744")
-    tests = tuple(row.fail_to_pass) + tuple(row.pass_to_pass)
-    assert len(tests) > 1500  # comfortably past the old 128 KiB cap when inlined
+    assert len(row.fail_to_pass) + len(row.pass_to_pass) > 1500
 
-    tests_path = "/tmp/reliquary-swe-tests.txt"
     async with provisioned_runtime(_task(row.instance_id)) as runtime:
         checkout = await runtime.run(["git", "checkout", "-q", row.base_commit], {})
         assert checkout.exit_code == 0
-        await runtime.write(tests_path, swe_adapter.tests_file_contents(tests))
-        result = await runtime.run(swe_adapter.test_command(row, tests_path), {})
+        result = await asyncio.wait_for(
+            runtime.run(swe_adapter.test_command(row), {}), timeout=300
+        )
 
     parsed = swe_adapter.parse_results(row, _sentinel_wrapped(result.stdout))
-    assert len(parsed) > 400
-    assert "PASSED" in parsed.values()
+    assert len(parsed) > 1500
+    resolved_passing = sum(1 for t in row.pass_to_pass if parsed.get(t) == "PASSED")
+    assert resolved_passing > len(row.pass_to_pass) * 0.9
+
+
+@docker
+@pytest.mark.slow
+async def test_grading_django_end_to_end_is_not_actually_broken():
+    """django/django was believed unrunnable through `test_command` an hour
+    before this test existed: its FAIL_TO_PASS/PASS_TO_PASS entries are
+    unittest `str()` reprs its own runner will not accept as a command-line
+    label. That belief was about the wrong invocation, not about django
+    itself -- upstream never runs those entries as arguments either (see
+    `test_command`'s docstring). This proves it by actually grading
+    django__django-10097 end to end: its own test_patch touches only two
+    `.txt` fixture files, so `get_test_directives` (correctly) returns no
+    directives at all for it, and `test_command` runs with none -- which,
+    for django's own runner, means its *entire* test suite. Measured by
+    hand: ~226s of test execution (12,311 tests), ~3m45s wall clock
+    including migrations and teardown. Marked slow because that is still
+    much longer than the rest of this suite combined, not because
+    anything is wrong -- every one of this instance's 1,432 PASS_TO_PASS
+    entries and all 438 FAIL_TO_PASS entries resolved in that run (the
+    latter without test_patch applied at all: the fixture files it would
+    change are read by pre-existing, already-passing test functions, not
+    ones the patch introduces -- so both lists happen to fully resolve
+    here without this task ever touching test_patch).
+    """
+    row = _row("django__django-10097")
+    assert row.fail_to_pass  # the instance still names a real regression
+
+    async with provisioned_runtime(_task(row.instance_id)) as runtime:
+        checkout = await runtime.run(["git", "checkout", "-q", row.base_commit], {})
+        assert checkout.exit_code == 0
+        result = await asyncio.wait_for(
+            runtime.run(swe_adapter.test_command(row), {}), timeout=600
+        )
+
+    parsed = swe_adapter.parse_results(row, _sentinel_wrapped(result.stdout))
+    assert len(parsed) > 10000
+    resolved_passing = sum(1 for t in row.pass_to_pass if parsed.get(t) == "PASSED")
+    assert resolved_passing > len(row.pass_to_pass) * 0.95
