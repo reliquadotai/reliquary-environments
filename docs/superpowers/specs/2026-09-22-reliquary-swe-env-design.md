@@ -67,9 +67,11 @@ What we write is the corpus, the task, a two-tool harness, and the grader.
 
 | Module | Responsibility |
 | --- | --- |
-| `corpus.py` | Rows only: `instance_id`, repo, base commit, problem statement, image reference, fail-to-pass and pass-to-pass test lists. No execution. |
-| `taskset.py` | `SweData`, `SweTask`, `SweToolset`, `SweTaskset`. Lifecycle and harness. |
-| `grading.py` | Apply a patch in a fresh container, run the two test sets, parse results, produce the reward. |
+| `corpus.py` | Rows only: `instance_id`, repo, base commit, problem statement, fail-to-pass and pass-to-pass test lists, reference patch, test patch. No execution. |
+| `swe_adapter.py` | The only module importing `swebench`: image keys and per-repository log parsing, behind names we own. |
+| `taskset.py` | `SweData`, `SweTask`, `SweTaskset`. Container preparation and patch capture. |
+| `grading.py` | Given a live container: apply the patch, restore the tests, run the two test sets, parse, score. Provisions nothing. |
+| `env.py` | Provisions the grading container, grades in it, records the reward on the solver's trace. |
 | `environment.toml` | Declared contract: tier, resource class, network policy, budgets. |
 | `examples/` | A runnable prime-rl example. Required: CI checks that it asks for the reasoning mode the environment declared. |
 | `tests/` | Goldens and unit tests (section 9). |
@@ -80,23 +82,26 @@ answered without Docker present.
 
 ## 5. The harness
 
-Two tools, and no more:
+**We write no harness.** `verifiers.v1.harnesses` already ships `bash`,
+`mini_swe_agent`, `claude_code`, `codex`, `terminus_2` and others, and the
+harness is chosen by configuration rather than by the environment.
 
-- `bash(command: str) -> str` — runs the command in the agent's container,
-  returns combined output, truncated to the declared observation cap.
-- `submit() -> str` — ends the episode.
+This corrects an earlier draft of this section, which specified a two-tool
+harness of our own. Writing one would have been redundant, and worse, it would
+have welded the environment to a single interaction mechanism — the opposite of
+what we want, since training across several harnesses is what stops task-solving
+strategy from becoming a property of one harness's quirks.
 
-This is deliberately minimal. Production harnesses wrap the agent loop in
-safeguards and instruction prompts that fall outside the reward signal, which
-makes credit assignment unreliable and teaches the policy to ignore whatever is
-not measured. A minimal harness also keeps the door open to varying one
-interaction mechanism at a time later, which is how cross-harness
-generalisation is obtained.
+The environment is therefore harness-agnostic by construction: it supplies the
+container, the prepared repository and the reward, and says nothing about how
+the policy reaches a shell. A first pilot validates against one harness;
+training across several costs a configuration change, not a code change.
 
-No file-editing tool is provided in the first version. The policy edits files
-through the shell. If measurement later shows that a `str_replace`-style tool
-changes the outcome, adding it is a small change; starting with it would make
-the harness a variable before we have a baseline.
+One consequence is worth stating, because it is the reason production harnesses
+are a poor default for training: they wrap the agent loop in safeguards and
+instruction prompts that fall outside the reward signal, which makes credit
+assignment unreliable and leaves reward-unmeasured requirements to be ignored.
+A minimal harness such as `bash` or `mini_swe_agent` is the better baseline.
 
 ## 6. The central decision: grade the patch, not the container
 
