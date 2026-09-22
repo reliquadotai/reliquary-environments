@@ -17,6 +17,7 @@ because the policy is enforced, but because nothing ever enforced it.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import pytest
 import verifiers.v1 as vf
@@ -30,9 +31,14 @@ def _first_task() -> SweTask:
     return next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
 
 
-@pytest.fixture
-async def runtime() -> AsyncIterator[vf.Runtime]:
-    task = _first_task()
+@asynccontextmanager
+async def provisioned_runtime(task: SweTask) -> AsyncIterator[vf.Runtime]:
+    """Provision and tear down a real box for `task`, network-restricted and
+    execution-ready. Factored out of the `runtime` fixture below so a test
+    that needs a *different* task's image (e.g. a specific corpus instance,
+    not the taskset's first) can still get the same real setup rather than
+    a hand-rolled, possibly-diverging one.
+    """
     docker_config = vf.DockerConfig(
         image=task.data.image,
         workdir=task.data.workdir,
@@ -46,4 +52,10 @@ async def runtime() -> AsyncIterator[vf.Runtime]:
         # No framework routes: this taskset's tools run as shell commands
         # inside the box, not as HTTP calls a harness needs to reach out for.
         await box.prepare_execution([])
+        yield box
+
+
+@pytest.fixture
+async def runtime() -> AsyncIterator[vf.Runtime]:
+    async with provisioned_runtime(_first_task()) as box:
         yield box

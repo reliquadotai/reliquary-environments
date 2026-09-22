@@ -55,15 +55,29 @@ async def test_setup_leaves_the_repository_at_the_base_commit(runtime):
 
 @docker
 async def test_setup_removes_history_after_the_base_commit(runtime):
-    # The published fix lives in a later commit. Leaving it reachable turns
-    # the repair task into a lookup.
+    # The published fix lives in a later commit, reachable only through a
+    # surviving ref -- a branch, a tag, a remote-tracking ref. Checking
+    # `base_commit..HEAD` alone -- this test's original form -- is
+    # tautological once HEAD is known (by the previous test) to equal
+    # base_commit: that range is empty by definition regardless of what
+    # refs or history still exist, so it cannot detect the leak it is named
+    # for even if `_CLEANUP`'s ref-deletion/reflog-expire/gc lines were
+    # deleted outright. This checks the two properties that actually
+    # matter instead: no ref survives cleanup, and no commit past
+    # base_commit remains reachable through any ref that does.
     task = _first_task()
     await task.setup(_trace(task), runtime)
-    later = await runtime.run(
-        ["sh", "-c", f"git log --oneline {task.data.base_commit}..HEAD 2>/dev/null | wc -l"],
+    refs = await runtime.run(["sh", "-c", "git for-each-ref | wc -l"], {})
+    assert refs.stdout.strip() == "0"
+    reachable = await runtime.run(
+        [
+            "sh",
+            "-c",
+            f"git log --oneline --all --not {task.data.base_commit} 2>/dev/null | wc -l",
+        ],
         {},
     )
-    assert later.stdout.strip() == "0"
+    assert reachable.stdout.strip() == "0"
 
 
 @docker
