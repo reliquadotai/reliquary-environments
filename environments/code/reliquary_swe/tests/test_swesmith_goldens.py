@@ -6,6 +6,7 @@ separate file so nothing here risks the existing SWE-bench Verified goldens.
 
 from __future__ import annotations
 
+import difflib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -13,10 +14,27 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.runtimes import provision_runtime
 
+from conftest import _trace, run_gold_episode
 from reliquary_swe import grading
 from reliquary_swe.taskset import SweTask
 
 docker = pytest.mark.docker
+
+
+def _unified_diff(path: str, old: str, new: str) -> str:
+    """A `git apply`-ready patch rewriting `path` from `old` to `new`,
+    computed rather than hand-written -- same helper as `test_goldens.py`'s
+    own, duplicated rather than imported to keep this file self-contained.
+    """
+    body = "".join(
+        difflib.unified_diff(
+            old.splitlines(keepends=True),
+            new.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+        )
+    )
+    return f"diff --git a/{path} b/{path}\n{body}"
 
 # Already pulled on the container host, and already ground-truthed by hand
 # (see the implementation report): base_commit checks out clean and cold, the
@@ -129,3 +147,106 @@ async def test_a_patch_that_forces_fake_passes_scores_zero(swesmith_runtime):
     assert report.applied is True
     assert report.restored is True
     assert report.reward == 0.0
+
+
+# The golden the conftest.py attack above does NOT cover: `_restore_from_
+# pristine_image`'s *primary* mechanism is the plain per-file checkout of
+# each fail-to-pass/pass-to-pass test file, not the conftest-ancestor walk.
+# Overwrites a real fail-to-pass test file outright, rather than adding a
+# new one, so the interesting outcome is `applied is True` (the tampering
+# lands cleanly) with the fix still absent -- the same shape as
+# `test_goldens.py`'s django/settings-module controls, just via the file
+# checkout rather than the ancestor walk.
+_TAMPERED_TEST_UTILS = """\
+from tests.unittest import TestCase
+
+
+class UtilsTests(TestCase):
+    def test_host_from_uri(self):
+        pass
+
+    def test_list_to_scope(self):
+        pass
+
+    def test_params_from_uri(self):
+        pass
+
+    def test_scope_to_list(self):
+        pass
+"""
+
+_TAMPERED_NAMES = tuple(
+    f"tests/oauth2/rfc6749/test_utils.py::UtilsTests::{name}"
+    for name in (
+        "test_host_from_uri",
+        "test_list_to_scope",
+        "test_params_from_uri",
+        "test_scope_to_list",
+    )
+)
+
+
+@docker
+async def test_a_patch_that_overwrites_a_test_file_is_reverted(swesmith_runtime):
+    # The image's default HEAD is not base_commit; read the file at the
+    # exact commit `grade()` itself checks out, matching
+    # `test_goldens.py`'s own django controls, or a diff built against the
+    # wrong version may not even apply.
+    await swesmith_runtime.run(["git", "checkout", "-q", "origin/" + SWESMITH_GOLDEN + "~1"], {})
+    original = (
+        await swesmith_runtime.run(["cat", "tests/oauth2/rfc6749/test_utils.py"], {})
+    ).stdout
+    patch = _unified_diff(
+        "tests/oauth2/rfc6749/test_utils.py", original, _TAMPERED_TEST_UTILS
+    )
+    data = _train_task().data
+    report = await grading.grade(swesmith_runtime, data, patch)
+    assert report.applied is True
+    assert report.restored is True
+    # The tampered names must show the real, pre-fix outcome (FAILED --
+    # confirmed by a separate golden above that these four genuinely fail on
+    # an untouched checkout) rather than the forced pass the tamper tried to
+    # substitute. Checking `results` directly, not just `reward == 0.0`:
+    # every other fail-to-pass test is untouched by this patch and would
+    # keep the reward at 0.0 even if this specific restoration were
+    # completely broken, so `reward` alone would not discriminate.
+    for name in _TAMPERED_NAMES:
+        assert report.results.get(name) == "FAILED"
+    assert report.reward == 0.0
+
+
+@docker
+async def test_setup_raises_on_a_mis_shaped_branch_rather_than_paying_an_empty_patch():
+    # CRITICAL/IMPORTANT 3's own failure mode, observed directly rather than
+    # inferred: upstream only creates the "Remove F2P Tests" commit when a
+    # bug's fail-to-pass entries derive at least one file (`gather.py`'s
+    # `if f2p_test_files:`). A row that never got that commit has a 2-commit
+    # branch, not 3, and `~1` from its tip lands on the *pristine* "Initial
+    # commit" instead of "Bug Patch" -- no bug present, so an EMPTY patch
+    # would score every fail-to-pass test PASSED for free. Simulated here by
+    # pointing `base_commit` at the real branch's own pristine ancestor
+    # (`origin/main`, confirmed by hand to have commit message "Initial
+    # commit", never "Bug Patch") rather than waiting for such a row to
+    # exist in the dataset -- none does today (checked against all 59,136
+    # rows), which is exactly why this needs a direct simulation, not a
+    # fixture.
+    task = _train_task()
+    bad_data = task.data.model_copy(
+        update={"base_commit": "origin/main"}, deep=False
+    )
+    bad_task = SweTask(bad_data)
+    async with _provisioned(bad_task) as box:
+        with pytest.raises(RuntimeError, match="environment preparation failed"):
+            await bad_task.setup(_trace(bad_task), box)
+
+
+@docker
+async def test_episode_reference_patch_scores_one():
+    # Exercises the *real* setup()->finalize()->env.finalize() pipeline end
+    # to end for a train task -- not `grading.grade` called directly, like
+    # every golden above -- so it is the one test that actually runs
+    # `SweTask.setup()`'s new SWE-smith-only guard-and-reroot step
+    # (`taskset._TRAIN_GUARD_AND_REROOT`) rather than assuming it works.
+    episode = await run_gold_episode(_train_task())
+    solution = episode.traces[0]
+    assert solution.rewards["patch_passes_tests"].score == 1.0

@@ -71,32 +71,63 @@ def test_default_num_images_is_twenty():
     assert corpus.DEFAULT_SWESMITH_IMAGES == 20
 
 
-def test_load_swesmith_rows_excludes_unreversible_and_overcapped_rows_and_stays_unique():
+def test_load_swesmith_rows_default_is_uncapped_and_stays_unique():
     rows = corpus.load_swesmith_rows(20)
-    # 23,844 minus 40 add/delete/rename/copy rows (one of the 41 measured in
-    # isolation is also over the default test-count cap, and is counted
-    # there instead) minus 632 rows over DEFAULT_SWESMITH_MAX_TEST_COUNT.
-    assert len(rows) == 23844 - 40 - 632 == 23172
+    # 23,844 minus the 41 add/delete/rename/copy rows -- `max_test_count`
+    # defaults to `None` (uncapped): real measurement showed the cost this
+    # would guard against is not a problem for this corpus (see
+    # corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT's own docstring).
+    assert len(rows) == 23844 - 41 == 23803
     ids = [row.instance_id for row in rows]
     assert len(ids) == len(set(ids))
 
 
-def test_max_test_count_cap_is_enforced():
+def test_max_test_count_cap_is_enforced_when_given():
     rows = corpus.load_swesmith_rows(20, max_test_count=100)
     assert rows  # the cap must not empty the corpus at a realistic value
     for row in rows:
         assert len(row.fail_to_pass) + len(row.pass_to_pass) <= 100
 
 
-def test_max_test_count_none_disables_the_cap():
-    capped = corpus.load_swesmith_rows(20, max_test_count=100)
+def test_max_test_count_default_matches_explicit_none():
+    default = corpus.load_swesmith_rows(20)
+    explicit_none = corpus.load_swesmith_rows(20, max_test_count=None)
+    assert default == explicit_none
+
+
+def test_the_documented_cap_value_excludes_real_rows():
     uncapped = corpus.load_swesmith_rows(20, max_test_count=None)
-    assert len(uncapped) > len(capped)
+    capped = corpus.load_swesmith_rows(20, max_test_count=corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT)
+    assert len(capped) < len(uncapped)
+    assert len(capped) == 23172
 
 
 def test_load_swesmith_rows_rejects_a_nonpositive_max_test_count():
     with pytest.raises(ValueError):
         corpus.load_swesmith_rows(20, max_test_count=0)
+
+
+def test_swesmith_row_defect_flags_empty_fail_to_pass():
+    # No row in the pinned revision actually triggers this (checked against
+    # all 59,136, not sampled -- see load_swesmith_rows's own docstring), so
+    # this exercises the extracted, pure predicate directly rather than
+    # relying on `load_swesmith_rows` to find a real row that never exists;
+    # a test that only asserted `all(row.fail_to_pass for row in rows)`
+    # against the real corpus would pass identically whether or not the
+    # filter existed at all.
+    from reliquary_swe.corpus import _swesmith_row_defect
+
+    assert _swesmith_row_defect((), ("some::test",), max_test_count=None) == "empty_fail_to_pass"
+    assert _swesmith_row_defect(("f::t",), (), max_test_count=None) is None
+
+
+def test_swesmith_row_defect_flags_too_costly_only_when_capped():
+    from reliquary_swe.corpus import _swesmith_row_defect
+
+    f2p, p2p = ("f::a", "f::b"), ("p::a", "p::b", "p::c")  # 5 total
+    assert _swesmith_row_defect(f2p, p2p, max_test_count=4) == "too_costly"
+    assert _swesmith_row_defect(f2p, p2p, max_test_count=5) is None
+    assert _swesmith_row_defect(f2p, p2p, max_test_count=None) is None
 
 
 def test_swesmith_rows_carry_the_fields_grading_needs():
@@ -253,3 +284,43 @@ def test_unparseable_output_yields_no_results_rather_than_raising():
     row = corpus.load_swesmith_rows(20)[0]
     assert swesmith_adapter.parse_results(row, "") == {}
     assert swesmith_adapter.parse_results(row, "not a pytest log at all") == {}
+
+
+def test_ensure_no_patch_key_in_swesmith_instance_dict():
+    """Pins `_instance`'s own docstring: adding `KEY_PATCH` would route a
+    `min_testing=True` profile with no derivable fail-to-pass files into a
+    live GitHub clone attempted inside a `network_allow=[]` grading box.
+    """
+    row = corpus.load_swesmith_rows(20)[0]
+    instance = swesmith_adapter._instance(row)
+    assert "patch" not in instance
+
+
+def test_only_the_owning_adapter_imports_its_third_party_library():
+    """The one-module invariant the design spec establishes for `swebench`
+    (`swe_adapter.py` docstring) and this package extends to `swesmith`:
+    each external test-harness library is imported behind exactly one name
+    we own, so a version bump touches one file. A static source scan, not
+    an import-time check, so it catches a future `import swesmith` dropped
+    into an unrelated module even if that module is never exercised by any
+    other test.
+    """
+    import ast
+    from pathlib import Path
+
+    package_dir = Path(swesmith_adapter.__file__).parent
+    owners = {"swebench": "swe_adapter.py", "swesmith": "swesmith_adapter.py"}
+    violations = []
+    for path in sorted(package_dir.glob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module.split(".")[0]]
+            else:
+                continue
+            for name in names:
+                if name in owners and path.name != owners[name]:
+                    violations.append(f"{path.name} imports {name!r}")
+    assert violations == []

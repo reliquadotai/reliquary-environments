@@ -85,12 +85,12 @@ SPHINX_GOLDEN = "sphinx-doc__sphinx-8595"
 
 def _first_task() -> SweTask:
     config = vf.taskset_config_type("reliquary-swe")
-    return next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+    return next(iter(vf.load_taskset(config(id="reliquary-swe", split="eval")).head(1)))
 
 
 def _task_for(instance_id: str) -> SweTask:
     config = vf.taskset_config_type("reliquary-swe")
-    for task in vf.load_taskset(config(id="reliquary-swe")):
+    for task in vf.load_taskset(config(id="reliquary-swe", split="eval")):
         if task.data.instance_id == instance_id:
             return task
     raise AssertionError(f"{instance_id} is not in the taskset")
@@ -185,7 +185,12 @@ async def run_gold_episode(task: SweTask) -> vf.Episode:
     config_cls = vf.taskset_config_type("reliquary-swe")
     env = SweEnv(
         SweEnvConfig(
-            taskset=config_cls(id="reliquary-swe"),
+            # `run_gold_episode` is generic over `task` (eval or train); this
+            # construction is unread by `env.finalize` either way, but
+            # passing the task's own split rather than relying on the
+            # config's default keeps this correct for both callers even if
+            # that default ever changes.
+            taskset=config_cls(id="reliquary-swe", split=task.data.split),
             # This box is Docker-only; the config's own default (Prime) has no
             # host here. The task's real image/workdir/network policy still
             # come from resolve_runtime_config, exactly as a real run would.

@@ -8,7 +8,7 @@ docker = pytest.mark.docker
 
 def _first_task() -> SweTask:
     config = vf.taskset_config_type("reliquary-swe")
-    return next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+    return next(iter(vf.load_taskset(config(id="reliquary-swe", split="eval")).head(1)))
 
 
 def _trace(task: SweTask) -> vf.Trace:
@@ -34,13 +34,13 @@ def test_task_key_is_the_instance_id_not_a_content_hash():
 
 def test_every_task_refuses_the_network():
     config = vf.taskset_config_type("reliquary-swe")
-    for task in vf.load_taskset(config(id="reliquary-swe")).head(5):
+    for task in vf.load_taskset(config(id="reliquary-swe", split="eval")).head(5):
         assert task.data.network_allow == []
 
 
 def test_every_task_names_an_image_and_a_workdir():
     config = vf.taskset_config_type("reliquary-swe")
-    for task in vf.load_taskset(config(id="reliquary-swe")).head(5):
+    for task in vf.load_taskset(config(id="reliquary-swe", split="eval")).head(5):
         assert task.data.image
         assert task.data.workdir
 
@@ -52,7 +52,7 @@ def test_every_phase_has_a_deadline():
     # a rollout slot for hours; nothing here should be able to do that
     # unboundedly again.
     config = vf.taskset_config_type("reliquary-swe")
-    for task in vf.load_taskset(config(id="reliquary-swe")).head(5):
+    for task in vf.load_taskset(config(id="reliquary-swe", split="eval")).head(5):
         assert task.data.timeout.setup is not None
         assert task.data.timeout.agent is not None
         assert task.data.timeout.finalize is not None

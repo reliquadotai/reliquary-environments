@@ -41,7 +41,7 @@ def _task(instance_id: str) -> vf.Task:
     # Goes through the real SweTaskset rather than hand-building a SweTask,
     # so this can't quietly drift from what production code actually yields.
     config = vf.taskset_config_type("reliquary-swe")
-    for task in vf.load_taskset(config(id="reliquary-swe")):
+    for task in vf.load_taskset(config(id="reliquary-swe", split="eval")):
         if task.data.instance_id == instance_id:
             return task
     raise AssertionError(f"{instance_id} is not in the taskset")

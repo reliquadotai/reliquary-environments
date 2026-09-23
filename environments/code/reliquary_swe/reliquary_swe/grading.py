@@ -436,19 +436,18 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     # would touch the source-monkeypatch vector this module's own docstring
     # names. Deliberately not built now; see task-4-report.md.
     row = _row_for(data)
-    # `version` is what MAP_REPO_VERSION_TO_SPECS is keyed by (spec section
-    # 8); a row with none (SWE-smith) resolves its test command and log
-    # parser through swesmith_adapter's own per-repo registry instead. Same
-    # discriminator family as `_restore_strategy_for`, just keyed on the
-    # field that specific decision actually depends on.
-    if data.version.strip():
+    # `split` is already on the wire and is literally "which corpus is
+    # this" -- the honest discriminator for this decision, rather than
+    # `version` (empty for every SWE-smith row, but a proxy for the real
+    # question, not the question itself).
+    if data.split == "train":
+        run = await runtime.run(swesmith_adapter.test_command(row), {})
+        results = swesmith_adapter.parse_results(row, run.stdout or "")
+    else:
         run = await runtime.run(swe_adapter.test_command(row), {})
         results = swe_adapter.parse_results(
             row, swe_adapter.wrap_test_output(run.stdout or "")
         )
-    else:
-        run = await runtime.run(swesmith_adapter.test_command(row), {})
-        results = swesmith_adapter.parse_results(row, run.stdout or "")
 
     f2p = sum(1 for name in data.fail_to_pass if results.get(name) == "PASSED")
     p2p = sum(1 for name in data.pass_to_pass if results.get(name) == "PASSED")

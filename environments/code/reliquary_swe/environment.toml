@@ -94,16 +94,21 @@ rows = 500
 # `train`'s two sizes, both measured against the pinned revision above, not
 # guessed: the full corpus (`SweRow` rows SWE-smith's `train` split
 # publishes) versus what this package's *default* configuration
-# (`num_images=20`, `max_test_count=5060`) actually exposes -- 23,844 raw
-# rows in the top 20 images, minus 40 whose bug-injection patch cannot be
-# reversed (file add/delete/rename/copy; see corpus._reverse_unified_diff)
-# and 632 over the default test-count cap (see
-# corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT for why that cap exists and how it
-# was measured). A different `num_images`/`max_test_count` is a different,
-# equally valid task set of a different size -- these two numbers describe
-# the shipped default, not a hard limit.
+# (`num_images=20`, `max_test_count=None` -- uncapped; real container
+# measurements found this corpus's cost a non-problem, see
+# corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT's own docstring) actually exposes:
+# 23,844 raw rows in the top 20 images, minus 41 whose bug-injection patch
+# cannot be reversed (file add/delete/rename/copy; see
+# corpus._reverse_unified_diff) and 0 with an empty FAIL_TO_PASS (a further,
+# always-applied exclusion; none observed in the pinned revision, checked
+# against every row). A different `num_images`/`max_test_count` is a
+# different, equally valid task set of a different size -- these numbers
+# describe the shipped default, not a hard limit. Passing
+# `max_test_count=5060` (the measured p95, named as
+# `corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT`) instead would additionally
+# exclude 632 rows, leaving 23,172.
 train_rows = 59136
-virtual_length = 23172
+virtual_length = 23803
 
 # There is no `[execution]` field for a scoring deadline: `vf.TaskData.timeout`
 # is set per task, not per environment, so it is not declared here. Every

@@ -35,11 +35,59 @@ Fix the issue by editing the repository's source. Do not edit the tests.
 # verifier output are produced while the image is built with the reference
 # patch applied, so they can name the very lines under test. Third-party
 # dependencies are kept: the repository must still build offline.
-_CLEANUP = " ; ".join(
+#
+# Split into three parts, assembled by `setup()`, because SWE-smith needs an
+# extra step *between* checkout and the generic ref-stripping below (see
+# `_TRAIN_GUARD_AND_REROOT`'s own docstring) -- order matters: the guard and
+# re-root must run before `reflog expire`+`gc`, or the ancestor they sever
+# survives (git will not let `gc` drop an ancestor of HEAD).
+_CHECKOUT = " ; ".join(
     [
         "set -e",
         'git -C /testbed reset --hard "$BASE_COMMIT"',
         'git -C /testbed checkout -q "$BASE_COMMIT"',
+    ]
+)
+
+# SWE-smith-only (spec section 8's corpus has no analogue of this: a
+# SWE-bench Verified `base_commit` is an ordinary point in real upstream
+# history, and the fix for its own bug is a *descendant*, which the ref
+# stripping below already handles). Confirmed by hand, on the shipped
+# `_CLEANUP` before this fix existed (see the implementation report):
+# upstream builds every SWE-smith image's `main` from the pristine,
+# already-fixed tree as a single commit, then builds each instance's own
+# branch as exactly that commit plus one child, "Bug Patch". So
+# `origin/<instance_id>~1` -- this package's `base_commit` for a train row
+# -- is *the pristine tree's own child*, and after checkout the box holds
+# precisely two commits with the fix sitting one parent away:
+#
+#   git diff HEAD HEAD^      # == the exact gold patch, verbatim
+#   git show HEAD^:<path>    # == the fixed file, verbatim
+#
+# Stripping refs (the step below, shared with the SWE-bench Verified path)
+# does not touch this: HEAD's own parent pointer keeps the pristine commit
+# reachable with no ref needed at all, and `git gc` will never prune an
+# ancestor of HEAD. Two steps close it: assert the branch is shaped as
+# documented (fail loud rather than silently pay a mis-shaped one -- see
+# also the FAIL_TO_PASS-emptiness guard in `corpus.load_swesmith_rows`),
+# then re-root HEAD onto a fresh, parentless commit carrying the identical
+# tree, which severs the ancestry link outright so the ref-stripping and
+# `gc` immediately below actually make the old chain unreachable and prune
+# it -- verified directly: after this, `git rev-list --count HEAD` is 1 and
+# the gold patch's added lines are absent from a full
+# `git cat-file --batch-all-objects --batch` scan.
+_TRAIN_GUARD_AND_REROOT = " ; ".join(
+    [
+        'test "$(git -C /testbed log -1 --format=%s "$BASE_COMMIT")" = "Bug Patch"',
+        "NEW_ROOT=$(git -C /testbed -c user.name=reliquary-swe "
+        "-c user.email=reliquary-swe@localhost "
+        "commit-tree HEAD^{tree} -m base)",
+        'git -C /testbed reset --hard "$NEW_ROOT"',
+    ]
+)
+
+_STRIP_AND_GC = " ; ".join(
+    [
         # Drop every ref that could reach a later commit, then expire the
         # reflog so neither `git log --all` nor `git fsck` finds one.
         "git -C /testbed for-each-ref --format='%(refname)' "
@@ -84,8 +132,20 @@ class SweTask(vf.Task[SweData]):
         return self.data.instance_id
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        # `split` -- already on the wire, and the honest discriminator for
+        # this decision (it is literally "which corpus is this") -- decides
+        # whether the SWE-smith-only guard-and-reroot step runs. See
+        # `_TRAIN_GUARD_AND_REROOT`'s own docstring for why "train" needs it
+        # and "eval" must not: a SWE-bench Verified `base_commit` has no
+        # pristine-tree ancestor to sever, and asserting a "Bug Patch"
+        # commit message on it would just fail every eval task.
+        steps = [_CHECKOUT]
+        if self.data.split == "train":
+            steps.append(_TRAIN_GUARD_AND_REROOT)
+        steps.append(_STRIP_AND_GC)
+        cleanup = " ; ".join(steps)
         result = await runtime.run(
-            ["sh", "-c", _CLEANUP], {"BASE_COMMIT": self.data.base_commit}
+            ["sh", "-c", cleanup], {"BASE_COMMIT": self.data.base_commit}
         )
         if result.exit_code != 0:
             raise RuntimeError(
@@ -132,6 +192,32 @@ class SweTasksetConfig(vf.TasksetConfig):
     # its own. "eval" is SWE-bench Verified (spec section 8: an evaluation
     # set, never trained on); "train" is SWE-smith, this package's training
     # corpus.
+    #
+    # A real risk, and worth naming even though the fix below is not what
+    # was first tried: now that "train" exists, the likeliest operator error
+    # is wiring `[[orchestrator.train.source]]` and forgetting to say which
+    # split, which would default to "eval" and train on the evaluation set
+    # silently, at full speed. A field with NO default was tried first, to
+    # force every caller to declare intent -- and reverted, because it does
+    # not just add friction, it breaks the CLI outright: verified directly,
+    # `uv run validate reliquary-swe ...` (any taskset-first CLI --
+    # `resolve.py`'s `narrow_taskset_config`) constructs
+    # `SweTasksetConfig(id="reliquary-swe")` with no other fields as a
+    # bootstrapping step *before* CLI overrides are applied, and a required
+    # field makes that step itself raise `pydantic.ValidationError`,
+    # regardless of what `--taskset.split` the actual invocation passes.
+    # Every `TasksetConfig` subclass in this repository needs a workable
+    # default on every field for exactly this reason -- confirmed by the
+    # identical pattern already in `reliquary_code.taskset.CodeConfig.split:
+    # Literal["train"] = "train"`, which still carries a default despite
+    # having only one legal value. The real protection against the
+    # named risk is structural and already in place: `rl.toml` ships with
+    # no `[[orchestrator.train.source]]` at all (`TrainSource` itself
+    # raises with none), so nothing trains by default regardless of this
+    # field's value, and wiring a real source is a single, deliberate,
+    # documented action (see `examples/prime_rl/rl.toml`'s own comment) --
+    # not something this field can fail-safe on its own without breaking
+    # every taskset-first CLI command for this package.
     split: Literal["eval", "train"] = "eval"
     # Only read when split="train". Together with `max_test_count`, this
     # determines the exact task set (spec section 8: "declared, never
@@ -140,10 +226,15 @@ class SweTasksetConfig(vf.TasksetConfig):
     num_images: int = corpus.DEFAULT_SWESMITH_IMAGES
     # Only read when split="train". Caps fail-to-pass + pass-to-pass test
     # count per instance -- SWE-smith's own per-instance cost is heavily
-    # right-skewed, and this is the declared, deterministic bound on it (see
-    # `corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT` for the measurements behind
-    # the default). `None` disables the cap.
-    max_test_count: int | None = corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT
+    # right-skewed, and this is the declared, deterministic bound on it.
+    # `None` (the default) disables the cap: this package's own real
+    # container measurements found the shipped corpus's cost a non-problem
+    # (see `corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT`'s own docstring), so
+    # discarding real training rows by default to bound a cost that is not
+    # observed here would be the wrong trade. Pass
+    # `corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT` (its measured p95) explicitly
+    # if a repository this package has not measured ever needs it.
+    max_test_count: int | None = None
 
 
 # Every phase of a rollout defaults to no limit at all (`TimeoutConfig`'s and

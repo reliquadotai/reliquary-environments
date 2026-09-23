@@ -48,11 +48,11 @@ than assumed (see the implementation report for the transcripts):
 
 from __future__ import annotations
 
-from swebench.harness.constants import FAIL_TO_PASS, PASS_TO_PASS, TestStatus
 from swesmith.profiles import registry
 from swesmith.profiles.python import PythonProfile
 
 from reliquary_swe.corpus import SweRow
+from reliquary_swe.swe_adapter import FAIL_TO_PASS, PASS_TO_PASS, TestStatus
 
 # `conda activate testbed` never needs a separate locale export the way
 # swe_adapter's `_ACTIVATE_TESTBED` does for SWE-bench Verified: checked by
@@ -66,6 +66,24 @@ from reliquary_swe.corpus import SweRow
 def _instance(row: SweRow) -> dict[str, object]:
     """The dict shape every `swesmith.profiles` call in this module expects:
     the subset of SWE-smith's own instance schema those calls actually read.
+
+    Deliberately never includes `KEY_PATCH` ("patch"). `get_test_cmd`'s own
+    branching (`swesmith/profiles/base.py`) checks
+    `self.min_testing and FAIL_TO_PASS in instance` *before* it ever checks
+    for a patch key, and this dict always sets `FAIL_TO_PASS` (as a key,
+    even when the value is an empty list), so that branch always returns
+    first for every `min_testing=True` profile this package runs today --
+    the patch-requiring branch below it is unreachable from here. It stays
+    unreachable only as long as `KEY_PATCH` stays out of this dict: adding
+    it (e.g. to "help" by passing `row.gold_patch`) would route a
+    `min_testing=True` profile with no `FAIL_TO_PASS` files derived into
+    `_get_cached_test_paths()` -> `self.clone()` -- a live GitHub clone
+    attempted *at grading time*, inside a box whose whole `network_allow=[]`
+    point is that no such thing can succeed -- and even where it could
+    reach the network, `row.gold_patch` is the *fix* where upstream's own
+    code expects the bug-introducing patch, a second, independent way the
+    same one-line change would be wrong. `test_ensure_no_patch_key_in_
+    swesmith_instance_dict` in `tests/test_swesmith_adapter.py` pins this.
     """
     return {
         "instance_id": row.instance_id,

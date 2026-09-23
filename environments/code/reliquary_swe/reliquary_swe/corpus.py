@@ -27,7 +27,15 @@ from dataclasses import dataclass
 
 from datasets import load_dataset
 
-SPLITS = ("eval", "train")
+# The splits `load_rows` (the SWE-bench-shaped loader) accepts. SWE-smith's
+# "train" split is a different schema entirely and goes through
+# `load_swesmith_rows` instead -- `_SOURCES` below also has a "train" entry
+# (both loaders share the same pinned-revision convention), but `load_rows`
+# itself must never accept it: SWE-smith rows have no `base_commit`,
+# `version` or `test_patch` columns, so `load_rows("train")` would not fail
+# fast with a clear message, it would fail deep inside row construction with
+# a confusing `KeyError`.
+SPLITS = ("eval",)
 
 # Pinned by revision, as every other environment here pins its data. An
 # unpinned corpus makes two runs incomparable for a reason that never shows up
@@ -50,37 +58,49 @@ _SOURCES = {
 }
 
 # The measured sweet spot (task brief, confirmed against the pinned revision
-# below): 20 images -> 23,844 tasks, ~45GB of images on disk. Configurable via
-# `SweTasksetConfig.num_images`; declared, never auto-sized from local free
-# disk -- see corpus.load_swesmith_rows.
+# below): 20 images -> 23,844 tasks. The task brief's own "~45GB" cites
+# compressed download size; this package's own five pulled images (see the
+# implementation report) averaged ~1.4GB compressed but ~3.9GB *on disk*
+# once decompressed, so 20 images is closer to ~78GB on disk, not ~45GB --
+# restated here from direct measurement rather than left standing on the
+# inherited figure. Configurable via `SweTasksetConfig.num_images`; declared,
+# never auto-sized from local free disk -- see corpus.load_swesmith_rows.
 DEFAULT_SWESMITH_IMAGES = 20
 
-# The second, orthogonal selection dimension, alongside `DEFAULT_SWESMITH_IMAGES`:
-# a declared cap on fail-to-pass + pass-to-pass test count, because SWE-smith's
-# per-instance test count is heavily right-skewed (measured on the full pinned
-# corpus: p50=415, p75=1151, p90=2657, p95=5060, max=22028) and that skew is a
-# real per-instance cost difference for the subset of repos whose profile sets
-# `min_testing=True` (their test command narrows to exactly these tests'
-# files -- see swesmith_adapter.py). Set at the measured p95 rather than a more
-# aggressive cut: seven real container gradings across the size range (the
-# implementation report has the transcripts), including the single most
-# expensive instance in the entire 59,136-row corpus
-# (pandas-dev/pandas.pr_59615, 22,028 fail+pass-to-pass entries, 23,724 tests
-# *actually* run), measured 3-40 seconds wall clock -- two orders of magnitude
-# below a naive per-test estimate carried over from a different benchmark
-# (SWE-bench Verified) and a different, per-test-heavier repo (sympy). Nothing
-# in this package's own measurements justifies a cut as aggressive as p75; p95
-# is kept anyway as a cheap backstop against a repository this package has not
-# measured turning out as per-test-expensive as that one did. Excludes 631 of
-# the top 20 images' 23,844 pre-exclusion rows (2.65%).
+# A named, documented value to reach for, NOT the active default (see
+# `load_swesmith_rows`, which defaults `max_test_count` to `None`). The
+# second, orthogonal selection dimension alongside `DEFAULT_SWESMITH_IMAGES`
+# when a caller does pass it: a declared cap on fail-to-pass + pass-to-pass
+# test count, because SWE-smith's per-instance test count is heavily
+# right-skewed (measured on the full pinned corpus: p50=415, p75=1151,
+# p90=2657, p95=5060, max=22028) and that skew IS a real per-instance cost
+# difference for the subset of repos whose profile sets `min_testing=True`
+# (their test command narrows to exactly these tests' files -- see
+# swesmith_adapter.py).
 #
-# For the other, larger share of the corpus -- repos whose profile leaves
-# `min_testing` at its default `False` -- this cap does not bound cost at all:
-# their test command always runs the whole suite regardless of any one
-# instance's fail-to-pass/pass-to-pass counts, so cost there is a per-repository
-# constant, not a per-instance one. Measured directly (same report): whole-suite
-# runs for four such repositories in the top 20 images took 3-34 seconds, cheap
-# enough that no additional bound was added for them.
+# Not the default, because seven real container gradings across the size
+# range (the implementation report has the transcripts) found this
+# corpus's actual cost a non-problem: the single most expensive instance in
+# the entire 59,136-row corpus (pandas-dev/pandas.pr_59615, 22,028
+# fail+pass-to-pass entries, 23,724 tests *actually* run) graded in 40
+# seconds -- two orders of magnitude below a naive per-test estimate
+# carried over from a different benchmark (SWE-bench Verified) and a
+# different, per-test-heavier repo (sympy). Discarding 632 real training
+# rows (2.65% of the top 20 images' 23,844 pre-exclusion rows) by default
+# to bound a cost this package's own measurement shows is not a problem
+# would be the wrong trade. Kept as a named constant, at the measured p95,
+# for the day a repository this package has not measured turns out as
+# per-test-expensive as sympy did -- pass it explicitly as
+# `max_test_count` when that day comes.
+#
+# For the larger share of the corpus regardless -- repos whose profile
+# leaves `min_testing` at its default `False` -- this cap would not bound
+# cost at all even if applied: their test command always runs the whole
+# suite regardless of any one instance's fail-to-pass/pass-to-pass counts,
+# so cost there is a per-repository constant, not a per-instance one.
+# Measured directly (same report): whole-suite runs for four such
+# repositories in the top 20 images took 3-34 seconds, cheap enough that no
+# bound is needed for them either.
 DEFAULT_SWESMITH_MAX_TEST_COUNT = 5060
 
 
@@ -235,16 +255,39 @@ def swesmith_image_rank() -> tuple[str, ...]:
     return tuple(sorted(counts, key=lambda image: (-counts[image], image)))
 
 
+def _swesmith_row_defect(
+    fail_to_pass: tuple[str, ...],
+    pass_to_pass: tuple[str, ...],
+    max_test_count: int | None,
+) -> str | None:
+    """Which unconditional or cap-based exclusion, if any, a SWE-smith row
+    hits -- factored out of `load_swesmith_rows`'s loop so each reason is a
+    pure, directly testable function of the row's own test lists, not
+    something only exercisable by finding a real dataset row that happens
+    to trigger it (none does, for the empty-FAIL_TO_PASS case, in the
+    pinned revision -- see `load_swesmith_rows`'s own docstring).
+    """
+    if not fail_to_pass:
+        return "empty_fail_to_pass"
+    if max_test_count is not None and len(fail_to_pass) + len(pass_to_pass) > max_test_count:
+        return "too_costly"
+    return None
+
+
 @functools.lru_cache(maxsize=None)
 def load_swesmith_rows(
     num_images: int = DEFAULT_SWESMITH_IMAGES,
-    max_test_count: int | None = DEFAULT_SWESMITH_MAX_TEST_COUNT,
+    max_test_count: int | None = None,
 ) -> tuple[SweRow, ...]:
     """The task set for the top `num_images` SWE-smith images by task count,
-    additionally excluding any instance whose fail-to-pass + pass-to-pass
-    test count exceeds `max_test_count` (see `DEFAULT_SWESMITH_MAX_TEST_COUNT`
-    for why, and for the measurements behind the default). `None` disables
-    the cap.
+    optionally excluding any instance whose fail-to-pass + pass-to-pass test
+    count exceeds `max_test_count`. Uncapped by default: real container
+    measurements found the shipped corpus's cost a non-problem (see
+    `DEFAULT_SWESMITH_MAX_TEST_COUNT`'s own docstring for the numbers), so
+    the cap discards real training tasks by default only if a caller asks
+    for it -- pass `DEFAULT_SWESMITH_MAX_TEST_COUNT` (its measured p95)
+    explicitly if a repository this package has not measured turns out to
+    need it.
 
     Deterministic given (pinned revision, num_images, max_test_count) alone:
     `swesmith_image_rank` fixes which images are in, the cap is a pure
@@ -257,15 +300,33 @@ def load_swesmith_rows(
     sets, never a subset/superset relationship a shared index could paper
     over.
 
-    A further, small, unconditional exclusion: `_reverse_unified_diff` cannot
-    reverse a patch that adds, deletes, renames or copies a file (see its own
-    docstring), and measured against the top 20 images, 41 of 23,844 rows
-    (0.17%) do exactly that -- every one of them a `.pr_<N>` instance, the
-    "PR Mirroring" construction path `swe_adapter.get_test_cmd`'s own upstream
-    docstring calls out as different from the synthetic bug-generation
-    strategies (`func_basic`, `combine_*`, `lm_rewrite`) that make up the
-    rest of the corpus. Excluded rather than silently mis-scored; logged once
-    with the count so the exclusion is visible rather than assumed away.
+    Two further, small, unconditional exclusions, always applied regardless
+    of `max_test_count`:
+
+    - Empty `FAIL_TO_PASS`. Not observed in the pinned revision (checked
+      against all 59,136 rows, not sampled), but upstream's own
+      `gather.py` skips exactly this case when building the dataset
+      (`n_f2p == 0`) except for a `.pr_*` exception this package already
+      excludes for an unrelated reason (below) -- so a future revision
+      could carry one, and an instance with no fail-to-pass test cannot
+      express failure, only ever a vacuous, unconditional pass. Filtering
+      here is a second, independent line of defense alongside the
+      "Bug Patch" branch-shape assertion `taskset._TRAIN_GUARD_AND_REROOT`
+      makes inside the container (see that constant's own docstring) --
+      that one guards the branch upstream actually built; this one guards
+      the row upstream published, which is the more direct fix for this
+      specific failure mode and does not need a container to check.
+    - A patch `_reverse_unified_diff` cannot reverse: it adds, deletes,
+      renames or copies a file (see that function's own docstring), and
+      measured against the top 20 images, 41 of 23,844 rows (0.17%) do
+      exactly that -- every one of them a `.pr_<N>` instance, the "PR
+      Mirroring" construction path `swe_adapter.get_test_cmd`'s own
+      upstream docstring calls out as different from the synthetic
+      bug-generation strategies (`func_basic`, `combine_*`, `lm_rewrite`)
+      that make up the rest of the corpus.
+
+    Both are excluded rather than silently mis-scored; logged once with
+    their counts so the exclusion is visible rather than assumed away.
     """
     if num_images < 1:
         raise ValueError(f"num_images must be >= 1, got {num_images}")
@@ -275,6 +336,7 @@ def load_swesmith_rows(
     dataset = load_dataset(name, split=hf_split, revision=revision or None)
     selected = set(swesmith_image_rank()[:num_images])
     rows = []
+    skipped_empty_f2p = 0
     skipped_unreversible = 0
     skipped_too_costly = 0
     for row in dataset:
@@ -282,7 +344,11 @@ def load_swesmith_rows(
             continue
         fail_to_pass = _tests(row["FAIL_TO_PASS"])
         pass_to_pass = _tests(row["PASS_TO_PASS"])
-        if max_test_count is not None and len(fail_to_pass) + len(pass_to_pass) > max_test_count:
+        reason = _swesmith_row_defect(fail_to_pass, pass_to_pass, max_test_count)
+        if reason == "empty_fail_to_pass":
+            skipped_empty_f2p += 1
+            continue
+        if reason == "too_costly":
             skipped_too_costly += 1
             continue
         try:
@@ -302,14 +368,17 @@ def load_swesmith_rows(
                 image=row["image_name"],
             )
         )
-    total = skipped_unreversible + skipped_too_costly + len(rows)
-    if skipped_unreversible or skipped_too_costly:
+    total = skipped_empty_f2p + skipped_unreversible + skipped_too_costly + len(rows)
+    if skipped_empty_f2p or skipped_unreversible or skipped_too_costly:
         logging.getLogger(__name__).warning(
             "load_swesmith_rows(num_images=%d, max_test_count=%s): excluded "
-            "%d/%d rows whose patch adds/deletes/renames/copies a file, and "
-            "%d/%d rows over the test-count cap",
+            "%d/%d rows with empty FAIL_TO_PASS, %d/%d rows whose patch "
+            "adds/deletes/renames/copies a file, and %d/%d rows over the "
+            "test-count cap",
             num_images,
             max_test_count,
+            skipped_empty_f2p,
+            total,
             skipped_unreversible,
             total,
             skipped_too_costly,

@@ -228,12 +228,27 @@ corpus is a profile, not a data pin"):
   fail-to-pass tests' own files). `~1` from the branch tip — bug present,
   every test file still pristine — is the state a rollout starts from, and
   `SweRow.base_commit` carries it as a git revision expression
-  (`f"origin/{instance_id}~1"`) rather than a literal SHA; `setup()`'s
-  existing history-truncation cleanup consumes it identically either way,
-  and additionally strips every sibling instance's branch and `main` itself
-  — closing what would otherwise be the easiest reward hack in this whole
-  package, since the exact fix sits, unencrypted, in the very same
-  container's git history.
+  (`f"origin/{instance_id}~1"`) rather than a literal SHA. `setup()`'s
+  existing ref-stripping cleanup consumes either shape identically, and
+  closes the reachable-by-ref version of the obvious reward hack here (the
+  exact fix sitting in `origin/main`, in the very same container). It is
+  **not** enough on its own: `origin/main` and the "Bug Patch" commit's own
+  parent are the same object — `~1` is a *child* of the pristine tree, so
+  after checkout the box holds exactly two commits with the fix one parent
+  away (`git diff HEAD HEAD^` is the exact gold patch, `git show
+  HEAD^:<path>` is the fixed file, both offline, with zero refs needed).
+  Ref-stripping cannot touch an ancestor of HEAD — `git gc` will not drop
+  one. `taskset._TRAIN_GUARD_AND_REROOT` closes it for real: assert the
+  branch is shaped as documented (a "Bug Patch" commit message on
+  `base_commit`, so a mis-shaped branch raises instead of silently paying),
+  then re-root HEAD onto a fresh, parentless commit with the identical
+  tree, *before* the existing reflog-expire+`gc` runs, so the old chain
+  becomes genuinely unreachable and gets pruned. Verified directly: after
+  this, `git rev-list --count HEAD` is 1 and a full
+  `git cat-file --batch-all-objects --batch` scan finds none of the gold
+  patch's added lines anywhere in the object store. The grading box is
+  unaffected (a fresh checkout of `origin/<instance>~1`, never put through
+  this cleanup, needs that ref to resolve `base_commit` at all).
 - **No `test_patch`, and `patch`'s own direction is inverted.** SWE-smith's
   `patch` column is the diff that *introduces* its bug, not the fix —
   confirmed three ways (diff content, a real container run, and SWE-smith's
@@ -250,29 +265,34 @@ corpus is a profile, not a data pin"):
 
 **Corpus selection is two declared parameters, never auto-detected**
 (`SweTasksetConfig.num_images`, default 20; `.max_test_count`, default
-5060) — see `corpus.load_swesmith_rows`. `num_images` takes the top N
-images by task count (ties broken by image name), because a size sized from
-local free disk would let two machines disagree on what task #400 is.
-`max_test_count` caps fail-to-pass + pass-to-pass test count per instance,
-because that count is heavily right-skewed (p50=415, p95=5060, max=22,028
-across the full corpus) and, for the minority of repositories whose
-`swesmith` profile narrows its test command to exactly those tests
-(`min_testing=True` — pandas, sqlglot, sunpy, conan, sqlfluff among the top
-20 images), that skew is a real per-instance cost difference. Both
-parameters participate in task identity: two configs differing in either one
-are different task sets, never a shared index with a subset relationship.
+`None` — uncapped) — see `corpus.load_swesmith_rows`. `num_images` takes
+the top N images by task count (ties broken by image name), because a size
+sized from local free disk would let two machines disagree on what task
+#400 is. `max_test_count`, when set, caps fail-to-pass + pass-to-pass test
+count per instance, because that count is heavily right-skewed (p50=415,
+p95=5060, max=22,028 across the full corpus) and, for the minority of
+repositories whose `swesmith` profile narrows its test command to exactly
+those tests (`min_testing=True` — pandas, sqlglot, sunpy, conan, sqlfluff
+among the top 20 images), that skew is a real per-instance cost
+difference. Both parameters participate in task identity: two configs
+differing in either one are different task sets, never a shared index with
+a subset relationship.
+
 Real container measurements (seven gradings across the size range, the
 implementation report has the transcripts) found the *actual* cost far
 below a naive per-test estimate — even the single most expensive instance in
 the whole corpus (pandas, 22,028 fail+pass-to-pass entries) graded in 40
-seconds — so `max_test_count`'s default (the measured p95) is a cheap
-backstop against an unmeasured, per-test-heavier repository, not a response
-to an observed bottleneck in this corpus. For the majority of repositories
-(profile `min_testing=False`, the default), this cap does not bound cost at
-all: their test command always runs the whole suite regardless of any one
-instance's counts, so cost there is a fixed per-repository quantity —
-measured directly at 3-34 seconds for four such repositories in the top 20
-images.
+seconds — so `max_test_count` defaults to `None`: discarding real training
+rows by default to bound a cost this package's own measurement shows is not
+a problem here would be the wrong trade. `corpus.DEFAULT_SWESMITH_MAX_TEST_
+COUNT` (5060, the measured p95) is kept as a named value to pass explicitly
+if a repository this package has not measured ever turns out as
+per-test-expensive as sympy did (the source of the original, much higher
+estimate). For the majority of repositories (profile `min_testing=False`,
+the default), the cap would not bound cost at all even if set: their test
+command always runs the whole suite regardless of any one instance's
+counts, so cost there is a fixed per-repository quantity — measured
+directly at 3-34 seconds for four such repositories in the top 20 images.
 
 **Zero repository overlap with the evaluation set**, checked at every image
 count from 5 through the full 222, not only the shipped default of 20 — see
@@ -320,7 +340,7 @@ about the CI exclusion is silent: the marker exists precisely so it is a
 stated decision rather than a test that quietly stopped running.
 
 ```bash
-uv run python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary-swe'); print(next(iter(vf.load_taskset(c(id='reliquary-swe')))).key)"
+uv run python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary-swe'); print(next(iter(vf.load_taskset(c(id='reliquary-swe', split='eval')))).key)"
 ```
 
 The package exports `SweTaskset`, `SweEnv`, and `SweEnvConfig` for Verifiers.

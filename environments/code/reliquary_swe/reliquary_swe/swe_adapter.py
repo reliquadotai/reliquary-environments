@@ -58,8 +58,10 @@ import shlex
 
 from swebench.harness.constants import (
     END_TEST_OUTPUT,
+    FAIL_TO_PASS,
     LATEST,
     MAP_REPO_VERSION_TO_SPECS,
+    PASS_TO_PASS,
     START_TEST_OUTPUT,
     TestStatus,
     USE_X86,

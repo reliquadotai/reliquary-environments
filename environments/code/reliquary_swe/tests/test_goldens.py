@@ -23,7 +23,7 @@ slow = pytest.mark.slow
 
 def _env(**overrides) -> SweEnv:
     config_cls = vf.taskset_config_type("reliquary-swe")
-    return SweEnv(SweEnvConfig(taskset=config_cls(id="reliquary-swe"), **overrides))
+    return SweEnv(SweEnvConfig(taskset=config_cls(id="reliquary-swe", split="eval"), **overrides))
 
 
 def _unified_diff(path: str, old: str, new: str) -> str:
@@ -95,7 +95,7 @@ diff --git a/conftest.py b/conftest.py
 
 def _data(instance_id: str):
     config = vf.taskset_config_type("reliquary-swe")
-    for task in vf.load_taskset(config(id="reliquary-swe")):
+    for task in vf.load_taskset(config(id="reliquary-swe", split="eval")):
         if task.data.instance_id == instance_id:
             return task.data
     raise AssertionError(f"{instance_id} is not in the corpus")
@@ -426,7 +426,7 @@ async def test_the_grading_box_has_no_network_before_grading_runs(monkeypatch):
 
     monkeypatch.setattr(env_module.grading, "grade", fake_grade)
     config = vf.taskset_config_type("reliquary-swe")
-    task = next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+    task = next(iter(vf.load_taskset(config(id="reliquary-swe", split="eval")).head(1)))
     await run_gold_episode(task)
     assert "BLOCKED" in probe["stdout"]
 
@@ -435,7 +435,7 @@ async def test_the_grading_box_has_no_network_before_grading_runs(monkeypatch):
 async def test_a_gold_rollout_scores_one_end_to_end():
     # The whole loop: agent box, patch capture, a second box, grading.
     config = vf.taskset_config_type("reliquary-swe")
-    task = next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+    task = next(iter(vf.load_taskset(config(id="reliquary-swe", split="eval")).head(1)))
     episode = await run_gold_episode(task)
     assert episode.traces[0].rewards["patch_passes_tests"].score == 1.0
 
@@ -448,7 +448,7 @@ async def test_swe_report_carries_restored_onto_the_solvers_trace():
     # would undo that distinction even though grading.grade() itself still
     # computes it correctly.
     config = vf.taskset_config_type("reliquary-swe")
-    task = next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+    task = next(iter(vf.load_taskset(config(id="reliquary-swe", split="eval")).head(1)))
     episode = await run_gold_episode(task)
     report = episode.traces[0].info["swe_report"]
     assert report["restored"] is True
