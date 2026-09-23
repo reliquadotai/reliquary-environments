@@ -170,6 +170,53 @@ async def test_a_patch_that_rewrites_djangos_test_runner_scores_zero(django_runt
     patch = _unified_diff("tests/runtests.py", original, fake_script)
     report = await grading.grade(django_runtime, data, patch)
     assert report.applied is True
+    # A bare `reward == 0.0` cannot tell "the real suite ran and genuinely
+    # failed" apart from a collapsed run, a failed restoration, or a flake
+    # in a 12,311-test suite -- and would keep passing even if a future
+    # change deleted tests/runtests.py outright. `restored is True` confirms
+    # grading actually put the real file back (the pre-fix repr shows
+    # `restored=False`); `pass_to_pass_passed > 1400` confirms the real
+    # suite genuinely ran (all 1432 pass_to_pass entries resolve at base,
+    # per task-3-report.md's own measurement of this instance).
+    assert report.restored is True
+    assert report.pass_to_pass_passed > 1400
+    assert report.reward == 0.0
+
+
+@docker
+@slow
+async def test_a_patch_that_rewrites_djangos_settings_module_scores_zero(django_runtime):
+    # IMPORTANT 1's negative control (fix round 2). The identical bypass as
+    # the `runtests.py` control above, through a different, equally
+    # unrestored file: `--settings=test_sqlite` is DJANGO_SETTINGS_MODULE,
+    # imported by `runtests.py` INSIDE the grading process, before a single
+    # test runs. Named by no test_patch in the corpus, no conftest.py, and
+    # nothing test_entrypoint returns -- see
+    # swe_adapter.test_command_argument_paths. Genuinely slow for the same
+    # reason as the sibling control above (this instance's test_patch
+    # touches no python files, so a genuine restored run is django's entire
+    # suite).
+    data = _data(DJANGO_GOLDEN)
+    await django_runtime.run(["git", "checkout", "-q", data.base_commit], {})
+    original = (await django_runtime.run(["cat", "tests/test_sqlite.py"], {})).stdout
+    fake_lines = [f"{name} ... ok" for name in (*data.fail_to_pass, *data.pass_to_pass)]
+    fake_settings = (
+        "import os, sys\n"
+        f"for line in {fake_lines!r}:\n"
+        "    print(line)\n"
+        # os._exit skips stdio flushing entirely; with stdout block-buffered
+        # (no tty), an unflushed print is silently lost the instant this
+        # fires -- confirmed by hand: without the explicit flush, this
+        # dropped the tail of a 1,432-line pass_to_pass block believably
+        # enough to look like a *correct* zero for the wrong reason.
+        "sys.stdout.flush()\n"
+        "os._exit(0)\n"
+    )
+    patch = _unified_diff("tests/test_sqlite.py", original, fake_settings)
+    report = await grading.grade(django_runtime, data, patch)
+    assert report.applied is True
+    assert report.restored is True
+    assert report.pass_to_pass_passed > 1400
     assert report.reward == 0.0
 
 
@@ -214,6 +261,11 @@ async def test_a_patch_that_rewrites_sphinxs_tox_commands_scores_zero(sphinx_run
     patch = _unified_diff("tox.ini", original, fake)
     report = await grading.grade(sphinx_runtime, data, patch)
     assert report.applied is True
+    # `restored is True` and a genuine FAILED (not merely absent from
+    # `results`) rule out a collapsed run or a failed restoration reading as
+    # the same 0.0 this test exists to pin.
+    assert report.restored is True
+    assert report.results.get(data.fail_to_pass[0]) == "FAILED"
     assert report.reward == 0.0
 
 
@@ -259,4 +311,8 @@ async def test_a_patch_that_adds_files_and_squats_a_test_scores_zero(sphinx_runt
     )
     report = await grading.grade(sphinx_runtime, data, patch)
     assert report.applied is True
+    # Same reasoning as the two sphinx controls above: restored plus a
+    # genuine FAILED, not a bare zero a collapsed run also produces.
+    assert report.restored is True
+    assert report.results.get(data.fail_to_pass[0]) == "FAILED"
     assert report.reward == 0.0

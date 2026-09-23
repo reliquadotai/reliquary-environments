@@ -129,3 +129,90 @@ def test_infrastructure_paths_include_conftest_ancestors_of_test_patch():
     assert "pkg/tests/conftest.py" in paths
     assert "pkg/conftest.py" in paths
     assert "conftest.py" in paths
+
+
+def test_infrastructure_paths_include_djangos_settings_module():
+    # IMPORTANT 1 (fix round 2): --settings=test_sqlite is DJANGO_SETTINGS_MODULE,
+    # imported inside the grading process before a single test runs, and is
+    # named by no test_patch, no conftest.py, and nothing test_entrypoint
+    # returns on its own -- see swe_adapter.test_command_argument_paths.
+    data = _fake_swe_data("django/django", "1.11", test_patch="")
+    assert "tests/test_sqlite.py" in grading._test_infrastructure_paths(data)
+
+
+class _FakeResult:
+    """Stands in for `verifiers.v1.runtimes.base.ProgramResult`."""
+
+    def __init__(self, exit_code: int = 0):
+        self.exit_code = exit_code
+        self.stdout = ""
+        self.stderr = ""
+
+
+class _FakeRuntime:
+    """Records every `run`/`write` call `_restore_from_test_patch` makes,
+    without a real box. `fail_on` names argv tuples that report a non-zero
+    exit; everything else succeeds -- so a test can force exactly one step
+    to fail and check that failure propagates to `ok`.
+    """
+
+    def __init__(self, fail_on: frozenset = frozenset()):
+        self.calls: list[tuple] = []
+        self._fail_on = fail_on
+
+    async def run(self, argv, env):
+        key = tuple(argv)
+        self.calls.append(key)
+        return _FakeResult(1 if key in self._fail_on else 0)
+
+    async def write(self, path, data):
+        self.calls.append(("write", path))
+
+
+def _mixed_test_patch_data() -> SimpleNamespace:
+    """CRITICAL 1's own shape (fix round 1): a `test_patch` that both
+    modifies an existing file and adds a new one -- the exact 13-instance
+    case CRITICAL 1 is about (see grading._checkout's docstring), which the
+    sphinx golden in test_goldens.py (add-only) does not exercise. Pinned
+    here with a fake runtime rather than a real container: the shape is
+    about which git commands get issued, not about what a real repository
+    contains.
+    """
+    test_patch = (
+        "diff --git a/existing_test.py b/existing_test.py\n"
+        "--- a/existing_test.py\n+++ b/existing_test.py\n@@ -1 +1 @@\n-x\n+y\n"
+        "diff --git a/added_test.py b/added_test.py\n"
+        "new file mode 100644\n--- /dev/null\n+++ b/added_test.py\n@@ -0,0 +1,1 @@\n+x\n"
+    )
+    return SimpleNamespace(
+        instance_id="fake",
+        repo="astropy/astropy",
+        base_commit="0" * 40,
+        version="3.0",
+        fail_to_pass=(),
+        pass_to_pass=(),
+        gold_patch="",
+        test_patch=test_patch,
+    )
+
+
+async def test_restore_from_test_patch_checks_out_existing_and_removes_added():
+    data = _mixed_test_patch_data()
+    runtime = _FakeRuntime()
+    ok = await grading._restore_from_test_patch(runtime, data)
+    assert ("git", "checkout", data.base_commit, "--", "existing_test.py") in runtime.calls
+    assert ("rm", "-rf", "added_test.py") in runtime.calls
+    assert ok is True
+
+
+async def test_restore_from_test_patch_reports_a_failed_checkout():
+    # Pins Report.restored's own signal (IMPORTANT 4): nothing previously
+    # asserted `_restore_from_test_patch` can return False for a real
+    # failure, only that the no-op strategy always returns True -- a
+    # regression that hardcoded `ok = True` would have passed every existing
+    # test.
+    data = _mixed_test_patch_data()
+    failing = ("git", "checkout", data.base_commit, "--", "existing_test.py")
+    runtime = _FakeRuntime(fail_on=frozenset({failing}))
+    ok = await grading._restore_from_test_patch(runtime, data)
+    assert ok is False

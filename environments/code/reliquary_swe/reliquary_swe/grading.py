@@ -5,9 +5,16 @@ paths its chosen strategy names to their `base_commit` state (see
 `_restore_from_test_patch`), then the instance's own `test_patch` is
 reapplied, then tests run. What that actually guarantees: the specific paths
 a strategy restores -- `test_patch`'s own touched files, the `conftest.py`
-hierarchy above them, the test runner's own entry-point script, and its
-repo-root configuration files -- end the run exactly as they are at
-`base_commit`, regardless of what the patch under test did to them first.
+hierarchy above them, the test runner's own entry-point script and the
+repo-relative paths its own arguments name, and repo-root configuration
+files -- end the run exactly as they are at `base_commit`, regardless of
+what the patch under test did to them first. That list is not closed by
+construction: it is whatever `_test_infrastructure_paths` currently
+enumerates, and each of its entries (`swe_adapter.test_entrypoint`,
+`swe_adapter.test_command_argument_paths`, `swe_adapter.pytest_reporting_fixup`)
+was added after a real, distinct bypass was found running against it, not
+derived from a general survey of every way a test command can be told what
+to read.
 
 What it does NOT guarantee, and cannot: a patch confined entirely to
 *source* files can still forge a result -- for example, reassigning
@@ -107,14 +114,15 @@ async def _checkout(runtime: vf.Runtime, base_commit: str, path: str) -> bool:
 
     A batched checkout fails, and restores NONE of its paths, the instant a
     single pathspec does not match -- confirmed by hand under git 2.48.1.
-    Counted against the cached corpus: 15/500 instances have a `test_patch`
+    Counted against the cached corpus: 16/500 instances have a `test_patch`
     that adds a file, and 13 of those also carry an *existing* test file in
-    the same patch (django-11141/11749/13516/15525/16256/16454,
-    pylint-6528, sphinx-10614/10673/11510/8269/8548/8595) -- on every one of
-    those 13, restoring the existing file this way would have silently
-    restored nothing at all, because the added path's missing pathspec
-    poisoned the whole command. One path per call means one bad path fails
-    only itself.
+    the same patch (astropy-7336, django-11141/11749/13516/15525/16256/16454,
+    pylint-6528, sphinx-10614/10673/11510/8269/8548 -- not sphinx-8595, which
+    is add-only, both of its paths new: see IMPORTANT 6 in task-4-report.md)
+    -- on every one of those 13, restoring the existing file this way would
+    have silently restored nothing at all, because the added path's missing
+    pathspec poisoned the whole command. One path per call means one bad
+    path fails only itself.
     """
     result = await runtime.run(["git", "checkout", base_commit, "--", path], {})
     return result.exit_code == 0
@@ -178,9 +186,11 @@ def _test_infrastructure_paths(data: SweData) -> list[str]:
     `swe_adapter.test_command` depends on and that a patch confined entirely
     to source could still use to control what "the tests" report: the test
     runner's own entry-point script (django's `./tests/runtests.py`,
-    sympy's `bin/test` -- see `swe_adapter.test_entrypoint`), pytest/tox
-    configuration at the repo root, and the `conftest.py` hierarchy above
-    every path `test_patch` touches.
+    sympy's `bin/test` -- see `swe_adapter.test_entrypoint`), a repo-relative
+    path or module label the command's own *arguments* name (django's
+    `--settings=test_sqlite` -- see `swe_adapter.test_command_argument_paths`),
+    pytest/tox configuration at the repo root, and the `conftest.py`
+    hierarchy above every path `test_patch` touches.
 
     On 350/500 corpus instances (231 django, 75 sympy, 44 sphinx),
     `test_command` executes a file or reads a config the diff carries and
@@ -188,14 +198,20 @@ def _test_infrastructure_paths(data: SweData) -> list[str]:
     print a fake "... ok" line for every test is a *total* bypass, and an
     easier one than the conftest.py vector above: it needs no knowledge of
     pytest internals, `parse_log_django` keys on exactly that string, and
-    nothing about it looks like tampering with a test file.
+    nothing about it looks like tampering with a test file. The identical
+    bypass also works through django's settings module
+    (`tests/test_sqlite.py`), which `runtests.py` imports before running
+    anything -- a rewritten settings module can print the same fake lines
+    and exit at import time, never reaching `runtests.py` at all.
     """
     touched = _paths_touched_by(data.test_patch)
     paths = list(_TEST_CONFIG_FILES)
     paths.extend(_conftest_ancestors(touched))
-    entrypoint = swe_adapter.test_entrypoint(_row_for(data))
+    row = _row_for(data)
+    entrypoint = swe_adapter.test_entrypoint(row)
     if entrypoint:
         paths.append(entrypoint)
+    paths.extend(swe_adapter.test_command_argument_paths(row))
     return paths
 
 

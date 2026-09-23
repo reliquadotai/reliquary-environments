@@ -196,6 +196,51 @@ def test_entrypoint(row: SweRow) -> str | None:
     return None
 
 
+# django's `--settings=NAME` is the one argument (beyond the entry point
+# itself) this corpus's test commands read that also names a real, in-repo
+# file. Checked across all 20 django versions MAP_REPO_VERSION_TO_SPECS
+# carries (9 of them are actually used by the corpus): every one that has
+# this flag at all names the identical bare label `test_sqlite`, never a
+# dotted one.
+_SETTINGS_FLAG = re.compile(r"--settings=([\w.]+)")
+
+
+def test_command_argument_paths(row: SweRow) -> list[str]:
+    """Repo-relative paths `test_cmd`'s own arguments name, resolved
+    relative to the entry point's directory -- currently just django's
+    `--settings=` flag.
+
+    The real rule this approximates: any repo-relative path or module label
+    a test command's own arguments name is infrastructure the grader
+    executes and must restore, exactly like its entry point.
+    `--settings=test_sqlite` is `runtests.py`'s `DJANGO_SETTINGS_MODULE`,
+    imported *inside the grading process itself* before a single test runs
+    -- confirmed real, not hypothetical: a settings module rewritten to
+    print a fake status line per name and call `os._exit(0)` at import is
+    the identical bypass as rewriting `runtests.py` directly, on the same
+    231 instances, and is named by no `test_patch` in the corpus, no
+    `conftest.py`, and nothing `test_entrypoint` returns.
+
+    Deliberately targeted, not general: this recognizes exactly one flag
+    shape and resolves a bare module label (`test_sqlite` -> `test_sqlite.py`
+    next to the entry point) -- never observed with a dot in this corpus, so
+    a multi-segment label (`a.b` -> `a/b.py`) is not handled. A different
+    runner's own equivalent flag, or an argument naming a directory rather
+    than a single module, would slip through this silently; nothing else in
+    the current 12-repo corpus needs it (checked: only django's `test_cmd`
+    contains `--settings=` at all).
+    """
+    entrypoint = test_entrypoint(row)
+    if entrypoint is None:
+        return []
+    match = _SETTINGS_FLAG.search(_test_cmd_for(row.repo, row.version))
+    if match is None:
+        return []
+    directory = entrypoint.rsplit("/", 1)[0] if "/" in entrypoint else ""
+    relative = match.group(1).replace(".", "/") + ".py"
+    return [f"{directory}/{relative}" if directory else relative]
+
+
 def pytest_reporting_fixup(row: SweRow) -> list[str] | None:
     """A one-time command grading must run before the test command, when
     the prebuilt image does not already produce output `parse_results` can
