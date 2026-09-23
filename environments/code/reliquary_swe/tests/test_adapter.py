@@ -69,7 +69,7 @@ def test_command_matches_the_specs_test_cmd_for_this_repo_and_version():
     assert swe_adapter.test_command(row) == [
         "bash",
         "-c",
-        "( source /opt/miniconda3/bin/activate && conda activate testbed && "
+        "( export LC_ALL=C.UTF-8 && source /opt/miniconda3/bin/activate && conda activate testbed && "
         "pytest -rA astropy/modeling/tests/test_separable.py ) 2>&1",
     ]
 
@@ -93,7 +93,7 @@ def test_command_activates_testbed_for_a_repo_with_an_unrelated_test_runner():
     assert swe_adapter.test_command(row) == [
         "bash",
         "-c",
-        "( source /opt/miniconda3/bin/activate && conda activate testbed && "
+        "( export LC_ALL=C.UTF-8 && source /opt/miniconda3/bin/activate && conda activate testbed && "
         "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 ) 2>&1",
     ]
 
@@ -118,7 +118,7 @@ def test_command_derives_django_directives_as_dotted_module_labels():
     assert swe_adapter.test_command(row) == [
         "bash",
         "-c",
-        "( source /opt/miniconda3/bin/activate && conda activate testbed && "
+        "( export LC_ALL=C.UTF-8 && source /opt/miniconda3/bin/activate && conda activate testbed && "
         "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 "
         "auth_tests.test_validators ) 2>&1",
     ]
@@ -332,3 +332,32 @@ async def test_grading_django_end_to_end_is_not_actually_broken():
     assert len(parsed) > 10000
     resolved_passing = sum(1 for t in row.pass_to_pass if parsed.get(t) == "PASSED")
     assert resolved_passing > len(row.pass_to_pass) * 0.95
+
+
+@docker
+async def test_djangos_own_non_ascii_output_does_not_crash_the_test_command():
+    """The locale defect: `_ACTIVATE_TESTBED` runs inside a non-login,
+    non-interactive `bash -c`, which never sources the image's own
+    `/etc/profile.d/01-locale-fix.sh`. Under the resulting plain POSIX/C
+    locale, django's own `migrate` management command writes a literal
+    ellipsis (`"  Creating tables…\n"`) to stdout and raises
+    `UnicodeEncodeError` before a single test result is printed -- on a
+    BARE checkout, no patch involved at all, because the crash comes from
+    django's own test-database setup, not from anything under test. Without
+    the fix, `test_command`'s captured output has no PASSED/FAILED line for
+    `parse_results` to find at all: exit_code == 1 and `parse_results`
+    returns `{}`, the same silent-zero shape as this module's other
+    defects (see its own docstring) -- reward 0, indistinguishable from a
+    genuine failure, for gold and empty patches alike. Reproduced by hand
+    on both django__django-10880 and django__django-10914 before this test
+    existed.
+    """
+    row = _row("django__django-10880")
+    async with provisioned_runtime(_task(row.instance_id)) as runtime:
+        checkout = await runtime.run(["git", "checkout", "-q", row.base_commit], {})
+        assert checkout.exit_code == 0
+        result = await runtime.run(swe_adapter.test_command(row), {})
+
+    assert "UnicodeEncodeError" not in (result.stdout or "")
+    parsed = swe_adapter.parse_results(row, _sentinel_wrapped(result.stdout))
+    assert len(parsed) > 0

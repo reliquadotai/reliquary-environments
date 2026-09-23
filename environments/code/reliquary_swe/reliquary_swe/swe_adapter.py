@@ -288,7 +288,25 @@ def pytest_reporting_fixup(row: SweRow) -> list[str] | None:
 # instance goes through regardless of repo or language), and the same
 # activation line is what its generated eval scripts use
 # (`swebench.harness.test_spec.python`, e.g. `make_eval_script_list`).
-_ACTIVATE_TESTBED = "source /opt/miniconda3/bin/activate && conda activate testbed"
+#
+# `export LC_ALL=C.UTF-8` is prepended for the same reason `conda activate`
+# is: this runs as `bash -c "( ... ) 2>&1"`, a non-login, non-interactive
+# shell that never sources `/etc/profile.d/01-locale-fix.sh` -- the image
+# ships a correct locale fixup, but nothing here was invoking it. Without
+# it, the container's default POSIX/C locale makes any non-ASCII byte a
+# repo's own tooling writes to stdout/stderr (django's management commands
+# print "Creating tables..." -- yes, an actual U+2026 ellipsis) raise
+# UnicodeEncodeError and abort the whole test run before any test result is
+# ever printed. `parse_results` then finds neither sentinel and returns
+# `{}`, which grades identically to "every test failed": reward 0, silently,
+# for gold and empty patches alike -- the same silent-zero shape as this
+# module's other defects. Set here, not in grading.py, because this is the
+# one place that owns the shell string `test_command` hands to `runtime.run`;
+# grading.py only executes an argv it does not construct.
+_ACTIVATE_TESTBED = (
+    "export LC_ALL=C.UTF-8 && "
+    "source /opt/miniconda3/bin/activate && conda activate testbed"
+)
 
 
 def test_command(row: SweRow) -> list[str]:
