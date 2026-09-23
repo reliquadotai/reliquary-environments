@@ -45,6 +45,17 @@ def test_every_task_names_an_image_and_a_workdir():
         assert task.data.workdir
 
 
+def test_the_taskset_resolves_to_sweenv_by_default():
+    # `SweEnv` grades in a second, isolated box; `SingleAgentEnv` (the
+    # fallback for a taskset that exports no `Env`) would instead default to
+    # grading in the agent's own box -- silently defeating the whole design.
+    # No container needed: this is package wiring (`reliquary_swe.__all__`),
+    # not a rollout.
+    from reliquary_swe.env import SweEnv
+
+    assert vf.environment_class("reliquary-swe") is SweEnv
+
+
 @docker
 async def test_setup_leaves_the_repository_at_the_base_commit(runtime):
     task = _first_task()

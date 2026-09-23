@@ -23,6 +23,7 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.runtimes import provision_runtime
 
+from reliquary_swe.env import SweEnv, SweEnvConfig
 from reliquary_swe.taskset import SweTask
 
 # Small and already pulled on the container host (see remote-test): 15 tests,
@@ -109,3 +110,90 @@ async def django_runtime() -> AsyncIterator[vf.Runtime]:
 async def sphinx_runtime() -> AsyncIterator[vf.Runtime]:
     async with provisioned_runtime(_task_for(SPHINX_GOLDEN)) as box:
         yield box
+
+
+def _trace(task: SweTask) -> vf.Trace:
+    # Matches tests/test_episode.py's own `_trace`: `setup`/`finalize` only
+    # read `trace.info`, so the rest of this shape just needs to validate.
+    return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(
+            type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
+        ),
+    )
+
+
+async def run_gold_episode(task: SweTask) -> vf.Episode:
+    """The whole loop, without a model: apply `task.data.gold_patch` inside a
+    fresh agent box, capture it exactly as `SweTask.finalize` does, then let
+    `SweEnv.finalize` grade the capture in a second, separately provisioned
+    box. Exercises capture and grading together -- neither one mocked.
+    """
+    trace = _trace(task)
+    async with provisioned_runtime(task) as box:
+        await task.setup(trace, box)
+        await box.write("/tmp/gold.diff", task.data.gold_patch.encode())
+        applied = await box.run(["git", "apply", "-v", "/tmp/gold.diff"], {})
+        assert applied.exit_code == 0, f"gold patch did not apply: {applied.stderr}"
+        await task.finalize(trace, box)
+    # The real pipeline sets this via the harness's own turn loop; faked here
+    # since finalize()'s grading gate is `solution.ok`, not "a patch exists".
+    trace.ok = True
+
+    episode = vf.Episode(
+        task=vf.TraceTask(
+            type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
+        ),
+        traces=[trace],
+    )
+    config_cls = vf.taskset_config_type("reliquary-swe")
+    env = SweEnv(
+        SweEnvConfig(
+            taskset=config_cls(id="reliquary-swe"),
+            # This box is Docker-only; the config's own default (Prime) has no
+            # host here. The task's real image/workdir/network policy still
+            # come from resolve_runtime_config, exactly as a real run would.
+            grading_runtime=vf.DockerConfig(),
+        )
+    )
+    await env.finalize(task, episode)
+    return episode
+
+
+def unreachable_runtime_config() -> vf.DockerConfig:
+    """A runtime nothing can provision. Not a real image reference, so `docker
+    run` refuses it on syntax alone -- no registry round trip, no DNS wait,
+    just a fast, deterministic provisioning failure standing in for "the
+    grading box could not be reached".
+    """
+    return vf.DockerConfig(image="not a docker image reference")
+
+
+def task_with_patch(instance_id: str = GOLDEN) -> SweTask:
+    """A `SweTask` with no declared image, so `resolve_runtime_config` leaves
+    `unreachable_runtime_config`'s own (broken) image in place instead of
+    overriding it with this instance's real one (it only injects `task.data.image`
+    when that field is set -- see `verifiers.v1.utils.compile.resolve_runtime_config`).
+    Everything else is a real corpus row; `_grade` never reads it, since
+    provisioning fails first, but that keeps this fixture honest if it ever does.
+    """
+    data = _task_for(instance_id).data.model_copy(update={"image": None})
+    return SweTask(data)
+
+
+def episode_with_patch(instance_id: str = GOLDEN) -> vf.Episode:
+    """An episode whose one trace is already `ok` and already carries a
+    captured patch in `info["patch"]` -- the shape `SweEnv.finalize` expects
+    on entry. Pairs with `task_with_patch`; the patch text itself is never
+    read when provisioning fails before grading does.
+    """
+    task = task_with_patch(instance_id)
+    trace = _trace(task)
+    trace.ok = True
+    trace.info["patch"] = "diff --git a/nonexistent.py b/nonexistent.py\n"
+    return vf.Episode(
+        task=vf.TraceTask(
+            type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
+        ),
+        traces=[trace],
+    )

@@ -3,11 +3,27 @@ import difflib
 import pytest
 import verifiers.v1 as vf
 
-from conftest import DJANGO_GOLDEN, GOLDEN, SPHINX_GOLDEN
+from conftest import (
+    DJANGO_GOLDEN,
+    GOLDEN,
+    SPHINX_GOLDEN,
+    episode_with_patch,
+    run_gold_episode,
+    task_with_patch,
+    unreachable_runtime_config,
+)
 from reliquary_swe import grading, swe_adapter
+from reliquary_swe import env as env_module
+from reliquary_swe.env import SweEnv, SweEnvConfig
+from reliquary_swe.taskset import SweTask
 
 docker = pytest.mark.docker
 slow = pytest.mark.slow
+
+
+def _env(**overrides) -> SweEnv:
+    config_cls = vf.taskset_config_type("reliquary-swe")
+    return SweEnv(SweEnvConfig(taskset=config_cls(id="reliquary-swe"), **overrides))
 
 
 def _unified_diff(path: str, old: str, new: str) -> str:
@@ -316,3 +332,100 @@ async def test_a_patch_that_adds_files_and_squats_a_test_scores_zero(sphinx_runt
     assert report.restored is True
     assert report.results.get(data.fail_to_pass[0]) == "FAILED"
     assert report.reward == 0.0
+
+
+@docker
+async def test_the_grading_box_has_no_network_before_grading_runs(monkeypatch):
+    # `_grade` must sever the box's network (`prepare_setup()` then
+    # `prepare_execution([])`) BEFORE handing it to `grading.grade` --
+    # `DockerRuntime.start()` alone leaves egress wide open (Task 3's own
+    # finding: it is a "trusted setup" state, `allow=["*"]`, until
+    # `prepare_execution` installs the redirect that cuts it). Patches
+    # `grading.grade` to probe the box directly, at the exact moment `_grade`
+    # would otherwise hand it real work, instead of trusting the two calls
+    # are merely present somewhere in the function.
+    probe: dict[str, str] = {}
+
+    async def fake_grade(runtime, data, patch):
+        result = await runtime.run(
+            [
+                "sh",
+                "-c",
+                "curl -s -m 5 https://raw.githubusercontent.com || echo BLOCKED",
+            ],
+            {},
+        )
+        probe["stdout"] = result.stdout
+        return grading.Report(0.0, True, True, 0, 0, {})
+
+    monkeypatch.setattr(env_module.grading, "grade", fake_grade)
+    config = vf.taskset_config_type("reliquary-swe")
+    task = next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+    await run_gold_episode(task)
+    assert "BLOCKED" in probe["stdout"]
+
+
+@docker
+async def test_a_gold_rollout_scores_one_end_to_end():
+    # The whole loop: agent box, patch capture, a second box, grading.
+    config = vf.taskset_config_type("reliquary-swe")
+    task = next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+    episode = await run_gold_episode(task)
+    assert episode.traces[0].rewards["patch_passes_tests"].score == 1.0
+
+
+@docker
+async def test_swe_report_carries_restored_onto_the_solvers_trace():
+    # `restored` is the only signal telling a grader-side restoration failure
+    # apart from an agent that simply did not fix the bug (see grading.py's
+    # own Report.restored docstring) -- dropping it in finalize()'s plumbing
+    # would undo that distinction even though grading.grade() itself still
+    # computes it correctly.
+    config = vf.taskset_config_type("reliquary-swe")
+    task = next(iter(vf.load_taskset(config(id="reliquary-swe")).head(1)))
+    episode = await run_gold_episode(task)
+    report = episode.traces[0].info["swe_report"]
+    assert report["restored"] is True
+    assert report["applied"] is True
+    assert report["fail_to_pass_total"] == len(task.data.fail_to_pass)
+    assert report["pass_to_pass_total"] == len(task.data.pass_to_pass)
+
+
+@docker
+async def test_an_unreachable_grading_box_raises_rather_than_scoring_zero():
+    # A zero that means "our Docker daemon died" teaches the policy something
+    # false. Infrastructure failure must fail the episode instead.
+    broken = _env(grading_runtime=unreachable_runtime_config())
+    episode = episode_with_patch()
+    with pytest.raises(Exception):
+        await broken.finalize(task_with_patch(), episode)
+    # Not just "raised" -- raised INSTEAD of scoring. A version that swallowed
+    # the provisioning failure and fell through to `record_reward` would also
+    # pass a bare `pytest.raises`-less check; this is the assertion that
+    # actually distinguishes the two.
+    assert "patch_passes_tests" not in episode.traces[0].rewards
+
+
+@docker
+async def test_a_grading_timeout_raises_rather_than_scoring_zero():
+    # `_grade` wraps provisioning-through-grading in `asyncio.timeout(task.data
+    # .timeout.scoring)`. A budget this tight (the fastest golden still takes
+    # ~2.3s to grade end to end) fires before anything can finish -- standing
+    # in for a box that hangs rather than one that never existed. The same
+    # rule applies: a timeout must not read as "the patch failed".
+    data = _data(GOLDEN).model_copy(update={"timeout": vf.TaskTimeout(scoring=0.01)})
+    task = SweTask(data)
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="SweTask", data=data, key=task.key, hash=task.hash),
+        ok=True,
+        info={"patch": data.gold_patch},
+    )
+    episode = vf.Episode(
+        task=vf.TraceTask(type="SweTask", data=data, key=task.key, hash=task.hash),
+        traces=[trace],
+    )
+    env = _env(grading_runtime=vf.DockerConfig(), grading_retries=0)
+    with pytest.raises(Exception):
+        await env.finalize(task, episode)
+    assert "patch_passes_tests" not in trace.rewards
