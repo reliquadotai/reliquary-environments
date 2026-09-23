@@ -305,8 +305,11 @@ async def test_grading_django_end_to_end_is_not_actually_broken():
     `.txt` fixture files, so `get_test_directives` (correctly) returns no
     directives at all for it, and `test_command` runs with none -- which,
     for django's own runner, means its *entire* test suite. Measured by
-    hand: ~226s of test execution (12,311 tests), ~3m45s wall clock
-    including migrations and teardown. Marked slow because that is still
+    hand: ~226s of test execution (12,311 tests) by the runner's own
+    report, and a separately hand-timed ~3m45s (225s) wall clock including
+    migrations and teardown -- two independent measurements of about the
+    same run; the 1s gap is rounding, not a sign the wall clock is smaller
+    than the execution it contains. Marked slow because that is still
     much longer than the rest of this suite combined, not because
     anything is wrong -- every one of this instance's 1,432 PASS_TO_PASS
     entries and all 438 FAIL_TO_PASS entries resolved in that run (the

@@ -85,25 +85,43 @@ hands a policy a general shell in a repository whose own suite can take
 minutes, and `max_turns` bounds turns, not wall clock: running the tests is
 the most natural thing a repair agent does, and unlike a wedged daemon this
 is *policy-triggerable* — a rollout slot held for hours, on purpose or not.
-`reliquary_swe/taskset.py` now sets all four `TaskTimeout` fields; each is
-sized past a real measurement, not guessed, reasoned about below.
+`reliquary_swe/taskset.py` now sets all four `TaskTimeout` fields; three of
+the four are sized past a real measurement, not guessed, reasoned about
+below. `setup` is the exception: see its own paragraph.
 
-**`setup`** (300s) covers `SweTask.setup`'s cleanup script — `git reset`,
-history truncation, `git gc --prune=now` — plus the harness's own setup.
-Measured on the container host across the corpus's largest families by
-instance count and by one clear outlier in `.git` size (astropy, django,
-matplotlib, sympy, scikit-learn, sphinx): matplotlib's `.git` is the
-heaviest sampled at 296 MB (the next largest, django's, is 78 MB), and its
-full cleanup script — `git gc` included — runs in 3.6s. 300s is ~80x that.
+**`setup`** (900s) covers `SweTask.setup`'s cleanup script — `git reset`,
+history truncation, `git gc --prune=now` — *and* the harness's own setup:
+`rollout.py` computes one setup-stage deadline and wraps both `task.setup`
+and `harness.setup(runtime)` in it, so the two share this single budget.
+Only the first term is measured. On the container host, across the
+corpus's largest families by instance count and by one clear outlier in
+`.git` size (astropy, django, matplotlib, sympy, scikit-learn, sphinx):
+matplotlib's `.git` is the heaviest sampled at 296 MB (the next largest,
+django's, is 78 MB), and its full cleanup script — `git gc` included —
+runs in 3.6s. The second term, harness setup, is unmeasured and is the one
+that dominates: for the `bash` harness this repository's example pins
+(`examples/prime_rl/rl.toml`), setup is a genuine per-rollout network
+install inside the fresh container — `pip install -q -U --user uv`
+(falling back to `apt-get install curl` plus a curl-fetched installer),
+then `uv sync --script`, which fetches a managed CPython and the script's
+dependencies. Egress is still open at this point (it closes only after
+setup), and there is no cross-rollout cache — the uv interpreter cache
+lives on the per-rollout `Runtime`. 900s is sized by analogy with the
+other three phases below, not derived from a measurement of that install;
+an honest "unmeasured, sized by analogy" beats a fabricated derivation.
+`--env.agent.timeout.setup` overrides the task's value at run time, so a
+pilot that hits this ceiling does not need a code change.
 
 **`agent`** (3600s) bounds the policy-triggerable phase Important 1 is
 actually about. The slowest real full-suite run measured
 (`django__django-10097`, whose `test_patch` names no test files, so it falls
-back to its entire 12,311-test suite) took ~226s of test execution and
-~3m45s (225s) wall clock including migrations and teardown — the same
-figure `tests/test_adapter.py`'s own docstring records by hand, so both
-numbers here are consistent with each other rather than restating a
-`226s`/`225s` split that would imply the wall clock is smaller than the
+back to its entire 12,311-test suite) took ~226s of test execution
+(12,311 tests) by the django runner's own report, and a separately
+hand-timed wall clock of ~3m45s (225s) including migrations and teardown —
+the same figures `tests/test_adapter.py`'s own docstring records by hand.
+These are two independent measurements of about the same run, not a
+precise execution/wall-clock split, so the 1s gap between them is
+measurement rounding, not a claim that the wall clock is smaller than the
 execution it contains. The worst *projected* instance
 (`matplotlib__matplotlib-25122`, unrunnable on the measurement box — a
 Docker daemon subordinate-UID limit, not a timing fact) comes to ~570s by

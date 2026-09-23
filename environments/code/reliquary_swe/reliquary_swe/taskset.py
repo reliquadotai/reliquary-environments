@@ -138,15 +138,32 @@ class SweTasksetConfig(vf.TasksetConfig):
 # Every phase of a rollout defaults to no limit at all (`TimeoutConfig`'s and
 # `TaskTimeout`'s own fields are all `None`), and this is the one environment
 # that hands a policy a general shell with `max_turns` bounding turns, not
-# wall clock. Each of the four below is sized past a real measurement, never
-# guessed -- the measurements themselves, and the headroom reasoning, live in
-# the package README's "Timeouts" section rather than here.
+# wall clock. Three of the four below are sized past a real measurement,
+# never guessed; `setup` is the exception -- see its own comment -- and is
+# sized by analogy with the other three instead. The measurements
+# themselves, and the headroom reasoning, live in the package README's
+# "Timeouts" section rather than here.
 
-# `setup()` (`_CLEANUP` above) plus the harness's own setup. Measured on the
-# container host: the heaviest sampled repository (matplotlib, 296 MB
+# `setup()` (`_CLEANUP` above) plus the harness's own setup -- `rollout.py`
+# computes one setup-stage deadline and wraps both `task.setup` and
+# `harness.setup(runtime)` in it ("Task setup and harness provisioning
+# share one setup-stage deadline"), so this budget has to cover both terms,
+# and only the first one is actually measured. `_CLEANUP` itself: on the
+# container host, the heaviest sampled repository (matplotlib, 296 MB
 # `.git`, the largest of six families checked) runs the whole cleanup
-# script, `git gc --prune=now` included, in 3.6s.
-_SETUP_TIMEOUT_SECONDS = 300.0
+# script, `git gc --prune=now` included, in 3.6s. The harness's setup, for
+# the `bash` harness this branch's example pins, is a genuine per-rollout
+# network install inside the fresh container: `pip install -q -U --user
+# uv` (falling back to `apt-get install curl` plus a curl-fetched
+# installer) followed by `uv sync --script`, which fetches a managed
+# CPython and the script's dependencies -- egress is still open at this
+# point, it closes only after setup, and there is no cross-rollout cache
+# (`_uv_interpreters` lives on the per-rollout Runtime). That second term
+# is the one that dominates this budget, and it has not been measured --
+# 900s is sized by analogy with the other three phases below, not derived
+# from it. If a pilot hits this ceiling anyway, `--env.agent.timeout.setup`
+# overrides the task value at run time without a code change.
+_SETUP_TIMEOUT_SECONDS = 900.0
 
 # The agent's solve attempt -- the phase Important 1 is actually about.
 # Running the repository's own tests is the most natural thing a repair
