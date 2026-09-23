@@ -58,7 +58,7 @@ waste:
   different container from the one the agent worked in, and section 6 depends
   on it.
 
-What we write is the corpus, the task, a two-tool harness, and the grader.
+What we write is the corpus, the task, and the grader.
 
 ## 4. Package layout
 
@@ -270,8 +270,14 @@ budgets with a measured rationale, and inventing numbers now would break that.
   the gradient. Repeated-execution screening is the mitigation, and it belongs
   to the supervision-quality work item above.
 - **Container leakage under concurrency.** Containers that are not torn down
-  accumulate and eventually exhaust the host. `DockerRuntime` owns teardown, but
-  our `finalize()` must not be able to raise past it.
+  accumulate and eventually exhaust the host. `DockerRuntime` owns teardown, and
+  this is already structural rather than something our `finalize()` must be
+  careful about: verified against `verifiers.v1.rollout.Rollout.close()`, task
+  finalize (`rollout.py:474`) and runtime teardown (`rollout.py:526-531`) run
+  as separately-guarded stages inside one `try`/`finally`, so a `finalize()`
+  that raises — `capture_patch` does exactly this by design, via
+  `SandboxError`, on a dead box — still reaches teardown. Not a risk this
+  package needs to defend against.
 - **Scope creep toward the other three environments.** The moment a second
   environment is written, the pressure to extract a shared base package will be
   real and should be revisited then — not now.

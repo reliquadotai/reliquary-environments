@@ -44,7 +44,16 @@ class SweEnvConfig(vf.EnvConfig):
     """Where grading runs. None derives it from the agent's runtime policy."""
     grading_retries: int = Field(2, ge=0)
     """Extra attempts at provisioning-and-grading before the episode fails.
-    Grading is deterministic; what these retry is the infrastructure."""
+
+    The intent is infrastructure retry, but the `except Exception` in
+    `_grade` cannot actually tell that apart from `grading.grade`'s own
+    deterministic raise (a freshly provisioned box that will not even check
+    out `base_commit` -- see that function's docstring): a genuinely broken
+    instance's image pays for `grading_retries` extra, guaranteed-identical
+    provision-and-grade attempts before it fails. Narrowing the `except` to
+    exclude that one raise would fix this at the cost of new retry-boundary
+    behavior on a path this package leans on for real infra flakiness; left
+    as a known, accepted cost instead of claimed away."""
 
 
 class SweEnv(vf.Env[SweEnvConfig]):
@@ -78,6 +87,14 @@ class SweEnv(vf.Env[SweEnvConfig]):
             "fail_to_pass_total": len(task.data.fail_to_pass),
             "pass_to_pass_passed": report.pass_to_pass_passed,
             "pass_to_pass_total": len(task.data.pass_to_pass),
+            # Monitoring, not reward -- IMPORTANT 3. `results_parsed == 0`
+            # is per-instance and ambiguous on its own (a syntactically
+            # broken patch legitimately produces none); aggregated across a
+            # batch, `pass_to_pass_passed == 0` for every instance at once is
+            # the canary an adapter break actually looks like -- see
+            # grading.grade's own docstring.
+            "results_parsed": report.results_parsed,
+            "test_command_exit_code": report.test_command_exit_code,
         }
 
     async def _grade(self, task: SweTask, patch: str) -> grading.Report:

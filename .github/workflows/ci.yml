@@ -225,6 +225,17 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.12"
+      # test_corpus.py's own review noted this job would re-download
+      # princeton-nlp/SWE-bench_Verified from the HF Hub on every push
+      # (Task 1's own deferred follow-up). Measured locally: the pinned
+      # revision's cache is ~7.5 MB extracted -- negligible against this
+      # job's own ~4.9 GB of measured headroom below -- so this is a cache,
+      # not a disk-budget risk. Keyed on the pin itself: a revision bump
+      # invalidates it automatically rather than serving a stale corpus.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: swe-bench-verified-c104f840cc67f8b6eec6f759ebc8b2693d585d4a
       - run: uv sync --locked
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py

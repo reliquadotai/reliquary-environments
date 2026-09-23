@@ -393,7 +393,7 @@ def parse_results(row: SweRow, stdout: str) -> dict[str, str]:
         # bug to propagate.
         return {}
     # swebench's own resolution semantics treat XFAIL as a pass, not a fifth
-    # status: `test_passed` (swebench/harness/grading.py:26-27) checks
+    # status: `test_passed` (swebench/harness/grading.py:27-28) checks
     # `sm[case] in [TestStatus.PASSED.value, TestStatus.XFAIL.value]`. A
     # pytest-family parser emits "XFAIL" verbatim for an
     # `@pytest.mark.xfail` test, several Verified repos use that marker, and

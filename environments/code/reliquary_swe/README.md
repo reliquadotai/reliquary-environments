@@ -25,12 +25,14 @@ installed packages — none of it survives a transfer where only the diff
 travels. `reliquary_swe/grading.py` additionally restores every path a
 patch confined to test or configuration files could use to control what "the
 tests" report (the instance's own `test_patch`, the `conftest.py` hierarchy
-above it, the test runner's own entry point, repo-root pytest/tox
-configuration) before running anything — see that module's docstring for
-exactly what this does and does not guarantee; a source-only patch that
-forges its own test outcome (e.g. monkeypatching `pytest`'s own reporting at
-import time) is a residual this scheme cannot close, because restoring
-source is the one thing a grader must never do.
+above it and, at every level of that same walk, pytest's own five config
+filenames — not only the repo root, since pytest's own config search finds a
+nested one first — and the test runner's own entry point) before running
+anything — see that module's docstring for exactly what this does and does
+not guarantee; a patch confined entirely to source that forges its own test
+outcome (e.g. monkeypatching `pytest`'s own reporting at import time) is a
+residual this scheme cannot close, because restoring source is the one thing
+a grader must never do.
 
 Reward is binary and comes from exactly one component:
 `patch_passes_tests` — every FAIL_TO_PASS and every PASS_TO_PASS test must
@@ -72,38 +74,78 @@ point, not derived from anything observed here. The design spec's section 10
 lists both the turn budget and the token budget as open questions to be
 settled by a pilot's observed distribution rather than by opinion.
 
-## Grading timeout
+## Timeouts
 
-Every task's `timeout.scoring` is set to **1800 seconds (30 minutes)** in
-`reliquary_swe/taskset.py`, which points here for the full reasoning. Without
-this, `env.py`'s `_grade` wraps provisioning-through-grading in
-`asyncio.timeout(task.data.timeout.scoring)`, and a `None` timeout is
-unbounded: a box that is reachable but *hangs* — a wedged daemon, a stuck
-exec, a test process that loops instead of finishing — would neither raise
-nor score, which defeats the same "infrastructure failure must raise, never
-score" guarantee `env.py`'s retry-then-raise exists to give from the other
-side.
+Every phase of a rollout used to default to no limit at all except scoring:
+`TimeoutConfig`'s and `TaskTimeout`'s own fields are all `None` by default,
+`agent.py` resolves the agent phase as "task's timeout, else no limit", and
+`rollout.py` enters `asyncio.timeout_at(None)` when that resolves to `None` —
+which never raises. This is the one environment in this repository that
+hands a policy a general shell in a repository whose own suite can take
+minutes, and `max_turns` bounds turns, not wall clock: running the tests is
+the most natural thing a repair agent does, and unlike a wedged daemon this
+is *policy-triggerable* — a rollout slot held for hours, on purpose or not.
+`reliquary_swe/taskset.py` now sets all four `TaskTimeout` fields; each is
+sized past a real measurement, not guessed, reasoned about below.
+
+**`setup`** (300s) covers `SweTask.setup`'s cleanup script — `git reset`,
+history truncation, `git gc --prune=now` — plus the harness's own setup.
+Measured on the container host across the corpus's largest families by
+instance count and by one clear outlier in `.git` size (astropy, django,
+matplotlib, sympy, scikit-learn, sphinx): matplotlib's `.git` is the
+heaviest sampled at 296 MB (the next largest, django's, is 78 MB), and its
+full cleanup script — `git gc` included — runs in 3.6s. 300s is ~80x that.
+
+**`agent`** (3600s) bounds the policy-triggerable phase Important 1 is
+actually about. The slowest real full-suite run measured
+(`django__django-10097`, whose `test_patch` names no test files, so it falls
+back to its entire 12,311-test suite) took ~226s of test execution and
+~3m45s (225s) wall clock including migrations and teardown — the same
+figure `tests/test_adapter.py`'s own docstring records by hand, so both
+numbers here are consistent with each other rather than restating a
+`226s`/`225s` split that would imply the wall clock is smaller than the
+execution it contains. The worst *projected* instance
+(`matplotlib__matplotlib-25122`, unrunnable on the measurement box — a
+Docker daemon subordinate-UID limit, not a timing fact) comes to ~570s by
+projecting the slowest measured per-test rate onto its 2,488 tests. An hour
+gives roughly 16x headroom over the worst wall clock actually observed and
+roughly 6x over the pessimistic projection — room for several such runs plus
+real editing, while still turning "holds the slot for hours" into a bounded,
+finite failure. This is unmeasured against a real trajectory distribution,
+like `max_turns` and the per-turn token budget below it — revisit once a
+pilot exists.
+
+**`finalize`** (900s) covers `SweTask.finalize`'s `git add -A` + `git diff
+--cached --binary` against whatever the agent's box holds by the time it
+runs. Measured on the container host: a single 573 MB novel file costs
+18.5s (`add`) + 16.7s (`diff --binary`) = 35.2s combined, roughly 60s/GB.
+900s covers on the order of 15 GB of agent-authored content — far past any
+legitimate source edit — while still bounding a disk-filling pathology
+(container disk quotas are advisory on Docker, per `TaskResources.disk`'s
+own docstring, not enforced) to a fixed ceiling instead of an unbounded
+hang.
+
+**`scoring`** (1800s, unchanged) bounds `env.py`'s `_grade`, which wraps
+provisioning-through-grading in `asyncio.timeout(task.data.timeout.scoring)`.
+A `None` timeout here is unbounded: a box that is reachable but *hangs* — a
+wedged daemon, a stuck exec, a test process that loops instead of finishing —
+would neither raise nor score, which defeats the same "infrastructure
+failure must raise, never score" guarantee `env.py`'s retry-then-raise
+exists to give from the other side.
 
 Measured on the container host: `astropy__astropy-12907` (15 tests) 2.3s;
 `sympy-14248` (435 tests) 99s (~0.23s/test, the slowest per-test rate
-measured); `django__django-10097` — whose `test_patch` names no test files,
-so `get_test_directives` returns none and django's own runner falls back to
-its *entire* suite, 12,311 tests — ~226s of test execution, ~225s wall
-clock including checkout and teardown. Across the full 500-instance corpus,
-test count is median 52.0, mean 123.3, p90 250, max 2,488 — re-measured
-directly from the loaded corpus rather than taken on trust (`p90` by sorting
-all 500 counts and indexing `round(0.9 * 499)`; a different interpolation
-method gives 254, the same ballpark, and nothing here turns on the
-difference). The max is `matplotlib__matplotlib-25122`, which could not be
-graded end to end on the measurement box: its image would not pull there, a
-Docker daemon subordinate-UID limit unrelated to timing. Projecting the
-slowest measured per-test rate onto that instance's 2,488 tests gives ~570s
-— above django's measured worst case despite fewer tests, because per-test
-cost varies by well over 10x across repository families and nothing
-measured here bounds it from above for every family. 1800s gives roughly 8x
-headroom over the worst wall-clock time actually observed and roughly 3x
-headroom over the pessimistic projection for the corpus's most test-heavy,
-unmeasured instance.
+measured); `django__django-10097`'s ~226s/~3m45s full-suite run, above.
+Across the full 500-instance corpus, test count is median 52.0, mean 123.3,
+p90 250, max 2,488 — re-measured directly from the loaded corpus rather than
+taken on trust (`p90` by sorting all 500 counts and indexing
+`round(0.9 * 499)`; a different interpolation method gives 254, the same
+ballpark, and nothing here turns on the difference). The max is
+`matplotlib__matplotlib-25122`, unrunnable on the measurement box for the
+same subordinate-UID reason as above. 1800s gives roughly 8x headroom over
+the worst wall-clock time actually observed and roughly 3x headroom over the
+pessimistic ~570s projection for the corpus's most test-heavy, unmeasured
+instance.
 
 ## Reward-hacking mitigation
 
@@ -116,6 +158,24 @@ false-positive and false-negative rate of these test suites as graders, and
 whether a suite is flaky — is tracked as an open item in the design spec's
 section 10, and is required before a real training run, not before shipping
 this package.
+
+**Monitoring, not mitigation.** All nine implementation defects recorded in
+this project's build history (conda not on `PATH`, the 128 KiB argv cap,
+django's runner writing to stderr, sphinx's own invocation missing `-rA`,
+among others) presented as the exact same shape: the test command ran but
+produced nothing `parse_results` could read, and `results == {}` scored
+identically to "the tests ran and genuinely failed" — invisible until a
+human noticed a zero on real data, one at a time, on separate nights.
+`grading.Report` now also carries `results_parsed` (how many test names were
+actually readable) and `test_command_exit_code`, both surfaced onto
+`solution.info["swe_report"]`. Neither is a reward component, and this
+cannot become an unconditional raise — a patch with a genuine syntax error
+legitimately produces no parseable output. The actual monitoring canary is
+aggregate, not per-instance: `pass_to_pass_passed == 0` across an entire
+batch, because a real adapter break zeroes p2p for every instance in the
+batch at once, and a patch that is merely bad does not. That shape would have
+caught four of the nine defects (the adapter-level ones) in one batch,
+instead of four separate nights.
 
 ## Corpus
 
@@ -143,7 +203,11 @@ uv run pytest
 
 Unit tests (`tests/test_corpus.py`, most of `tests/test_adapter.py`) need no
 Docker. Container tests are marked `@pytest.mark.docker` and need a real
-Docker daemon with the instances' SWE-bench images reachable — they are the
+Docker daemon with the instances' SWE-bench images reachable — `uv run
+pytest` stays runnable without one: `tests/conftest.py`'s own
+`pytest_collection_modifyitems` skips every `@docker` test (a real `docker
+version` round trip, not just the CLI's presence) rather than letting them
+error for want of a runtime fixture. They are the
 only tests that exercise the isolation guarantees above end to end, and
 several of this package's most serious defects (silent-zero rewards from a
 wrong test invocation, a false full reward from an unrestored

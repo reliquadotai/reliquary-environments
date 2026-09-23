@@ -109,6 +109,43 @@ async def test_the_reference_patch_scores_one(grading_runtime):
     assert report.reward == 1.0
 
 
+# IMPORTANT 2's golden. pytest's own `locate_config` (`_pytest/config/findpaths.py`)
+# searches a collected file's ancestor directories innermost-first, so an
+# added `pytest.ini` right next to the test file wins over the restored root
+# copy -- not shadowed by it, found first. Confirmed by hand before the fix:
+# with `_test_infrastructure_paths` restoring these five config filenames at
+# the repo root only, this file alone -- on top of the otherwise-correct GOLD
+# patch -- turned the reward from a correct 1.0 into a wrong 0.0, because
+# `addopts = -p no:terminal` disables the terminal reporter outright and
+# nothing is left for our own explicit `-rA` to apply to (pytest prints
+# nothing at all, not even a failure -- the same silent-zero shape as this
+# package's other defects, just attacker-shaped this time). Not source, and
+# not touched by `test_patch`: a corpus file nothing else names.
+NESTED_PYTEST_INI_PATCH = """\
+diff --git a/astropy/modeling/tests/pytest.ini b/astropy/modeling/tests/pytest.ini
+new file mode 100644
+--- /dev/null
++++ b/astropy/modeling/tests/pytest.ini
+@@ -0,0 +1,2 @@
++[pytest]
++addopts = -p no:terminal
+"""
+
+
+@docker
+async def test_a_nested_pytest_ini_does_not_survive_into_grading(grading_runtime):
+    data = _data(GOLDEN)
+    combined = data.gold_patch + NESTED_PYTEST_INI_PATCH
+    report = await grading.grade(grading_runtime, data, combined)
+    assert report.applied is True
+    assert report.restored is True
+    # The whole point: restoration removes the added file (it does not exist
+    # at base_commit) before tests run, so the correct fix still scores 1.0
+    # despite the corrupting file riding along in the same patch.
+    assert report.reward == 1.0
+    assert report.results_parsed > 0
+
+
 @docker
 async def test_an_empty_patch_scores_zero(grading_runtime):
     data = _data(GOLDEN)
@@ -154,6 +191,35 @@ async def test_pass_to_pass_really_passes_before_any_patch(grading_runtime):
     report = await grading.grade(grading_runtime, data, "")
     for name in data.pass_to_pass:
         assert report.results.get(name) == "PASSED"
+
+
+@docker
+async def test_report_carries_exit_code_and_parsed_count_on_a_passing_run(
+    grading_runtime,
+):
+    # IMPORTANT 3's monitoring fields. pytest's own exit code for an
+    # all-passing run is 0 -- distinct from results_parsed, which counts
+    # what was actually readable regardless of exit code.
+    data = _data(GOLDEN)
+    report = await grading.grade(grading_runtime, data, data.gold_patch)
+    assert report.test_command_exit_code == 0
+    assert report.results_parsed == len(report.results) > 0
+
+
+@docker
+async def test_report_carries_exit_code_and_parsed_count_on_a_failing_run(
+    grading_runtime,
+):
+    # The other half of IMPORTANT 3: a run with genuine failures still
+    # parses real results (results_parsed > 0) but exits non-zero -- the
+    # empty-patch run never resolves the bug, so pytest reports failures,
+    # not nothing. Neither field alone tells this apart from the silent-zero
+    # shape (results_parsed == 0) all nine implementation defects shared;
+    # both together do.
+    data = _data(GOLDEN)
+    report = await grading.grade(grading_runtime, data, "")
+    assert report.test_command_exit_code != 0
+    assert report.results_parsed == len(report.results) > 0
 
 
 @docker
@@ -389,6 +455,9 @@ async def test_swe_report_carries_restored_onto_the_solvers_trace():
     assert report["applied"] is True
     assert report["fail_to_pass_total"] == len(task.data.fail_to_pass)
     assert report["pass_to_pass_total"] == len(task.data.pass_to_pass)
+    # IMPORTANT 3's monitoring fields must survive the same plumbing.
+    assert report["test_command_exit_code"] == 0
+    assert report["results_parsed"] > 0
 
 
 @docker

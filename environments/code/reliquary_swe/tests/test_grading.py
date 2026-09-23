@@ -37,23 +37,35 @@ def test_paths_touched_by_empty_patch():
 
 def test_conftest_ancestors_walks_every_directory_to_the_root():
     # pytest would load a conftest.py from any of these on the way to the
-    # given file -- not only the file's own directory.
-    ancestors = grading._conftest_ancestors(["astropy/modeling/tests/test_separable.py"])
+    # given file -- not only the file's own directory -- and its own
+    # locate_config searches the identical walk for its five config
+    # filenames (IMPORTANT 2): a nested one would otherwise win over a
+    # restored root copy, since locate_config searches innermost-first.
+    ancestors = grading._conftest_ancestors(
+        ["astropy/modeling/tests/test_separable.py"]
+    )
+    names = ("conftest.py", *grading._TEST_CONFIG_FILES)
     assert ancestors == [
-        "astropy/modeling/tests/conftest.py",
-        "astropy/modeling/conftest.py",
-        "astropy/conftest.py",
-        "conftest.py",
+        *(f"astropy/modeling/tests/{name}" for name in names),
+        *(f"astropy/modeling/{name}" for name in names),
+        *(f"astropy/{name}" for name in names),
+        *names,
     ]
 
 
 def test_conftest_ancestors_deduplicates_across_paths():
     ancestors = grading._conftest_ancestors(["a/tests/test_x.py", "a/tests/test_y.py"])
-    assert ancestors == ["a/tests/conftest.py", "a/conftest.py", "conftest.py"]
+    names = ("conftest.py", *grading._TEST_CONFIG_FILES)
+    assert ancestors == [
+        *(f"a/tests/{name}" for name in names),
+        *(f"a/{name}" for name in names),
+        *names,
+    ]
 
 
 def test_conftest_ancestors_of_a_root_level_file():
-    assert grading._conftest_ancestors(["test_x.py"]) == ["conftest.py"]
+    names = ("conftest.py", *grading._TEST_CONFIG_FILES)
+    assert grading._conftest_ancestors(["test_x.py"]) == list(names)
 
 
 def test_conftest_ancestors_of_no_paths_is_empty():
@@ -129,6 +141,24 @@ def test_infrastructure_paths_include_conftest_ancestors_of_test_patch():
     assert "pkg/tests/conftest.py" in paths
     assert "pkg/conftest.py" in paths
     assert "conftest.py" in paths
+
+
+def test_infrastructure_paths_include_nested_pytest_config_not_only_root():
+    # IMPORTANT 2. pytest's own locate_config searches innermost-first, so a
+    # pytest.ini added at pkg/tests/ (nowhere near the repo root) would win
+    # over a root-only restored copy and stay unrestored under the old,
+    # root-only _TEST_CONFIG_FILES scheme -- see _conftest_ancestors'
+    # docstring for the measured cost of closing this at every level.
+    patch = (
+        "diff --git a/pkg/tests/test_x.py b/pkg/tests/test_x.py\n"
+        "--- a/pkg/tests/test_x.py\n+++ b/pkg/tests/test_x.py\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+    data = _fake_swe_data("astropy/astropy", "3.0", test_patch=patch)
+    paths = grading._test_infrastructure_paths(data)
+    for name in grading._TEST_CONFIG_FILES:
+        assert f"pkg/tests/{name}" in paths
+        assert f"pkg/{name}" in paths
+        assert name in paths  # still restored unconditionally at root too
 
 
 def test_infrastructure_paths_include_djangos_settings_module():

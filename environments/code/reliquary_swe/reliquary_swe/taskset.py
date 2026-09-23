@@ -104,10 +104,23 @@ class SweTask(vf.Task[SweData]):
         on purpose: grading discards them, and keeping them in the trace is
         what makes reward hacking visible afterwards.
         """
+        try:
+            head = self._heads.pop(id(runtime))
+        except KeyError:
+            # No `"" ` fallback: `capture_patch` turns a falsy `base_commit`
+            # into bare `HEAD` (see its own docstring), which misses any
+            # commit the agent made -- a silent, wrong zero, not a real one.
+            # `setup()` always records an entry before the agent runs; a
+            # missing one means it never ran for this runtime, which is a
+            # bug worth raising loudly, not papering over.
+            raise RuntimeError(
+                f"no base commit recorded for {self.data.instance_id}'s "
+                "runtime -- setup() must run before finalize()"
+            ) from None
         await vf.capture_patch(
             trace,
             runtime,
-            base_commit=self._heads.pop(id(runtime), ""),
+            base_commit=head,
             ignore=self._untracked.pop(id(runtime), []),
             write_path=PATCH_PATH,
         )
@@ -122,6 +135,35 @@ class SweTasksetConfig(vf.TasksetConfig):
     split: Literal["eval"] = "eval"
 
 
+# Every phase of a rollout defaults to no limit at all (`TimeoutConfig`'s and
+# `TaskTimeout`'s own fields are all `None`), and this is the one environment
+# that hands a policy a general shell with `max_turns` bounding turns, not
+# wall clock. Each of the four below is sized past a real measurement, never
+# guessed -- the measurements themselves, and the headroom reasoning, live in
+# the package README's "Timeouts" section rather than here.
+
+# `setup()` (`_CLEANUP` above) plus the harness's own setup. Measured on the
+# container host: the heaviest sampled repository (matplotlib, 296 MB
+# `.git`, the largest of six families checked) runs the whole cleanup
+# script, `git gc --prune=now` included, in 3.6s.
+_SETUP_TIMEOUT_SECONDS = 300.0
+
+# The agent's solve attempt -- the phase Important 1 is actually about.
+# Running the repository's own tests is the most natural thing a repair
+# agent does, and the slowest real suite run measured (django, no test
+# directives -> its entire 12,311-test suite) took ~225s wall clock; the
+# worst *projected* one (matplotlib's largest instance, unrunnable here) is
+# ~570s. An hour gives room for several such runs plus editing, while still
+# turning "holds the slot for hours" into a bounded, finite failure.
+_AGENT_TIMEOUT_SECONDS = 3600.0
+
+# `finalize()`'s `git add -A` + `git diff --cached --binary` against
+# whatever the agent's box holds. Measured on the container host: a single
+# 573 MB novel file costs 35.2s combined -- roughly 60s/GB. 900s covers
+# ~15 GB of agent-authored content, far past any legitimate edit, while
+# still bounding a disk-filling pathology to a fixed ceiling.
+_FINALIZE_TIMEOUT_SECONDS = 900.0
+
 # `env.py`'s `_grade` wraps provisioning-through-grading in
 # `asyncio.timeout(task.data.timeout.scoring)`; left at `TaskData`'s default
 # (`None`) this is unbounded, so a reachable-but-HANGING box would never
@@ -129,7 +171,7 @@ class SweTasksetConfig(vf.TasksetConfig):
 # (30 minutes) is sized past the measured tail with headroom, not guessed --
 # full reasoning, the measured times it is checked against, and the p90/max
 # corpus figures (independently re-measured, not just quoted) live in the
-# package README's "Grading timeout" section rather than here.
+# package README's "Timeouts" section rather than here.
 _SCORING_TIMEOUT_SECONDS = 1800.0
 
 
@@ -146,7 +188,12 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
                     image=swe_adapter.image_for(row),
                     workdir=WORKDIR,
                     network_allow=[],
-                    timeout=vf.TaskTimeout(scoring=_SCORING_TIMEOUT_SECONDS),
+                    timeout=vf.TaskTimeout(
+                        setup=_SETUP_TIMEOUT_SECONDS,
+                        agent=_AGENT_TIMEOUT_SECONDS,
+                        finalize=_FINALIZE_TIMEOUT_SECONDS,
+                        scoring=_SCORING_TIMEOUT_SECONDS,
+                    ),
                     instance_id=row.instance_id,
                     repo=row.repo,
                     base_commit=row.base_commit,

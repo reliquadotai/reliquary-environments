@@ -16,6 +16,8 @@ because the policy is enforced, but because nothing ever enforced it.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -25,6 +27,40 @@ from verifiers.v1.runtimes import provision_runtime
 
 from reliquary_swe.env import SweEnv, SweEnvConfig
 from reliquary_swe.taskset import SweTask
+
+
+def _docker_available() -> bool:
+    """Whether a real, reachable Docker daemon exists here.
+
+    `shutil.which` alone would pass on a machine that has the `docker` CLI
+    installed but no daemon behind it (or one this process cannot reach), so
+    `docker version` -- a real round trip to the daemon, never an image pull
+    or a container start -- is what actually decides it.
+    """
+    if shutil.which("docker") is None:
+        return False
+    try:
+        result = subprocess.run(["docker", "version"], capture_output=True, timeout=10)
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
+    """Skip `@docker` tests when no Docker daemon is reachable.
+
+    Spec section 9 and both READMEs promise `uv run pytest` stays runnable on
+    a machine that cannot host images; without this hook, `@docker` tests
+    instead ERROR on such a machine (no `runtime`/`grading_runtime` fixture
+    can be built), which is not the same promise.
+    """
+    if _docker_available():
+        return
+    skip_docker = pytest.mark.skip(reason="no reachable Docker daemon")
+    for item in items:
+        if "docker" in item.keywords:
+            item.add_marker(skip_docker)
+
 
 # Small and already pulled on the container host (see remote-test): 15 tests,
 # ~2.3s to grade (measured on the box). Most grading goldens score this one

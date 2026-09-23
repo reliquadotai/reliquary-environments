@@ -45,6 +45,32 @@ def test_every_task_names_an_image_and_a_workdir():
         assert task.data.workdir
 
 
+def test_every_phase_has_a_deadline():
+    # IMPORTANT 1: setup/agent/finalize used to default to None (no limit) --
+    # only scoring was ever bounded. A policy that runs the repository's own
+    # tests, the most natural thing a repair agent does, could otherwise hold
+    # a rollout slot for hours; nothing here should be able to do that
+    # unboundedly again.
+    config = vf.taskset_config_type("reliquary-swe")
+    for task in vf.load_taskset(config(id="reliquary-swe")).head(5):
+        assert task.data.timeout.setup is not None
+        assert task.data.timeout.agent is not None
+        assert task.data.timeout.finalize is not None
+        assert task.data.timeout.scoring is not None
+
+
+async def test_finalize_without_setup_raises_instead_of_capturing_against_bare_head():
+    # The "one more silent-zero" fix: `_heads.pop(id(runtime), "")` used to
+    # fall back to "", which `capture_patch` turns into bare `HEAD` --
+    # upstream's own docstring says this misses any commit the agent made.
+    # No real runtime is needed: finalize() must raise before it ever
+    # touches one, from a missing bookkeeping entry alone.
+    task = _first_task()
+    trace = _trace(task)
+    with pytest.raises(RuntimeError, match="no base commit recorded"):
+        await task.finalize(trace, object())
+
+
 def test_the_taskset_resolves_to_sweenv_by_default():
     # `SweEnv` grades in a second, isolated box; `SingleAgentEnv` (the
     # fallback for a taskset that exports no `Env`) would instead default to

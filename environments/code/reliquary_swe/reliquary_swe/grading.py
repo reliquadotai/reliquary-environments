@@ -4,28 +4,34 @@ Order matters: the agent's patch is applied first, then grading restores the
 paths its chosen strategy names to their `base_commit` state (see
 `_restore_from_test_patch`), then the instance's own `test_patch` is
 reapplied, then tests run. What that actually guarantees: the specific paths
-a strategy restores -- `test_patch`'s own touched files, the `conftest.py`
-hierarchy above them, the test runner's own entry-point script and the
-repo-relative paths its own arguments name, and repo-root configuration
-files -- end the run exactly as they are at `base_commit`, regardless of
-what the patch under test did to them first. That list is not closed by
-construction: it is whatever `_test_infrastructure_paths` currently
-enumerates, and each of its entries (`swe_adapter.test_entrypoint`,
+a strategy restores -- `test_patch`'s own touched files; the `conftest.py`
+hierarchy above them, and, at every level of that same walk, pytest's own
+five config filenames (`pytest.ini`, `.pytest.ini`, `pyproject.toml`,
+`tox.ini`, `setup.cfg` -- pytest's own `locate_config` searches a file's
+ancestor directories innermost-first, so a nested one would otherwise win
+over a restored root copy rather than being shadowed by it); the test
+runner's own entry-point script; and the repo-relative paths its own
+arguments name -- end the run exactly as they are at `base_commit`,
+regardless of what the patch under test did to them first. That list is not
+closed by construction: it is whatever `_test_infrastructure_paths`
+currently enumerates, and each of its entries (`swe_adapter.test_entrypoint`,
 `swe_adapter.test_command_argument_paths`, `swe_adapter.pytest_reporting_fixup`)
 was added after a real, distinct bypass was found running against it, not
 derived from a general survey of every way a test command can be told what
 to read.
 
 What it does NOT guarantee, and cannot: a patch confined entirely to
-*source* files can still forge a result -- for example, reassigning
+*source* files -- not a test, not a conftest.py, not any of the config files
+above, a file the fix under test legitimately needs to keep -- can still
+forge a result, for example by reassigning
 `_pytest.reports.TestReport.from_item_and_call` at import time so every
 report claims PASSED regardless of what actually ran. No restoration scheme
-defends this, because restoring source is the one thing the grader must
-never do -- it is the fix under test. Closing that vector needs a check that
-does not depend on file identity at all (an injected canary test, at a path
-the agent cannot predict, that must FAIL and one that must PASS) --
-deliberately out of scope here; see task-4-report.md for where it would
-land.
+can defend this specific shape, because restoring source is the one thing
+the grader must never do -- it is the fix under test. Closing that vector
+needs a check that does not depend on file identity at all (an injected
+canary test, at a path the agent cannot predict, that must FAIL and one that
+must PASS) -- deliberately out of scope here; see task-4-report.md for where
+it would land.
 
 Receives a live `Runtime` and never provisions one: provisioning, retries and
 timeouts belong to Task 5's `env.py`. That seam is what lets this module be
@@ -47,12 +53,22 @@ from reliquary_swe.taskset import SweData
 
 _DIFF_TARGET = re.compile(r"^\+\+\+ b/(.+)$", re.MULTILINE)
 
-# Repo-root pytest/tox configuration a patch confined to source could still
-# use to redirect what "the tests" run: pytest reads `addopts`/plugin
-# registration from any of these, and tox's own `commands` (read even under
-# `--current-env`, which only skips venv creation) from `tox.ini`. None is
-# named by `test_patch`, `conftest.py`, or FAIL_TO_PASS/PASS_TO_PASS.
-_TEST_CONFIG_FILES = ("tox.ini", "pytest.ini", "setup.cfg", "pyproject.toml")
+# Every filename pytest's own `locate_config` treats as a config file
+# (`_pytest.config.findpaths.locate_config`'s `config_names`, checked against
+# the installed pytest), which a patch confined to source could still use --
+# at ANY directory level, not only the root, since `locate_config` walks
+# `(argpath, *argpath.parents)` innermost-first -- to redirect what "the
+# tests" run: pytest reads `addopts`/plugin registration from any of these,
+# and tox's own `commands` (read even under `--current-env`, which only skips
+# venv creation) from `tox.ini`. None is named by `test_patch`, `conftest.py`,
+# or FAIL_TO_PASS/PASS_TO_PASS.
+_TEST_CONFIG_FILES = (
+    "pytest.ini",
+    ".pytest.ini",
+    "pyproject.toml",
+    "tox.ini",
+    "setup.cfg",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +87,22 @@ class Report:
     fail_to_pass_passed: int
     pass_to_pass_passed: int
     results: dict[str, str] = field(default_factory=dict)
+    # Monitoring fields, not reward inputs -- IMPORTANT 3. All nine defects
+    # found while building this package shared one shape: the test command
+    # ran but produced nothing `parse_results` could read, and `results == {}`
+    # scored identically to "the tests ran and genuinely failed" -- silent by
+    # construction, since neither a syntax-broken patch nor a real adapter
+    # break look different from here. These two fields don't fix that (a
+    # patch with a syntax error legitimately produces no parseable output,
+    # so this cannot become an unconditional raise); they make it visible.
+    # `results_parsed == 0` is per-instance and inherently ambiguous;
+    # `pass_to_pass_passed == 0` aggregated across a whole batch is the
+    # actual monitoring canary, because a real adapter break zeroes p2p for
+    # every instance in the batch at once, while a patch-quality zero does
+    # not -- see `grade`'s own docstring for the four defects that shape
+    # would have caught in one batch instead of four separate nights.
+    results_parsed: int = 0
+    test_command_exit_code: int | None = None
 
 
 def _paths_touched_by(patch: str) -> list[str]:
@@ -157,24 +189,44 @@ async def _restore_if_present(runtime: vf.Runtime, base_commit: str, path: str) 
 
 
 def _conftest_ancestors(paths: list[str]) -> list[str]:
-    """Every `conftest.py` pytest could load on the way to `paths`.
+    """Every `conftest.py` -- and every one of `_TEST_CONFIG_FILES` -- pytest
+    could load on the way to `paths`.
 
     pytest auto-loads a `conftest.py` from every directory between a
     collected file and the repository root, not only ones a path explicitly
-    names. Restoring only `test_patch`'s own touched paths leaves that walk
-    uncovered: confirmed by hand, a `conftest.py` added at the repo root --
-    nowhere near `test_patch`'s own path list -- with a
+    names, and its own `locate_config` searches that identical walk for its
+    five config filenames innermost-first. Restoring only `test_patch`'s own
+    touched paths -- or only the repo root -- leaves both walks uncovered.
+    Confirmed by hand, both vectors: a `conftest.py` added at the repo root,
+    nowhere near `test_patch`'s own path list, with a
     `pytest_runtest_makereport` hook forcing every outcome to "passed" earned
-    full reward on an otherwise-untouched checkout. Scoped to `conftest.py`
-    specifically (not `pytest.ini`/`setup.cfg`/etc, which `_test_infrastructure_paths`
-    restores unconditionally instead): it is the vector this was actually
-    observed on, and the one a policy is most likely to reach for first.
+    full reward on an otherwise-untouched checkout; and, before this walk
+    also carried the five config names, an added
+    `astropy/modeling/tests/pytest.ini` with `addopts = -p no:terminal`
+    silently dropped every PASSED/FAILED line -- our own explicit `-rA`
+    notwithstanding, since a disabled terminal reporter has nothing left to
+    apply `-rA` to -- turning the *gold* patch's correct 1.0 into a wrong
+    0.0 (see `test_a_nested_pytest_ini_does_not_survive_into_grading` in
+    test_goldens.py). A root-only `_TEST_CONFIG_FILES` copy never reaches
+    this file at all, because `locate_config`'s innermost-first search finds
+    the nested one first regardless.
+
+    Every name is emitted at every level regardless of whether anything is
+    actually there to restore -- existence is decided per path by
+    `_restore_if_present`, not here. Measured against the full 500-instance
+    corpus before choosing all five names over a narrower one (just
+    `pytest.ini`/`.pytest.ini`, which would also close the vector): walking
+    all five at every level clobbers the exact same one gold patch the
+    root-only scheme already did (pylint-4661's own `setup.cfg`), zero
+    additional -- so closing the vector completely costs nothing beyond what
+    shipping already accepted.
     """
     seen: dict[str, None] = {}
     for path in paths:
         directory = PurePosixPath(path).parent
         while True:
-            seen[str(directory / "conftest.py")] = None
+            for name in ("conftest.py", *_TEST_CONFIG_FILES):
+                seen[str(directory / name)] = None
             if str(directory) == ".":
                 break
             directory = directory.parent
@@ -189,8 +241,9 @@ def _test_infrastructure_paths(data: SweData) -> list[str]:
     sympy's `bin/test` -- see `swe_adapter.test_entrypoint`), a repo-relative
     path or module label the command's own *arguments* name (django's
     `--settings=test_sqlite` -- see `swe_adapter.test_command_argument_paths`),
-    pytest/tox configuration at the repo root, and the `conftest.py`
-    hierarchy above every path `test_patch` touches.
+    pytest/tox configuration -- at the repo root unconditionally, and at
+    every directory `_conftest_ancestors` walks above every path
+    `test_patch` touches -- alongside the `conftest.py` hierarchy there.
 
     On 350/500 corpus instances (231 django, 75 sympy, 44 sphinx),
     `test_command` executes a file or reads a config the diff carries and
@@ -308,6 +361,19 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     Reward is binary: every fail-to-pass and every pass-to-pass entry must
     pass, or it's zero. A fractional reward would pay for a half-repair, and a
     half-repair is not a repair.
+
+    All nine implementation defects recorded in this project's progress log
+    presented as exactly this function returning an all-`0` report with an
+    empty `results` map, each caught by a human noticing a zero on real data,
+    one at a time, on separate nights -- conda not being on `PATH`, the 128 KiB
+    argv cap, django's runner writing to stderr, sphinx's own invocation
+    missing `-rA`, among others. `Report.results_parsed` and
+    `.test_command_exit_code` exist so the same shape shows up as a
+    monitoring signal instead: `pass_to_pass_passed == 0` aggregated across a
+    whole batch, not any single instance's zero, is what would have caught
+    four of those nine (the adapter-level ones) in one batch rather than four
+    separate nights, because a real adapter break zeroes p2p for every
+    instance at once and a patch that is merely bad does not.
     """
     checkout = await runtime.run(["git", "checkout", "-q", data.base_commit], {})
     if checkout.exit_code != 0:
@@ -345,9 +411,20 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     # names. Deliberately not built now; see task-4-report.md.
     row = _row_for(data)
     run = await runtime.run(swe_adapter.test_command(row), {})
-    results = swe_adapter.parse_results(row, swe_adapter.wrap_test_output(run.stdout or ""))
+    results = swe_adapter.parse_results(
+        row, swe_adapter.wrap_test_output(run.stdout or "")
+    )
 
     f2p = sum(1 for name in data.fail_to_pass if results.get(name) == "PASSED")
     p2p = sum(1 for name in data.pass_to_pass if results.get(name) == "PASSED")
     resolved = f2p == len(data.fail_to_pass) and p2p == len(data.pass_to_pass)
-    return Report(1.0 if resolved else 0.0, applied, restored, f2p, p2p, results)
+    return Report(
+        1.0 if resolved else 0.0,
+        applied,
+        restored,
+        f2p,
+        p2p,
+        results,
+        results_parsed=len(results),
+        test_command_exit_code=run.exit_code,
+    )
