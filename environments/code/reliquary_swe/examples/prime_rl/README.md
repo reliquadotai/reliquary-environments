@@ -1,0 +1,131 @@
+# Prime-RL v0.9.0
+
+This is the first pinned Prime-RL training lane for `reliquary-swe`. It uses
+Prime-RL's native Verifiers environment boundary, Qwen3 renderer, GRPO,
+zero-signal group rejection, held-out online evaluation, and native
+checkpoint/run evidence. Reliquary does not wrap or fork the trainer.
+
+The taskset is multi-turn and tool-using: `reliquary_swe` defines no tools of
+its own (see the package README), so this config drives the policy through
+Verifiers' `bash` harness — a minimal coding-agent loop offering `bash` and
+`edit` as OpenAI-style function-calling tools inside the task's container.
+Training across a different harness (`mini_swe_agent`, `claude_code`, ...) is
+a configuration change to `env.agent.harness.id`, not a code change.
+
+The reference topology needs two CUDA GPUs: one trainer and one inference
+worker. A shared single-GPU trainer/inference process is not supported by the
+Prime-RL v0.9.0 launcher and is not claimed here.
+
+## This example does not train on SWE-bench Verified for real
+
+`reliquary-swe`'s only corpus split is `eval` — SWE-bench Verified, pinned in
+`environment.toml`. It is an evaluation set and must never be trained on
+(design spec section 8, `docs/superpowers/specs/2026-09-22-reliquary-swe-env-design.md`).
+Training is meant to come from SWE-smith, which is not wired into this
+package yet: its rows carry no `version`, `base_commit`, or `test_patch`,
+which changes the grader's own test-restoration strategy, not only a corpus
+pin — its own piece of work.
+
+Until that lands, `rl.toml`'s `orchestrator.train.source` points at
+`split = "eval"` for one reason only: to exercise the mechanical training
+loop end to end — config resolution, container provisioning, the `bash`
+harness's tool calls, reward computation, a checkpoint write — with
+`--dry-run` and a handful of `--max-steps`. This README stops there
+deliberately. It gives no full-run command, unlike this repository's other
+Prime-RL examples, and none should be added until a real training corpus
+exists.
+
+## Install the exact stack
+
+Run from a clean working directory on the GPU server. Git LFS and Docker must
+be installed. Docker enforces the taskset's `network = false` policy from
+`environment.toml`; Verifiers correctly refuses to run that policy with its
+unsandboxed subprocess runtime. This matters doubly here: grading itself
+provisions a *second* container per rollout (see the package README's
+Isolation section), so the GPU server's Docker daemon needs enough disk for
+the SWE-bench Verified instance images this taskset's tasks name — sized in
+gigabytes per repository family, not megabytes. Set `RELIQUARY_ENVS_PATH` to
+a checkout of this repository (`reliquary-environments`) before running the
+block below.
+
+```bash
+git clone --branch v0.9.0 --depth 1 \
+  https://github.com/PrimeIntellect-ai/prime-rl.git
+git -C prime-rl -c url.https://github.com/.insteadOf=git@github.com: \
+  submodule update --init --recursive --depth 1
+test "$(git -C prime-rl rev-parse HEAD)" = "ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1"
+test "$(git -C prime-rl/deps/verifiers rev-parse HEAD)" = "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"
+test "$(git -C prime-rl/deps/renderers rev-parse HEAD)" = "cb8243913702367878427c7a7094b350ea1a8e20"
+test "$(git -C prime-rl/deps/pydantic-config rev-parse HEAD)" = "65b15dffba82d4be19efdaf8b2b9705cc1756be8"
+test "$(git -C prime-rl/deps/prime-envs rev-parse HEAD)" = "26dafdc9582576975ec576f893be7319028daf51"
+uv sync --project prime-rl --frozen --package prime-rl --extra gpu --no-dev
+uv pip install --python prime-rl/.venv/bin/python --no-deps \
+  -e "$RELIQUARY_ENVS_PATH/environments/code/reliquary_swe"
+```
+
+`reliquary-swe` has never had a tagged release, so there is no wheel to fetch
+from a GitHub release yet — installing from a release-wheel URL is not
+possible. The command above installs the package directly from its
+directory in this repository instead, the same source `uv sync --locked` in
+the package's own README installs.
+
+Use the environment's package after `uv sync`; a later sync can remove it
+because it is not part of Prime-RL's lock. The commands below call the
+virtual-environment binaries directly for the same reason.
+
+Download the exact model snapshot. Prime-RL v0.9.0 accepts a model name or
+path but has no revision field, so the local snapshot path is the immutable
+boundary:
+
+```bash
+MODEL_SNAPSHOT_PATH="$(prime-rl/.venv/bin/hf download \
+  Qwen/Qwen3-4B-Instruct-2507 \
+  --revision cdbee75f17c01a7cc42f958dc650907174af0554)"
+```
+
+## Validate, then smoke test
+
+Set `RELIQUARY_ENVS_PATH` to this repository checkout.
+
+```bash
+PRIME_CONFIG_PATH="$RELIQUARY_ENVS_PATH/environments/code/reliquary_swe/examples/prime_rl/rl.toml"
+
+prime-rl/.venv/bin/python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary-swe'); print(next(iter(vf.load_taskset(c(id='reliquary-swe', split='eval')))).key)"
+
+prime-rl/.venv/bin/rl @ "$PRIME_CONFIG_PATH" \
+  --model.name "$MODEL_SNAPSHOT_PATH" --dry-run True \
+  --output-dir outputs --run.name reliquary-swe-dry-run
+
+prime-rl/.venv/bin/rl @ "$PRIME_CONFIG_PATH" \
+  --model.name "$MODEL_SNAPSHOT_PATH" --max-steps 5 \
+  --output-dir outputs --run.name reliquary-swe-smoke
+```
+
+The five-step smoke must produce well-formed `bash`/`edit` tool calls, a
+captured patch per rollout, non-zero mixed-outcome groups, a checkpoint, and
+clean train/eval traces. Keep Prime-RL's resolved configs, metrics, traces,
+and checkpoint manifests as the evidence bundle; do not invent a parallel
+logging format. There is no further "then train" step here — see "This
+example does not train on SWE-bench Verified for real", above.
+
+## Scientific boundary
+
+The config carries the reusable INTELLECT-3 ideas: group-relative repeated
+sampling, exact verifiable rewards, rejection of groups with no learning
+signal, bounded off-policy lag, evaluation before training, and periodic
+checkpoints. It is deliberately sized for a small mechanical proof, not
+copied from INTELLECT-3's 512-H200 GLM run — and, per the section above, it
+is not sized or scoped for a real training claim at all yet.
+
+Prime-RL v0.9.0 uses its current DPPO+KL trainer loss with GRPO advantages.
+It is therefore accurate to report **Prime-RL v0.9.0 GRPO**, not an exact
+reproduction of INTELLECT-3's report-era IcePop loss.
+
+Every number this config carries that is not pinned by measurement is named
+as such, in this file and in `rl.toml` itself: the per-turn token budget, the
+turn budget, and the training corpus (temporarily `eval`, pending SWE-smith).
+None of them should be read as derived; see `environments/code/reliquary_swe/README.md`
+and the design spec's section 10 for what is actually settled and what is
+still open.
+
+Primary references: the [INTELLECT-3 technical report](https://storage.googleapis.com/intellect-3-paper/INTELLECT_3_Technical_Report.pdf), [Prime-RL v0.9.0](https://github.com/PrimeIntellect-ai/prime-rl/tree/v0.9.0), and its [multi-turn training design](https://github.com/PrimeIntellect-ai/prime-rl/blob/v0.9.0/docs/algorithms.md#multi-turn-trajectories).

@@ -1,0 +1,129 @@
+# Two-GPU reference run: one training GPU and one inference GPU.
+max_steps = 100
+# Room for 40 turns' worth of tool calls, bash output (capped at
+# `max_observation_bytes = 16384` per `environment.toml`) and the model's own
+# completions. Unmeasured, like `max_turns` below -- sized generously rather
+# than derived, and expected to shrink or grow once a pilot's real trajectory
+# lengths are observed.
+seq_len = 32768
+dashboard = false
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+# For a reproducible run, override this with the revision-pinned local snapshot
+# from README.md. Prime-RL v0.9.0 has no model-revision config field.
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[ckpt]
+interval = 5
+keep_last = 3
+keep_interval = 15
+
+[weight_broadcast]
+type = "filesystem"
+
+[monitors.file]
+
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-5
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 32
+group_size = 16
+max_off_policy_steps = 8
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.renderer]
+# Named, not auto-resolved: auto-resolution falls back to a renderer with no
+# tool support for any model outside its map, which would silently lose the
+# `bash` harness's tool calling. `enable_thinking` is what applies the
+# `reasoning = "thinking"` this environment declares; the two drift the
+# moment one is edited alone, and CI's check_example_matches_policy.py
+# checks they agree.
+name = "qwen3"
+enable_thinking = true
+
+[orchestrator.train]
+filter_zero_advantages = true
+
+[orchestrator.train.sampling]
+temperature = 1.0
+# Per-turn budget, unmeasured -- see `seq_len`'s own comment above and
+# `environment.toml`'s `max_turns` comment. `reliquary-telecom-solo`'s
+# measured per-turn budget (4,096) is borrowed as a starting point, not
+# derived from anything observed in this environment.
+max_completion_tokens = 4096
+
+# IMPORTANT: SWE-bench Verified (this taskset's only split, `eval`) is an
+# evaluation set and must never be trained on -- see environment.toml's
+# `[data]` table and the design spec's section 8. Training is meant to come
+# from SWE-smith, which is not wired into this package yet (its rows carry no
+# `version`, `base_commit`, or `test_patch`, which changes the grader's own
+# test-restoration strategy, not only a corpus pin). Until that lands, this
+# `train.source` pointed at `split = "eval"` exists ONLY to exercise the
+# mechanical training loop end to end (`--dry-run`, a handful of
+# `--max-steps`) -- see the README's "Validate, then smoke test" section,
+# which stops there deliberately and does NOT give a full-run command.
+[[orchestrator.train.source]]
+name = "reliquary-swe-train"
+env.taskset.id = "reliquary-swe"
+env.taskset.split = "eval"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 40
+
+[orchestrator.train.source.curriculum.gates.zero_signal]
+type = "advantage_range"
+reject_min = 0.0
+reject_max = 0.0
+
+[orchestrator.eval]
+interval = 15
+num_examples = 12
+group_size = 4
+skip_first_step = false
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_p = 1.0
+max_completion_tokens = 4096
+
+[[orchestrator.eval.source]]
+name = "reliquary-swe-eval"
+env.taskset.id = "reliquary-swe"
+env.taskset.split = "eval"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 40
+
+[inference]
+
+[inference.vllm]
+dtype = "bfloat16"
+max_model_len = 32768
+tool_call_parser = "hermes"
+seed = 0
+gpu_memory_utilization = 0.9
+enable_lora = true
+max_lora_rank = 32

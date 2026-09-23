@@ -214,3 +214,43 @@ jobs:
       - name: Verify installed wheel outside its source tree
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/code/reliquary_code/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/code/reliquary_code/scripts/verify_wheel.py
+
+  reliquary-swe:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/code/reliquary_swe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
+      - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
+      # `-m "not slow"` deselects exactly four tests, all @docker: three run
+      # django's own entire 12,311-test suite (its test_patch touches only
+      # .txt fixtures, so get_test_directives is empty and a genuine,
+      # restored run falls back to everything -- ~226s / ~4min each) and one
+      # runs xarray's 1,818 fail-to-pass+pass-to-pass tests (~300s):
+      #   tests/test_adapter.py::test_grading_django_end_to_end_is_not_actually_broken
+      #   tests/test_adapter.py::test_grading_a_large_instance_end_to_end_gets_a_real_result
+      #   tests/test_goldens.py::test_a_patch_that_rewrites_djangos_test_runner_scores_zero
+      #   tests/test_goldens.py::test_a_patch_that_rewrites_djangos_settings_module_scores_zero
+      # Together with the images they and the steps below pull, that is
+      # several multi-gigabyte SWE-bench images plus roughly 15 minutes of test
+      # execution -- more than a hosted runner's disk and time budget should
+      # take on every push. This is a stated exclusion, not a silent one:
+      # every OTHER @docker test still runs here, including the controls
+      # that prove this environment's central guarantees end to end --
+      # network severed before grading, a test-tampering or fake-result
+      # patch scores 0.0, an unreachable or hung grading box raises instead
+      # of scoring, and `restored` reaches `solution.info["swe_report"]`.
+      # The four excluded tests remain part of the routine suite run against
+      # the dedicated container host via
+      # .superpowers/sdd/2026-09-22-reliquary-swe/remote-test (measured
+      # there at 789s / 63 passed for the full, undeselected suite).
+      - run: uv run --no-sync pytest -m "not slow"
+      - run: uv run --no-sync validate reliquary-swe -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+      - run: uv build --clear

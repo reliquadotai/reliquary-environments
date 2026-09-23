@@ -1,0 +1,85 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/swe"
+version = "0.1.0a1"
+taskset = "reliquary-swe"
+entrypoint = "reliquary_swe:SweTaskset"
+license = "MIT"
+verification_tier = "container-reverified"
+owners = ["Reliquary contributors"]
+task_families = ["swe_bench_verified"]
+
+# No `compatibility_entrypoint`. This environment is Verifiers-only: a
+# container cannot be replayed deterministically, so a replay surface would
+# be a promise the implementation cannot keep. This is a conscious deviation
+# from the repository README, which states that every package exposes both
+# surfaces -- recorded here and in the README table below so it reads as a
+# decision rather than an omission (see the design spec's section 2,
+# docs/superpowers/specs/2026-09-22-reliquary-swe-env-design.md).
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "container"
+# Provisional, and carries no measurement. Unlike this repository's other
+# budgets, this number was not derived from an observed distribution -- the
+# design spec (section 10) lists the turn budget as an open question, to be
+# re-derived after a pilot the same way reliquary-telecom-solo derived 40
+# from a measured reference-solution length. This 40 borrows that number as
+# a starting point; it is not evidence about this environment.
+max_turns = 40
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+# Matches what `env.py` actually records: `SweEnv.finalize` calls
+# `solution.record_reward("patch_passes_tests", report.reward)`, and nothing
+# else. `grading.Report` carries additional fields (`applied`, `restored`,
+# fail/pass-to-pass counts) surfaced onto `solution.info["swe_report"]` for
+# auditing, but they are not reward components.
+components = ["patch_passes_tests"]
+
+[policy]
+# How the policy should be prompted. The environment knows whether its task
+# rewards deliberation; the harness running it does not.
+reasoning = "thinking"
+reasoning_rationale = """
+A repair starts with diagnosis: the agent must read code it has never seen
+and locate a fault from a bug report before its first edit, and with a shell
+as its only tool there is nowhere else for that reasoning to happen. This is
+an argument, not a measurement -- the other environments in this repository
+earned their reasoning mode by measurement, and this one must be rewritten
+with a measured band once a first pilot exists (see the design spec's
+section 9).
+"""
+
+[data]
+# SWE-bench Verified is an evaluation set and must never be trained on (spec
+# section 8): no `train` or `qualification` pin exists here on purpose.
+# Training is meant to come from SWE-smith, which is not wired in yet --
+# its schema lacks `version`, `base_commit` and `test_patch`, so adding it
+# changes the task and the grader's test-restoration strategy, not only this
+# table (spec section 8's correction). That is its own piece of work.
+eval = "hf:princeton-nlp/SWE-bench_Verified@c104f840cc67f8b6eec6f759ebc8b2693d585d4a"
+redistributable = true
+# The SWE-bench project itself (the harness and dataset-construction code)
+# is MIT-licensed; the dataset's own Hugging Face card declares no license
+# tag of its own. Each row's actual content -- a repository diff and the
+# text of the issue that motivated it -- is drawn from the underlying
+# open-source project (astropy, django, sympy, sphinx, ...) under that
+# project's own license, not SWE-bench's. Recorded as measured rather than
+# picked: this package claims no more than princeton-nlp's own widely-used
+# public redistribution already does.
+license = "MIT (SWE-bench project); per-row content inherits its source repository's own license"
+rows = 500
+
+# There is no `[execution]` field for a scoring deadline: `vf.TaskData.timeout`
+# is set per task, not per environment, so it is not declared here. Every
+# task this taskset yields carries `timeout.scoring = 1800.0` seconds (30
+# minutes), set in `reliquary_swe/taskset.py` next to the measured tail it is
+# sized past -- see that module's comment, and the README's own section.

@@ -122,6 +122,40 @@ class SweTasksetConfig(vf.TasksetConfig):
     split: Literal["eval"] = "eval"
 
 
+# `env.py`'s `_grade` wraps provisioning-through-grading in
+# `asyncio.timeout(task.data.timeout.scoring)`. Left at the `TaskData`
+# default (`None`), that timeout is unbounded: a box that is reachable but
+# HANGS -- a wedged daemon, a stuck exec, a test process that loops instead
+# of finishing -- never raises and never scores, which defeats the same
+# guarantee `env.py`'s retry-then-raise exists to give from the other side
+# (see task-5-report.md's Important finding).
+#
+# Sized past the measured tail, not guessed. Real grading times measured on
+# the container host: astropy__astropy-12907 (15 tests) 2.3s;
+# sympy-14248 (435 tests) 99s (~0.23s/test, the slowest per-test rate
+# measured); django__django-10097 (test_patch names no test files, so
+# `get_test_directives` returns none and django runs its *entire* suite,
+# 12,311 tests) ~226s of test execution, ~3m45s (225s) wall including
+# checkout and teardown. Across the full 500-instance corpus, test count is
+# median 52, mean 123, p90 254, max 2,488 (matplotlib__matplotlib-25122).
+#
+# matplotlib-25122 itself could not be graded end to end to get a direct
+# number: its image would not pull on the measurement box (a subordinate-UID
+# limit in that host's Docker daemon, unrelated to timing). Projecting from
+# the slowest measured per-test rate (sympy's ~0.23s/test) onto its 2,488
+# tests gives ~570s of test execution alone -- above django's measured
+# worst case despite running fewer tests, because per-test cost varies by
+# well over 10x across repo families and nothing measured here bounds it
+# from above. 1800s (30 minutes) is chosen for headroom past both anchors:
+# roughly 8x the worst wall-clock time actually observed (225s) and roughly
+# 3x the pessimistic projection for the corpus's most test-heavy, unmeasured
+# instance (570s) -- generous on purpose, since the cost of this timeout
+# firing too early is a real repair scored as an infrastructure error, while
+# firing only after 30 minutes on a genuinely wedged box is a training step
+# delayed, not corrupted.
+_SCORING_TIMEOUT_SECONDS = 1800.0
+
+
 class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
     def load(self) -> Iterator[SweTask]:
         for index, row in enumerate(corpus.load_rows(self.config.split)):
@@ -135,6 +169,7 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
                     image=swe_adapter.image_for(row),
                     workdir=WORKDIR,
                     network_allow=[],
+                    timeout=vf.TaskTimeout(scoring=_SCORING_TIMEOUT_SECONDS),
                     instance_id=row.instance_id,
                     repo=row.repo,
                     base_commit=row.base_commit,
