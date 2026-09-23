@@ -1,10 +1,24 @@
 """Score a patch inside a box the agent never touched.
 
-Order matters and is the whole design. The agent's patch is applied first, then
-the instance's own test patch is applied on top of a checkout of the test files
-as they exist at the base commit. So a `conftest.py` that skips everything, a
-monkeypatched framework, or an edited test file is overwritten before a single
-test runs -- it can never be rewarded, only recorded.
+Order matters: the agent's patch is applied first, then grading restores the
+paths its chosen strategy names to their `base_commit` state (see
+`_restore_from_test_patch`), then the instance's own `test_patch` is
+reapplied, then tests run. What that actually guarantees: the specific paths
+a strategy restores -- `test_patch`'s own touched files, the `conftest.py`
+hierarchy above them, the test runner's own entry-point script, and its
+repo-root configuration files -- end the run exactly as they are at
+`base_commit`, regardless of what the patch under test did to them first.
+
+What it does NOT guarantee, and cannot: a patch confined entirely to
+*source* files can still forge a result -- for example, reassigning
+`_pytest.reports.TestReport.from_item_and_call` at import time so every
+report claims PASSED regardless of what actually ran. No restoration scheme
+defends this, because restoring source is the one thing the grader must
+never do -- it is the fix under test. Closing that vector needs a check that
+does not depend on file identity at all (an injected canary test, at a path
+the agent cannot predict, that must FAIL and one that must PASS) --
+deliberately out of scope here; see task-4-report.md for where it would
+land.
 
 Receives a live `Runtime` and never provisions one: provisioning, retries and
 timeouts belong to Task 5's `env.py`. That seam is what lets this module be
@@ -26,18 +40,42 @@ from reliquary_swe.taskset import SweData
 
 _DIFF_TARGET = re.compile(r"^\+\+\+ b/(.+)$", re.MULTILINE)
 
+# Repo-root pytest/tox configuration a patch confined to source could still
+# use to redirect what "the tests" run: pytest reads `addopts`/plugin
+# registration from any of these, and tox's own `commands` (read even under
+# `--current-env`, which only skips venv creation) from `tox.ini`. None is
+# named by `test_patch`, `conftest.py`, or FAIL_TO_PASS/PASS_TO_PASS.
+_TEST_CONFIG_FILES = ("tox.ini", "pytest.ini", "setup.cfg", "pyproject.toml")
+
 
 @dataclass(frozen=True, slots=True)
 class Report:
     reward: float
     applied: bool
+    # Only meaningful when `applied` is True: whether every path the chosen
+    # restoration strategy touched (see `_restore_from_test_patch`) ended up
+    # confirmed at its `base_commit` content. False means a reward of 0 here
+    # may be OUR failure, not the agent's -- a grader-side restoration
+    # problem reading identically to "did not fix the bug" is exactly the
+    # silent-zero shape this module exists to avoid. When the patch itself
+    # never applied, restoration was never attempted and this is set True by
+    # convention: that zero already has a complete, unambiguous explanation.
+    restored: bool
     fail_to_pass_passed: int
     pass_to_pass_passed: int
     results: dict[str, str] = field(default_factory=dict)
 
 
 def _paths_touched_by(patch: str) -> list[str]:
-    """The files a unified diff writes to (the `+++ b/...` side of each hunk)."""
+    """The files a unified diff writes to (the `+++ b/...` side of each hunk).
+
+    Includes paths the diff *adds* (no path exists at any earlier commit for
+    those) alongside paths it modifies or deletes (which do). Restoring
+    "every path this names" from `base_commit` is therefore only correct for
+    the ones that existed there -- see `_restore_from_test_patch`, which
+    never uses this list directly for that reason and instead splits it
+    against `swe_adapter.get_modified_files`.
+    """
     return [match.group(1) for match in _DIFF_TARGET.finditer(patch)]
 
 
@@ -60,7 +98,54 @@ def _row_for(data: SweData) -> SweRow:
     )
 
 
-RestoreTests = Callable[[vf.Runtime, SweData], Awaitable[None]]
+RestoreTests = Callable[[vf.Runtime, SweData], Awaitable[bool]]
+
+
+async def _checkout(runtime: vf.Runtime, base_commit: str, path: str) -> bool:
+    """Restore one path to its `base_commit` content -- one path per call,
+    never batched into a single `git checkout base -- <path1> <path2> ...`.
+
+    A batched checkout fails, and restores NONE of its paths, the instant a
+    single pathspec does not match -- confirmed by hand under git 2.48.1.
+    Counted against the cached corpus: 15/500 instances have a `test_patch`
+    that adds a file, and 13 of those also carry an *existing* test file in
+    the same patch (django-11141/11749/13516/15525/16256/16454,
+    pylint-6528, sphinx-10614/10673/11510/8269/8548/8595) -- on every one of
+    those 13, restoring the existing file this way would have silently
+    restored nothing at all, because the added path's missing pathspec
+    poisoned the whole command. One path per call means one bad path fails
+    only itself.
+    """
+    result = await runtime.run(["git", "checkout", base_commit, "--", path], {})
+    return result.exit_code == 0
+
+
+async def _remove(runtime: vf.Runtime, path: str) -> bool:
+    result = await runtime.run(["rm", "-rf", path], {})
+    return result.exit_code == 0
+
+
+async def _restore_if_present(runtime: vf.Runtime, base_commit: str, path: str) -> bool:
+    """Make `path` exactly what it is at `base_commit`, for a path nothing
+    already says the existence of (unlike `test_patch`'s own touched paths,
+    which `swe_adapter.get_modified_files` classifies from the diff text
+    itself -- this is for the paths in `_test_infrastructure_paths`, which
+    `test_patch` never names at all).
+
+    Existence is tested directly (`git cat-file -e {base}:{path}`) rather
+    than inferred from a checkout's exit code. A checkout can fail for
+    reasons that have nothing to do with absence -- an index lock, a
+    permissions error, a directory sitting where a file belongs -- and
+    reading any of those as "the agent added this" answers a genuine
+    failure with deletion: `rm -f` on a repository's real, working
+    `conftest.py` breaks collection and scores 0, silently, for a reason
+    that has nothing to do with the patch under test. Only a *confirmed*
+    absence at base gets removed.
+    """
+    exists = await runtime.run(["git", "cat-file", "-e", f"{base_commit}:{path}"], {})
+    if exists.exit_code == 0:
+        return await _checkout(runtime, base_commit, path)
+    return await _remove(runtime, path)
 
 
 def _conftest_ancestors(paths: list[str]) -> list[str]:
@@ -73,9 +158,9 @@ def _conftest_ancestors(paths: list[str]) -> list[str]:
     nowhere near `test_patch`'s own path list -- with a
     `pytest_runtest_makereport` hook forcing every outcome to "passed" earned
     full reward on an otherwise-untouched checkout. Scoped to `conftest.py`
-    specifically (not `pytest.ini`/`setup.cfg`/etc.): it is the vector this
-    was actually observed on, and the one a policy is most likely to reach
-    for first.
+    specifically (not `pytest.ini`/`setup.cfg`/etc, which `_test_infrastructure_paths`
+    restores unconditionally instead): it is the vector this was actually
+    observed on, and the one a policy is most likely to reach for first.
     """
     seen: dict[str, None] = {}
     for path in paths:
@@ -88,29 +173,88 @@ def _conftest_ancestors(paths: list[str]) -> list[str]:
     return list(seen)
 
 
-async def _restore_from_test_patch(runtime: vf.Runtime, data: SweData) -> None:
-    """SWE-bench Verified's strategy: put back, at `base_commit`, exactly the
-    files `test_patch` touches, then reapply it -- matching upstream's own
-    `make_eval_script_list_py` (`git checkout {base_commit} {test_files}` then
-    `git apply` the test patch) command for command, since comparability to
-    published SWE-bench numbers is the only reason to use this corpus at all.
-    Also restores every ancestor `conftest.py` (see `_conftest_ancestors`),
-    which upstream's own script does not -- upstream never scores an
-    adversarial patch, so nothing there needed this either.
+def _test_infrastructure_paths(data: SweData) -> list[str]:
+    """Every path -- beyond `test_patch`'s own touched files -- that
+    `swe_adapter.test_command` depends on and that a patch confined entirely
+    to source could still use to control what "the tests" report: the test
+    runner's own entry-point script (django's `./tests/runtests.py`,
+    sympy's `bin/test` -- see `swe_adapter.test_entrypoint`), pytest/tox
+    configuration at the repo root, and the `conftest.py` hierarchy above
+    every path `test_patch` touches.
+
+    On 350/500 corpus instances (231 django, 75 sympy, 44 sphinx),
+    `test_command` executes a file or reads a config the diff carries and
+    `test_patch` never names -- rewriting django's `tests/runtests.py` to
+    print a fake "... ok" line for every test is a *total* bypass, and an
+    easier one than the conftest.py vector above: it needs no knowledge of
+    pytest internals, `parse_log_django` keys on exactly that string, and
+    nothing about it looks like tampering with a test file.
     """
-    paths = _paths_touched_by(data.test_patch)
-    if paths:
-        await runtime.run(["git", "checkout", data.base_commit, "--", *paths], {})
-    for conftest in _conftest_ancestors(paths):
-        restored = await runtime.run(["git", "checkout", data.base_commit, "--", conftest], {})
-        if restored.exit_code != 0:
-            # Not present at base_commit: whatever is at this path now was
-            # added by the patch under test, with no baseline to compare
-            # against, so it comes out rather than staying in place.
-            await runtime.run(["rm", "-f", conftest], {})
+    touched = _paths_touched_by(data.test_patch)
+    paths = list(_TEST_CONFIG_FILES)
+    paths.extend(_conftest_ancestors(touched))
+    entrypoint = swe_adapter.test_entrypoint(_row_for(data))
+    if entrypoint:
+        paths.append(entrypoint)
+    return paths
+
+
+async def _restore_from_test_patch(runtime: vf.Runtime, data: SweData) -> bool:
+    """SWE-bench Verified's strategy: put back, at `base_commit`, every path
+    a patch under test could use to control what "the tests" report, then
+    reapply `test_patch`. Returns whether every one of those paths ended up
+    confirmed restored (see `Report.restored`).
+
+    `test_patch`'s own touched paths are split by `swe_adapter.get_modified_files`
+    (upstream's own diff-text classifier: everything whose pre-patch, "a/"
+    side is not `/dev/null`) into ones that existed at `base_commit` --
+    checked out there, one at a time (`_checkout`) -- and ones the patch
+    itself *adds*, which do not exist at any earlier commit and are removed
+    instead (`_remove`). Reading paths off `test_patch`'s "+++ b/" side
+    directly, as an earlier version of this function did, cannot make that
+    distinction and either tries to check out a path that was never there
+    (see `_checkout`'s docstring for what that failure used to do to the
+    *other*, real paths in the same call) or -- if made robust to that by
+    batching per-path instead -- still has no reason to prefer `rm` over
+    `checkout` for an added path without asking the diff which one it is.
+
+    Everything `_test_infrastructure_paths` names is restored the same way
+    the conftest.py vector already was: existence is unknown a priori for
+    all of them, so `_restore_if_present` decides per path rather than
+    guessing from a checkout's exit code (see its own docstring).
+
+    Finally applies `swe_adapter.pytest_reporting_fixup` (a no-op for every
+    repo but sphinx today): a restored `tox.ini` is still a `tox.ini` that
+    cannot produce parseable output on its own, and that gap is upstream of
+    restoration, not a case restoration itself needs to know about.
+    """
+    existing = swe_adapter.get_modified_files(data.test_patch)
+    touched = set(_paths_touched_by(data.test_patch))
+    added = touched - set(existing)
+
+    ok = True
+    for path in existing:
+        if not await _checkout(runtime, data.base_commit, path):
+            ok = False
+    for path in added:
+        if not await _remove(runtime, path):
+            ok = False
+    for path in _test_infrastructure_paths(data):
+        if not await _restore_if_present(runtime, data.base_commit, path):
+            ok = False
+
+    fixup = swe_adapter.pytest_reporting_fixup(_row_for(data))
+    if fixup is not None:
+        result = await runtime.run(fixup, {})
+        if result.exit_code != 0:
+            ok = False
+
     if data.test_patch.strip():
         await runtime.write("/tmp/tests.diff", data.test_patch.encode())
-        await runtime.run(["git", "apply", "-v", "/tmp/tests.diff"], {})
+        result = await runtime.run(["git", "apply", "-v", "/tmp/tests.diff"], {})
+        if result.exit_code != 0:
+            ok = False
+    return ok
 
 
 def _restore_strategy_for(data: SweData) -> RestoreTests:
@@ -118,17 +262,23 @@ def _restore_strategy_for(data: SweData) -> RestoreTests:
     itself, never a step `grade()` hardcodes.
 
     Every row today (SWE-bench Verified) carries a `test_patch`, so that is
-    the only strategy this returns. The training corpus intended to follow it,
-    SWE-smith, carries none: it injects its bug into the source and ships
-    already-pristine tests in the image, so nothing needs restoring there --
-    that branch lands here, keyed off the field that actually distinguishes
-    the two corpora, without `grade()` changing at all.
+    the only strategy this returns. A future corpus with none -- SWE-smith
+    injects its bug into the source and ships already-pristine tests in the
+    image -- takes the no-op branch below, keyed off the field that
+    distinguishes the two corpora, without `grade()` changing at all. That
+    fixes only the restoration half of supporting such a corpus, not the
+    whole environment: `swe_adapter.test_command` derives its own directives
+    from `test_patch` too (`get_test_directives`), so a `test_patch`-less row
+    would run with none at all -- the entire suite, not the intended few
+    tests. Landing this branch here does not make that corpus work; it only
+    means `grade()` itself would not need to change when something else
+    does.
     """
     if data.test_patch.strip():
         return _restore_from_test_patch
 
-    async def _nothing_to_restore(runtime: vf.Runtime, data: SweData) -> None:
-        return None
+    async def _nothing_to_restore(runtime: vf.Runtime, data: SweData) -> bool:
+        return True
 
     return _nothing_to_restore
 
@@ -161,11 +311,22 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
         applied = result.exit_code == 0
         if not applied:
             # A patch that will not apply changed nothing, which is reward 0 --
-            # a real outcome, not an infrastructure failure.
-            return Report(0.0, False, 0, 0, {})
+            # a real outcome, not an infrastructure failure. `restored=True`
+            # by convention: see Report.restored.
+            return Report(0.0, False, True, 0, 0, {})
 
-    await _restore_strategy_for(data)(runtime, data)
+    # Deliberately not raised on failure: an agent can provoke a restoration
+    # or test_patch `git apply` failure on purpose (e.g. squatting a file at
+    # a path `test_patch` adds), and raising would turn that into an infra
+    # error attributed to us rather than a result attributed to the patch.
+    # `restored` carries the signal instead -- see Report.restored.
+    restored = await _restore_strategy_for(data)(runtime, data)
 
+    # A canary check -- one injected test that must FAIL and one that must
+    # PASS, at a path the agent cannot predict -- would slot in here, after
+    # restoration and before the real test run, and is the only defense that
+    # would touch the source-monkeypatch vector this module's own docstring
+    # names. Deliberately not built now; see task-4-report.md.
     row = _row_for(data)
     run = await runtime.run(swe_adapter.test_command(row), {})
     results = swe_adapter.parse_results(row, swe_adapter.wrap_test_output(run.stdout or ""))
@@ -173,4 +334,4 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     f2p = sum(1 for name in data.fail_to_pass if results.get(name) == "PASSED")
     p2p = sum(1 for name in data.pass_to_pass if results.get(name) == "PASSED")
     resolved = f2p == len(data.fail_to_pass) and p2p == len(data.pass_to_pass)
-    return Report(1.0 if resolved else 0.0, applied, f2p, p2p, results)
+    return Report(1.0 if resolved else 0.0, applied, restored, f2p, p2p, results)

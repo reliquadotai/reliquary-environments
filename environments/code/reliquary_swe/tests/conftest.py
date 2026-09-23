@@ -26,9 +26,24 @@ from verifiers.v1.runtimes import provision_runtime
 from reliquary_swe.taskset import SweTask
 
 # Small and already pulled on the container host (see remote-test): 15 tests,
-# ~2.3s to grade (measured on the box). Every grading golden scores this one
-# instance so the whole suite stays fast.
+# ~2.3s to grade (measured on the box). Most grading goldens score this one
+# instance so the routine suite stays fast.
 GOLDEN = "astropy__astropy-12907"
+
+# django's own test runner (`./tests/runtests.py`), not pytest -- and, for
+# this specific instance, test_patch touches only .txt fixtures, so its own
+# get_test_directives is empty and a genuine run (post-restoration) means
+# django's *entire* suite (~4 min; see test_adapter.py's own slow test on
+# the same instance). Used for the one repo-family-specific negative control
+# CRITICAL 2's fix needs: nothing about test_patch names this file, so
+# nothing about test_patch's own restoration would ever protect it.
+DJANGO_GOLDEN = "django__django-10097"
+
+# sphinx via `tox --current-env`, reading in-repo `tox.ini` -- the other
+# repo-family CRITICAL 2 needs a negative control from. Its own test_patch
+# also happens to *add* two files rather than modify any existing one, which
+# is exactly the shape CRITICAL 1's batched-checkout bug silently ate whole.
+SPHINX_GOLDEN = "sphinx-doc__sphinx-8595"
 
 
 def _first_task() -> SweTask:
@@ -81,4 +96,16 @@ async def grading_runtime() -> AsyncIterator[vf.Runtime]:
     adds a conftest.py) can never leak into the next golden's box.
     """
     async with provisioned_runtime(_task_for(GOLDEN)) as box:
+        yield box
+
+
+@pytest.fixture
+async def django_runtime() -> AsyncIterator[vf.Runtime]:
+    async with provisioned_runtime(_task_for(DJANGO_GOLDEN)) as box:
+        yield box
+
+
+@pytest.fixture
+async def sphinx_runtime() -> AsyncIterator[vf.Runtime]:
+    async with provisioned_runtime(_task_for(SPHINX_GOLDEN)) as box:
         yield box

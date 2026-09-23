@@ -34,6 +34,12 @@ implementation plan, Task 2 Step 1, for how these were found):
         from an instance's `test_patch`; see `test_command` for why this
         module calls it rather than running FAIL_TO_PASS/PASS_TO_PASS entries
         directly, which is not what the official harness does either.
+    swebench.harness.utils.get_modified_files -- the pre-patch ("a/" side)
+        path of every file a diff touches, filtered to exclude "/dev/null"
+        (a file the diff adds, which therefore does not exist yet at any
+        commit to check out); see `get_modified_files` here and
+        `grading._restore_from_test_patch` for why grading calls this rather
+        than reading the "+++ b/" side of `test_patch` itself.
 
 3.0.17 was chosen deliberately over the 4.x/5.x line: starting at 4.0.0,
 swebench moved to a "task repo" model where `image`, `log_parser` and
@@ -47,6 +53,7 @@ line to expose, so that is the line this module is coupled to.
 from __future__ import annotations
 
 import platform
+import re
 import shlex
 
 from swebench.harness.constants import (
@@ -60,6 +67,7 @@ from swebench.harness.constants import (
 from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
 from swebench.harness.test_spec.python import get_test_directives
 from swebench.harness.test_spec.test_spec import TestSpec
+from swebench.harness.utils import get_modified_files as _get_modified_files
 
 from reliquary_swe.corpus import SweRow
 
@@ -67,6 +75,16 @@ from reliquary_swe.corpus import SweRow
 # images under -- the default of swebench.harness.run_evaluation's own
 # `--namespace` flag, not a guess.
 _NAMESPACE = "swebench"
+
+
+def get_modified_files(patch: str) -> list[str]:
+    """The path of every file `patch` touches that already existed before it
+    -- upstream's own `get_modified_files`, re-exported so a caller never has
+    to parse a diff's "+++ b/" side itself (see this module's docstring for
+    why that side is the wrong one to restore-from-base with: it names paths
+    a diff *adds*, which do not exist at any earlier commit to check out).
+    """
+    return _get_modified_files(patch)
 
 
 def _arch(instance_id: str) -> str:
@@ -146,6 +164,73 @@ def _test_cmd_for(repo: str, version: str) -> str:
     return cmd[-1] if isinstance(cmd, list) else cmd
 
 
+# A leading `NAME=value` shell-assignment prefix on a test_cmd (sympy's
+# `PYTHONWARNINGS='...' bin/test ...`) is not the command; skip past it to
+# find the token that actually runs.
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def test_entrypoint(row: SweRow) -> str | None:
+    """The repo-relative script `test_cmd` itself executes, if any.
+
+    Checked across every (repo, version) pair the current corpus uses:
+    django's `./tests/runtests.py` and sympy's `bin/test` are real, in-repo
+    files a patch can rewrite; astropy/pylint/pytest/etc.'s bare `pytest` and
+    sphinx's bare `tox` are not paths at all -- they resolve off PATH inside
+    the testbed conda env, and `tox`'s own in-repo config (`tox.ini`) is a
+    separate restoration concern, not this one.
+
+    This is the sharper version of the conftest.py vector `grading.py`
+    already closes: none of `test_patch`, FAIL_TO_PASS/PASS_TO_PASS, or the
+    filename `conftest.py` names this file, so nothing restores it unless a
+    caller asks for it by name specifically -- and on django/sympy, this is
+    the file that actually runs the tests, not merely one pytest loads.
+    """
+    tokens = shlex.split(_test_cmd_for(row.repo, row.version))
+    for token in tokens:
+        if _ASSIGNMENT.match(token):
+            continue
+        if "/" not in token or token.startswith("/"):
+            return None
+        return token.removeprefix("./")
+    return None
+
+
+def pytest_reporting_fixup(row: SweRow) -> list[str] | None:
+    """A one-time command grading must run before the test command, when
+    the prebuilt image does not already produce output `parse_results` can
+    read -- currently just sphinx/sphinx's own `tox.ini`.
+
+    sphinx's `test_cmd` (`tox --current-env -epy39 -v --`) reads its actual
+    pytest invocation from `tox.ini`'s own `[testenv] commands=`, which is a
+    bare `pytest`, no `-rA` and no equivalent. Confirmed by hand: with no
+    named PASSED/FAILED lines anywhere in its output, `parse_results`
+    returns `{}` regardless of outcome -- even the *gold* patch scores 0 on
+    sphinx-doc__sphinx-8595 without this fixup, which is the same silent-zero
+    shape as this module's other defects, just upstream of restoration
+    rather than inside it.
+
+    Upstream's own image builder papers over exactly this with a
+    `pre_install` step (`MAP_REPO_VERSION_TO_SPECS[repo][version]["pre_install"]`)
+    that `sed`s `-rA` into `tox.ini` while building the evaluation image.
+    That step is not baked into the prebuilt image on Docker Hub (confirmed:
+    `tox.ini` ships with plain `pytest`, no `-rA`) -- staler than this
+    package's `pre_install` reads, or never applied to the published image in
+    the first place. Grading reproduces only this one, specific,
+    load-bearing line rather than replaying every `pre_install` step
+    generically: the rest are dependency/environment setup the prebuilt
+    image has already done, and blindly rerunning them (several need
+    network, which grading's box does not have) would be a new defect, not
+    a fix for this one.
+    """
+    for step in MAP_REPO_VERSION_TO_SPECS.get(row.repo, {}).get(row.version, {}).get(
+        "pre_install", []
+    ):
+        if "-rA" in step and "tox.ini" in step:
+            return shlex.split(step)
+    return None
+
+
 # `swebench`'s own eval images never put a repository's test runner on PATH
 # for the base interpreter -- only the `testbed` conda environment has it.
 # Verified by hand in two images with unrelated test runners: `pytest` is
@@ -214,6 +299,18 @@ def wrap_test_output(stdout: str) -> str:
     `parse_results` requires. A caller that skips this gets an empty map back
     from every real run, silently -- the same silent-zero shape as the conda
     and argv defects this module's docstring records.
+
+    Not a trust boundary against the process under test. Upstream's own
+    sentinels mean something because upstream's *eval script* echoes them,
+    never the code being tested -- content the code under test prints cannot
+    land between them. This function wraps `test_command`'s *entire* captured
+    stream unconditionally, every byte of it, including anything a
+    monkeypatched test process printed to imitate a real status line. So the
+    sentinel check `parse_results` does is satisfied by construction here; it
+    excludes nothing a submission wrote, and must not be read as doing so.
+    The actual defense against a forged test process is restoring, before
+    this ever runs, every file that could install one (see
+    `grading._restore_from_test_patch`) -- this function has no part in that.
     """
     return f"{START_TEST_OUTPUT}\n{stdout}\n{END_TEST_OUTPUT}\n"
 
@@ -225,12 +322,19 @@ def parse_results(row: SweRow, stdout: str) -> dict[str, str]:
     as "no test reported a pass" -- the correct reward for a run whose output we
     cannot trust.
 
-    Mirrors `swebench.harness.grading.get_logs_eval`: a genuine eval run's
-    output is only trustworthy between the `START_TEST_OUTPUT` /
-    `END_TEST_OUTPUT` sentinel lines the eval script itself echoes (content
-    outside them can be shell tracing, install noise, or -- if a submission
-    prints its own fake status lines -- a forged result). Missing either
-    sentinel means the run never produced trustworthy output at all.
+    Mirrors `swebench.harness.grading.get_logs_eval`'s slicing contract:
+    read only between the `START_TEST_OUTPUT`/`END_TEST_OUTPUT` sentinel
+    lines. Upstream's own sentinel check is a real trust boundary, because
+    upstream's eval script -- never the code under test -- is what echoes
+    them. Called through `swe_adapter.wrap_test_output` (see its docstring),
+    it is NOT one here: those sentinels are injected unconditionally around
+    the whole captured stream, so this reproduces upstream's parsing
+    contract without reproducing what made it trustworthy there. It cannot
+    distinguish real test-runner output from anything the process under test
+    printed to imitate it; the sole real defense against that is not letting
+    a forged test process exist in the first place (restoring every path
+    that could install one before this ever runs). Missing either sentinel
+    still means no output was ever produced to parse at all.
     """
     parser = MAP_REPO_TO_PARSER.get(row.repo)
     if parser is None or START_TEST_OUTPUT not in stdout or END_TEST_OUTPUT not in stdout:

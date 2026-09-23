@@ -139,6 +139,61 @@ def test_no_argv_element_approaches_the_kernel_argument_length_cap():
     assert all(len(part.encode()) < _MAX_ARG_STRLEN for part in argv)
 
 
+# --- test_entrypoint / get_modified_files ---
+#
+# `test_entrypoint` is what CRITICAL 2's fix (task-4-report.md) restores
+# alongside conftest.py: the file test_cmd itself executes, when that file
+# lives in the repo rather than resolving off PATH. Checked against every
+# distinct first-token shape the current corpus actually uses (verified by
+# scanning MAP_REPO_VERSION_TO_SPECS for every (repo, version) pair the
+# corpus's 12 repos use): bare PATH commands (pytest, tox), a repo-relative
+# script with a `./` prefix (django), and one preceded by a shell
+# `NAME=value` assignment (sympy).
+
+
+def test_entrypoint_is_none_for_a_bare_path_command():
+    assert swe_adapter.test_entrypoint(_row(INSTANCE)) is None  # astropy: bare `pytest`
+
+
+def test_entrypoint_is_none_for_sphinxs_tox_invocation():
+    row = _row("sphinx-doc__sphinx-8595")
+    assert row.repo == "sphinx-doc/sphinx"
+    assert swe_adapter.test_entrypoint(row) is None  # bare `tox`, resolved off PATH
+
+
+def test_entrypoint_strips_the_dot_slash_prefix_for_django():
+    row = _row("django__django-11099")
+    assert swe_adapter.test_entrypoint(row) == "tests/runtests.py"
+
+
+def test_entrypoint_skips_a_leading_shell_assignment_for_sympy():
+    row = _row("sympy__sympy-11618")
+    assert row.repo == "sympy/sympy"
+    # test_cmd is `PYTHONWARNINGS='...' bin/test -C --verbose`: the
+    # assignment is not the command, and `bin/test` has no `./` to strip.
+    assert swe_adapter.test_entrypoint(row) == "bin/test"
+
+
+def test_get_modified_files_excludes_a_purely_added_path():
+    patch = (
+        "diff --git a/new.py b/new.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/new.py\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+x\n"
+    )
+    assert swe_adapter.get_modified_files(patch) == []
+
+
+def test_get_modified_files_includes_a_modified_existing_path():
+    patch = (
+        "diff --git a/old.py b/old.py\n"
+        "--- a/old.py\n+++ b/old.py\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+    assert swe_adapter.get_modified_files(patch) == ["old.py"]
+
+
 # --- parse_results dispatch (not correctness) ---
 #
 # These four tests pin the three branches inside parse_results' dispatch --

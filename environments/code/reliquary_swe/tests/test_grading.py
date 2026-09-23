@@ -68,8 +68,64 @@ def test_restore_strategy_is_the_test_patch_strategy_when_one_exists():
 async def test_restore_strategy_is_a_no_op_with_no_test_patch():
     # The seam a SWE-smith-shaped row (no test_patch at all) lands in without
     # `grade()` changing: nothing needs restoring when the corpus never
-    # modifies test files to begin with.
+    # modifies test files to begin with. True, not merely non-raising: a
+    # no-op restoration is trivially "successful" for Report.restored's
+    # purposes -- see _restore_strategy_for's own docstring for why that
+    # does not mean such a row would actually work today.
     data = SimpleNamespace(test_patch="")
     strategy = grading._restore_strategy_for(data)
     assert strategy is not grading._restore_from_test_patch
-    assert await strategy(None, data) is None
+    assert await strategy(None, data) is True
+
+
+def _fake_swe_data(repo: str, version: str, test_patch: str) -> SimpleNamespace:
+    """A duck-typed stand-in for `SweData` carrying only what
+    `_test_infrastructure_paths`/`_row_for` read: real `repo`/`version`
+    pairs are needed so `swe_adapter.test_entrypoint` hits a real
+    `MAP_REPO_VERSION_TO_SPECS` entry rather than raising.
+    """
+    return SimpleNamespace(
+        instance_id="fake",
+        repo=repo,
+        base_commit="0" * 40,
+        version=version,
+        fail_to_pass=(),
+        pass_to_pass=(),
+        gold_patch="",
+        test_patch=test_patch,
+    )
+
+
+def test_infrastructure_paths_include_djangos_entrypoint():
+    # django/django's own test runner is not named by test_patch, conftest,
+    # or any test-name list -- see swe_adapter.test_entrypoint and CRITICAL 2
+    # in task-4-report.md.
+    data = _fake_swe_data("django/django", "1.7", test_patch="")
+    paths = grading._test_infrastructure_paths(data)
+    assert "tests/runtests.py" in paths
+    assert "tox.ini" in paths and "pytest.ini" in paths
+
+
+def test_infrastructure_paths_include_sympys_entrypoint():
+    data = _fake_swe_data("sympy/sympy", "1.0", test_patch="")
+    assert "bin/test" in grading._test_infrastructure_paths(data)
+
+
+def test_infrastructure_paths_omit_an_entrypoint_for_bare_pytest_repos():
+    # astropy's test_cmd is bare `pytest`, resolved off PATH -- not a
+    # repo-relative file, so nothing should be added on its account.
+    data = _fake_swe_data("astropy/astropy", "3.0", test_patch="")
+    paths = grading._test_infrastructure_paths(data)
+    assert not any(path.endswith("pytest") for path in paths)
+
+
+def test_infrastructure_paths_include_conftest_ancestors_of_test_patch():
+    patch = (
+        "diff --git a/pkg/tests/test_x.py b/pkg/tests/test_x.py\n"
+        "--- a/pkg/tests/test_x.py\n+++ b/pkg/tests/test_x.py\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+    data = _fake_swe_data("astropy/astropy", "3.0", test_patch=patch)
+    paths = grading._test_infrastructure_paths(data)
+    assert "pkg/tests/conftest.py" in paths
+    assert "pkg/conftest.py" in paths
+    assert "conftest.py" in paths
