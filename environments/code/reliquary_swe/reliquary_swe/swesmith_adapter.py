@@ -67,23 +67,31 @@ def _instance(row: SweRow) -> dict[str, object]:
     """The dict shape every `swesmith.profiles` call in this module expects:
     the subset of SWE-smith's own instance schema those calls actually read.
 
-    Deliberately never includes `KEY_PATCH` ("patch"). `get_test_cmd`'s own
-    branching (`swesmith/profiles/base.py`) checks
-    `self.min_testing and FAIL_TO_PASS in instance` *before* it ever checks
-    for a patch key, and this dict always sets `FAIL_TO_PASS` (as a key,
-    even when the value is an empty list), so that branch always returns
-    first for every `min_testing=True` profile this package runs today --
-    the patch-requiring branch below it is unreachable from here. It stays
-    unreachable only as long as `KEY_PATCH` stays out of this dict: adding
-    it (e.g. to "help" by passing `row.gold_patch`) would route a
-    `min_testing=True` profile with no `FAIL_TO_PASS` files derived into
-    `_get_cached_test_paths()` -> `self.clone()` -- a live GitHub clone
-    attempted *at grading time*, inside a box whose whole `network_allow=[]`
-    point is that no such thing can succeed -- and even where it could
-    reach the network, `row.gold_patch` is the *fix* where upstream's own
-    code expects the bug-introducing patch, a second, independent way the
-    same one-line change would be wrong. `test_ensure_no_patch_key_in_
-    swesmith_instance_dict` in `tests/test_swesmith_adapter.py` pins this.
+    The invariant that matters, and it is `FAIL_TO_PASS`'s *presence*, not
+    `KEY_PATCH`'s *absence* (an earlier version of this docstring named the
+    wrong key -- corrected after review): `get_test_cmd`'s own branching
+    (`swesmith/profiles/base.py`) checks `self.min_testing and FAIL_TO_PASS
+    in instance` and returns at that same line, *before* the patch-key
+    check two lines later is ever reached. This dict always sets
+    `FAIL_TO_PASS` (as a key, even when the value is an empty list), so
+    that earlier branch always intercepts first for every
+    `min_testing=True` profile this package runs -- adding `KEY_PATCH`
+    here today changes nothing, because control never reaches the check
+    that reads it. The live vector is the other direction: if `FAIL_TO_PASS`
+    were ever dropped from this dict, a `min_testing=True` profile would
+    fall through to `_get_cached_test_paths()` -> `self.clone()` -- a live
+    GitHub clone attempted *at grading time*, inside a box whose whole
+    `network_allow=[]` point is that no such thing can succeed.
+    `test_swesmith_instance_dict_always_carries_fail_to_pass` in
+    `tests/test_swesmith_adapter.py` pins that presence, not an absence.
+
+    `KEY_PATCH` is still deliberately left out, for an independent reason
+    that does not depend on which branch of `get_test_cmd` runs: `row.
+    gold_patch` is the *fix*, and every place upstream's own schema expects
+    a `patch` value, it means the bug-introducing one (`KEY_PATCH`'s own
+    name in the corpus this whole package's `patch` column comes from). A
+    future edit that adds it (e.g. to "help") would hand the wrong diff to
+    whatever code path did end up reading it.
     """
     return {
         "instance_id": row.instance_id,

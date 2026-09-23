@@ -286,11 +286,27 @@ def test_unparseable_output_yields_no_results_rather_than_raising():
     assert swesmith_adapter.parse_results(row, "not a pytest log at all") == {}
 
 
-def test_ensure_no_patch_key_in_swesmith_instance_dict():
-    """Pins `_instance`'s own docstring: adding `KEY_PATCH` would route a
-    `min_testing=True` profile with no derivable fail-to-pass files into a
-    live GitHub clone attempted inside a `network_allow=[]` grading box.
+def test_swesmith_instance_dict_always_carries_fail_to_pass():
+    """Pins the invariant `_instance`'s own docstring names as the one that
+    actually matters (corrected after review -- an earlier version of both
+    the docstring and this test pinned `KEY_PATCH`'s absence instead, which
+    changes nothing: `get_test_cmd`'s `min_testing and FAIL_TO_PASS in
+    instance` branch returns before a patch key is ever consulted). If
+    `FAIL_TO_PASS` were ever dropped from this dict, a `min_testing=True`
+    profile would fall through into a live GitHub clone attempt
+    (`_get_cached_test_paths` -> `self.clone()`) inside a
+    `network_allow=[]` grading box.
     """
+    row = corpus.load_swesmith_rows(20)[0]
+    instance = swesmith_adapter._instance(row)
+    assert "FAIL_TO_PASS" in instance
+
+
+def test_ensure_no_patch_key_in_swesmith_instance_dict():
+    # Independent of the above: `KEY_PATCH` is left out because `row.
+    # gold_patch` is the fix, not the bug-introducing diff upstream's own
+    # `patch` key means -- not because of which branch of `get_test_cmd`
+    # it would otherwise reach (see `_instance`'s own docstring).
     row = corpus.load_swesmith_rows(20)[0]
     instance = swesmith_adapter._instance(row)
     assert "patch" not in instance

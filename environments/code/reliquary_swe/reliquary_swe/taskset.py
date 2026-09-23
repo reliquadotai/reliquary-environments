@@ -52,8 +52,8 @@ _CHECKOUT = " ; ".join(
 # SWE-smith-only (spec section 8's corpus has no analogue of this: a
 # SWE-bench Verified `base_commit` is an ordinary point in real upstream
 # history, and the fix for its own bug is a *descendant*, which the ref
-# stripping below already handles). Confirmed by hand, on the shipped
-# `_CLEANUP` before this fix existed (see the implementation report):
+# stripping below already handles). Confirmed by hand, on `setup()` before
+# this fix existed (see the implementation report):
 # upstream builds every SWE-smith image's `main` from the pristine,
 # already-fixed tree as a single commit, then builds each instance's own
 # branch as exactly that commit plus one child, "Bug Patch". So
@@ -193,32 +193,29 @@ class SweTasksetConfig(vf.TasksetConfig):
     # set, never trained on); "train" is SWE-smith, this package's training
     # corpus.
     #
-    # A real risk, and worth naming even though the fix below is not what
-    # was first tried: now that "train" exists, the likeliest operator error
-    # is wiring `[[orchestrator.train.source]]` and forgetting to say which
-    # split, which would default to "eval" and train on the evaluation set
-    # silently, at full speed. A field with NO default was tried first, to
-    # force every caller to declare intent -- and reverted, because it does
-    # not just add friction, it breaks the CLI outright: verified directly,
-    # `uv run validate reliquary-swe ...` (any taskset-first CLI --
-    # `resolve.py`'s `narrow_taskset_config`) constructs
+    # A real risk, worth naming: now that "train" exists, the likeliest
+    # operator error is wiring `[[orchestrator.train.source]]` and
+    # forgetting to say which split, which -- with a plain string default --
+    # would train on the evaluation set silently, at full speed. A
+    # *required* `Literal["eval", "train"]` was tried first, to force every
+    # caller to declare intent, and reverted: it breaks the CLI outright,
+    # verified directly. `resolve.py`'s `narrow_taskset_config` (behind
+    # every taskset-first CLI -- `validate`, `debug`) constructs
     # `SweTasksetConfig(id="reliquary-swe")` with no other fields as a
     # bootstrapping step *before* CLI overrides are applied, and a required
     # field makes that step itself raise `pydantic.ValidationError`,
-    # regardless of what `--taskset.split` the actual invocation passes.
-    # Every `TasksetConfig` subclass in this repository needs a workable
-    # default on every field for exactly this reason -- confirmed by the
-    # identical pattern already in `reliquary_code.taskset.CodeConfig.split:
-    # Literal["train"] = "train"`, which still carries a default despite
-    # having only one legal value. The real protection against the
-    # named risk is structural and already in place: `rl.toml` ships with
-    # no `[[orchestrator.train.source]]` at all (`TrainSource` itself
-    # raises with none), so nothing trains by default regardless of this
-    # field's value, and wiring a real source is a single, deliberate,
-    # documented action (see `examples/prime_rl/rl.toml`'s own comment) --
-    # not something this field can fail-safe on its own without breaking
-    # every taskset-first CLI command for this package.
-    split: Literal["eval", "train"] = "eval"
+    # regardless of what `--taskset.split` the real invocation passes.
+    #
+    # `| None = None` is the shape that satisfies both constraints at once:
+    # `taskset_type(id=...)` stays constructible (`None` is a valid default,
+    # unlike a bare required field), and `SweTaskset.load()` below raises
+    # loudly the moment `None` is actually used to load rows -- so an
+    # operator who wires a train source and forgets `env.taskset.split`
+    # gets a `ValueError` naming the problem, not a silent fallback to
+    # `"eval"`. `rl.toml` shipping with no `[[orchestrator.train.source]]`
+    # at all (`TrainSource` itself raises with none) remains the first line
+    # of defense; this is the second, for the moment a real source exists.
+    split: Literal["eval", "train"] | None = None
     # Only read when split="train". Together with `max_test_count`, this
     # determines the exact task set (spec section 8: "declared, never
     # auto-detected"); see `corpus.load_swesmith_rows` for why a fixed pair
@@ -246,14 +243,20 @@ class SweTasksetConfig(vf.TasksetConfig):
 # themselves, and the headroom reasoning, live in the package README's
 # "Timeouts" section rather than here.
 
-# `setup()` (`_CLEANUP` above) plus the harness's own setup -- `rollout.py`
-# computes one setup-stage deadline and wraps both `task.setup` and
-# `harness.setup(runtime)` in it ("Task setup and harness provisioning
-# share one setup-stage deadline"), so this budget has to cover both terms,
-# and only the first one is actually measured. `_CLEANUP` itself: on the
-# container host, the heaviest sampled repository (matplotlib, 296 MB
-# `.git`, the largest of six families checked) runs the whole cleanup
-# script, `git gc --prune=now` included, in 3.6s. The harness's setup, for
+# `setup()` (`_CHECKOUT` + `_STRIP_AND_GC`, and, for a train row,
+# `_TRAIN_GUARD_AND_REROOT` in between) plus the harness's own setup --
+# `rollout.py` computes one setup-stage deadline and wraps both
+# `task.setup` and `harness.setup(runtime)` in it ("Task setup and harness
+# provisioning share one setup-stage deadline"), so this budget has to
+# cover both terms, and only the first one is actually measured. Our own
+# cleanup: on the container host, the heaviest sampled repository
+# (matplotlib, 296 MB `.git`, the largest of six families checked) runs
+# the whole cleanup script, `git gc --prune=now` included, in 3.6s -- a
+# SWE-bench Verified measurement, predating `_TRAIN_GUARD_AND_REROOT`; a
+# train row's extra `git log`, `commit-tree` and `reset --hard` are cheap,
+# single-object git operations on top of that, not re-measured separately
+# because the harness-install term below dominates this budget by roughly
+# two orders of magnitude either way. The harness's setup, for
 # the `bash` harness this branch's example pins, is a genuine per-rollout
 # network install inside the fresh container: `pip install -q -U --user
 # uv` (falling back to `apt-get install curl` plus a curl-fetched
@@ -296,6 +299,13 @@ _SCORING_TIMEOUT_SECONDS = 1800.0
 
 class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
     def load(self) -> Iterator[SweTask]:
+        if self.config.split is None:
+            raise ValueError(
+                "reliquary-swe: --taskset.split is required (\"eval\" for "
+                "SWE-bench Verified, \"train\" for SWE-smith) -- it has no "
+                "default so that an operator wiring a real training source "
+                "cannot silently fall back to the evaluation set"
+            )
         if self.config.split == "train":
             rows = corpus.load_swesmith_rows(
                 self.config.num_images, self.config.max_test_count

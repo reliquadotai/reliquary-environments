@@ -58,14 +58,25 @@ import shlex
 
 from swebench.harness.constants import (
     END_TEST_OUTPUT,
-    FAIL_TO_PASS,
+    FAIL_TO_PASS,  # noqa: F401 -- re-exported for swesmith_adapter.py, see below
     LATEST,
     MAP_REPO_VERSION_TO_SPECS,
-    PASS_TO_PASS,
+    PASS_TO_PASS,  # noqa: F401 -- re-exported for swesmith_adapter.py, see below
     START_TEST_OUTPUT,
     TestStatus,
     USE_X86,
 )
+
+# `swesmith_adapter.py` imports these two (and `TestStatus`, used directly
+# below) from here rather than from `swebench` itself, to keep this the
+# only module that does -- confirmed as a real, not theoretical, risk:
+# `ruff --fix` deletes both as unused imports otherwise (verified: neither
+# name is referenced below this point, only used as unrelated keyword
+# argument names in `TestSpec(FAIL_TO_PASS=..., PASS_TO_PASS=...)`, which
+# does not count as a use). `test_only_the_owning_adapter_imports_its_
+# third_party_library` does not catch this -- it scans imports, and a
+# clean `ruff --fix` would not add one -- so the `noqa` above is the actual
+# guard.
 from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
 from swebench.harness.test_spec.python import get_test_directives
 from swebench.harness.test_spec.test_spec import TestSpec

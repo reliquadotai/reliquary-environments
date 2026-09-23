@@ -53,7 +53,7 @@ import verifiers.v1 as vf
 
 from reliquary_swe import swe_adapter, swesmith_adapter
 from reliquary_swe.corpus import SweRow
-from reliquary_swe.taskset import SweData
+from reliquary_swe.taskset import _STRIP_AND_GC, _TRAIN_GUARD_AND_REROOT, SweData
 
 _DIFF_TARGET = re.compile(r"^\+\+\+ b/(.+)$", re.MULTILINE)
 
@@ -411,6 +411,36 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             f"could not check out {data.base_commit} for {data.instance_id}: "
             f"{(checkout.stderr or checkout.stdout).strip()[-500:]}"
         )
+
+    if data.split == "train":
+        # This box is freshly provisioned from the image and never put
+        # through `SweTask.setup()`'s cleanup, so it still has the same
+        # two-commit history Critical 1 closed there -- the fix one parent
+        # away from HEAD, reachable with `git diff HEAD HEAD^`, no ref
+        # needed. Closing it here matters even though the agent never sees
+        # this box: its patched source *executes* during the test run
+        # below, after restoration, so a patch that reads git objects at
+        # import time to recover the fix would make the suite genuinely
+        # pass without deriving anything -- a second way into the same
+        # residual this module's own docstring names for a monkeypatched
+        # `pytest`. Reuses `taskset`'s own guard-and-reroot and strip-and-gc
+        # verbatim rather than a second implementation of either.
+        sever = await runtime.run(
+            ["sh", "-c", "set -e ; " + _TRAIN_GUARD_AND_REROOT + " ; " + _STRIP_AND_GC],
+            {"BASE_COMMIT": data.base_commit},
+        )
+        if sever.exit_code != 0:
+            raise RuntimeError(
+                f"could not sever pristine history for {data.instance_id}: "
+                f"{(sever.stderr or sever.stdout).strip()[-500:]}"
+            )
+        # The ref `data.base_commit` names (e.g. "origin/<id>~1") no longer
+        # exists after the strip above -- every restoration checkout from
+        # here on must use the resolved SHA instead. Rebinding `data` (a
+        # local name, not the caller's object) means every function below
+        # that reads `data.base_commit` picks this up with no other change.
+        resolved = await runtime.run(["git", "rev-parse", "HEAD"], {})
+        data = data.model_copy(update={"base_commit": (resolved.stdout or "").strip()})
 
     applied = True
     if patch.strip():

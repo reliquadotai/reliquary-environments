@@ -36,6 +36,38 @@ def _unified_diff(path: str, old: str, new: str) -> str:
     )
     return f"diff --git a/{path} b/{path}\n{body}"
 
+
+def _gold_patch_fingerprints(patch: str) -> list[str]:
+    """Distinctive text from the gold patch's own added lines, safe to
+    assert absent from a full object-store dump.
+
+    A single added line is not safe on its own: the first cut of this check
+    used exactly that (any `+` line over 15 characters) and failed on real
+    data -- `        return None` is one of this golden's own added lines,
+    and it also occurs, unrelated, in a different file already shipped in
+    oauthlib's own tree (a false positive that would have hidden a real
+    regression behind noise). Only *contiguous* runs of two or more `+`
+    lines are used: in the final file they land adjacent to each other with
+    no unrelated context between them, so the joined block is exactly what
+    the object store's blob content contains verbatim if the fix survives
+    there -- and a two-line-plus block of real code is not the kind of
+    thing that coincides by accident.
+    """
+    lines = patch.splitlines()
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if line.startswith("+") and not line.startswith("+++"):
+            current.append(line[1:])
+        else:
+            if len(current) >= 2:
+                blocks.append("\n".join(current))
+            current = []
+    if len(current) >= 2:
+        blocks.append("\n".join(current))
+    return [block for block in blocks if len(block.strip()) > 30]
+
+
 # Already pulled on the container host, and already ground-truthed by hand
 # (see the implementation report): base_commit checks out clean and cold, the
 # dataset's own `patch` breaks 5 sampled fail-to-pass tests when applied
@@ -238,6 +270,56 @@ async def test_setup_raises_on_a_mis_shaped_branch_rather_than_paying_an_empty_p
     async with _provisioned(bad_task) as box:
         with pytest.raises(RuntimeError, match="environment preparation failed"):
             await bad_task.setup(_trace(bad_task), box)
+
+
+@docker
+async def test_setup_leaves_no_trace_of_the_gold_patch_in_the_object_store():
+    # CRITICAL 1's actual gate. Everything this asserts was previously only
+    # a raw shell probe transcribed into a comment -- a review caught that
+    # no test ran either check, and that `test_episode_reference_patch_
+    # scores_one` above passes identically with `_TRAIN_GUARD_AND_REROOT`
+    # deleted (it only checks the reward, and the bug is still fixable by
+    # deriving it normally, so removing the reroot step changes nothing
+    # that test can see). A commit count alone would not catch a dangling
+    # blob either -- checked directly, both matter.
+    task = _train_task()
+    async with _provisioned(task) as box:
+        await task.setup(_trace(task), box)
+        count = await box.run(["git", "rev-list", "--count", "HEAD"], {})
+        assert count.stdout.strip() == "1"
+        scan = await box.run(["sh", "-c", "git cat-file --batch-all-objects --batch"], {})
+        fingerprints = _gold_patch_fingerprints(task.data.gold_patch)
+        assert fingerprints  # the fixture must actually exercise this check
+        for line in fingerprints:
+            assert line not in scan.stdout, f"gold patch line survives in object store: {line!r}"
+
+
+@docker
+async def test_grading_leaves_no_trace_of_the_gold_patch_in_the_object_store(swesmith_runtime):
+    # The same leak, one box over: `grading.grade` checks out `base_commit`
+    # in a box freshly provisioned from the image, never put through
+    # `setup()`'s cleanup, so this box has the same two-commit history with
+    # the fix one parent away until `grade` itself severs it. The agent's
+    # patched source *executes* here, after restoration, during the real
+    # test run -- a patch that reads git objects at import time to recover
+    # the fix would make the suite genuinely pass without deriving
+    # anything, which no restoration strategy defends against by
+    # construction (grading.py's own docstring already disclaims the
+    # sibling monkeypatch vector; this is a second way into the same
+    # residual). The patch argument does not matter for this check --
+    # empty is enough, since the object-store state after `grade` returns
+    # is what is being tested, not the reward.
+    data = _train_task().data
+    await grading.grade(swesmith_runtime, data, "")
+    count = await swesmith_runtime.run(["git", "rev-list", "--count", "HEAD"], {})
+    assert count.stdout.strip() == "1"
+    scan = await swesmith_runtime.run(
+        ["sh", "-c", "git cat-file --batch-all-objects --batch"], {}
+    )
+    fingerprints = _gold_patch_fingerprints(data.gold_patch)
+    assert fingerprints
+    for line in fingerprints:
+        assert line not in scan.stdout, f"gold patch line survives in object store: {line!r}"
 
 
 @docker

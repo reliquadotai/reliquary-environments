@@ -98,7 +98,7 @@ async def test_setup_removes_history_after_the_base_commit(runtime):
     # tautological once HEAD is known (by the previous test) to equal
     # base_commit: that range is empty by definition regardless of what
     # refs or history still exist, so it cannot detect the leak it is named
-    # for even if `_CLEANUP`'s ref-deletion/reflog-expire/gc lines were
+    # for even if `_STRIP_AND_GC`'s ref-deletion/reflog-expire/gc lines were
     # deleted outright. This checks the two properties that actually
     # matter instead: no ref survives cleanup, and no commit past
     # base_commit remains reachable through any ref that does.
