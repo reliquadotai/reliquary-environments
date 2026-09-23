@@ -229,28 +229,42 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      # `-m "not slow"` deselects exactly four tests, all @docker: three run
-      # django's own entire 12,311-test suite (its test_patch touches only
-      # .txt fixtures, so get_test_directives is empty and a genuine,
-      # restored run falls back to everything -- ~226s / ~4min each) and one
-      # runs xarray's 1,818 fail-to-pass+pass-to-pass tests (~300s):
-      #   tests/test_adapter.py::test_grading_django_end_to_end_is_not_actually_broken
-      #   tests/test_adapter.py::test_grading_a_large_instance_end_to_end_gets_a_real_result
-      #   tests/test_goldens.py::test_a_patch_that_rewrites_djangos_test_runner_scores_zero
-      #   tests/test_goldens.py::test_a_patch_that_rewrites_djangos_settings_module_scores_zero
-      # Together with the images they and the steps below pull, that is
-      # several multi-gigabyte SWE-bench images plus roughly 15 minutes of test
-      # execution -- more than a hosted runner's disk and time budget should
-      # take on every push. This is a stated exclusion, not a silent one:
-      # every OTHER @docker test still runs here, including the controls
-      # that prove this environment's central guarantees end to end --
-      # network severed before grading, a test-tampering or fake-result
-      # patch scores 0.0, an unreachable or hung grading box raises instead
-      # of scoring, and `restored` reaches `solution.info["swe_report"]`.
-      # The four excluded tests remain part of the routine suite run against
-      # the dedicated container host via
-      # .superpowers/sdd/2026-09-22-reliquary-swe/remote-test (measured
-      # there at 789s / 63 passed for the full, undeselected suite).
+      # `-m "not slow"` deselects exactly four tests, all @docker, each a
+      # whole-repository-suite run: three run django's entire 12,311-test
+      # suite (test_patch touches only .txt fixtures, so a genuine restored
+      # run falls back to everything, ~226s each) and one runs xarray's
+      # 1,818 tests (~300s) --
+      #   test_adapter.py::test_grading_django_end_to_end_is_not_actually_broken
+      #   test_adapter.py::test_grading_a_large_instance_end_to_end_gets_a_real_result
+      #   test_goldens.py::test_a_patch_that_rewrites_djangos_test_runner_scores_zero
+      #   test_goldens.py::test_a_patch_that_rewrites_djangos_settings_module_scores_zero
+      # ~15 minutes combined, plus django's and xarray's own multi-gigabyte
+      # images (neither is otherwise provisioned by any non-slow test --
+      # confirmed by grepping which tests use the django_runtime/xarray
+      # fixtures). Stated, not silent: every other @docker test still runs,
+      # including the controls proving network isolation, test-tampering
+      # resistance, and infra-raises-not-scores. The four excluded tests
+      # remain part of the routine suite against the dedicated container
+      # host via .superpowers/sdd/2026-09-22-reliquary-swe/remote-test
+      # (789s / 63 passed for the full, undeselected suite).
+      #
+      # Disk budget, measured on the container host, not guessed: ubuntu-22.04
+      # has 14 GB SSD (github/docs data/reusables/actions/supported-github-runners.md).
+      # After the exclusion above, this job pulls exactly 4 SWE-bench images
+      # -- astropy-12907 + sphinx-8595 here, astropy-13033 + astropy-13236 in
+      # the validate step below (the corpus's first 3 rows are all
+      # astropy/astropy). Measured for real: removed every swebench image on
+      # the host, pulled these 4 in this exact order, diffed `df
+      # /var/lib/docker` after each pull -- +3.74, +1.75, +2.89, +0.16 =
+      # 8.54 GB total (the small last add is real layer sharing between
+      # astropy-13033/13236's images, confirmed via matching `docker inspect
+      # --format '{{.RootFS.Layers}}'` digests; the naive sum of `docker
+      # images` sizes, 11.48 GB, overstates this by ~3 GB). Repo checkout +
+      # this package's .venv + `uv build`'s dist/ add another ~0.6 GB
+      # (14.6 MB tracked tree + 17 MB .git + 555 MB venv + 100 KB dist,
+      # measured locally). Total ~9.1 GB against 14 GB: ~4.9 GB of real
+      # headroom. Re-measure if the images this job pulls change (a new
+      # golden instance, a corpus revision).
       - run: uv run --no-sync pytest -m "not slow"
       - run: uv run --no-sync validate reliquary-swe -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear

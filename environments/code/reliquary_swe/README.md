@@ -75,14 +75,14 @@ settled by a pilot's observed distribution rather than by opinion.
 ## Grading timeout
 
 Every task's `timeout.scoring` is set to **1800 seconds (30 minutes)** in
-`reliquary_swe/taskset.py`, next to a comment recording the measurements it
-is sized past. Without this, `env.py`'s `_grade` wraps
-provisioning-through-grading in `asyncio.timeout(task.data.timeout.scoring)`,
-and a `None` timeout is unbounded: a box that is reachable but *hangs* — a
-wedged daemon, a stuck exec, a test process that loops instead of finishing
-— would neither raise nor score, which defeats the same "infrastructure
-failure must raise, never score" guarantee `env.py`'s retry-then-raise
-exists to give from the other side.
+`reliquary_swe/taskset.py`, which points here for the full reasoning. Without
+this, `env.py`'s `_grade` wraps provisioning-through-grading in
+`asyncio.timeout(task.data.timeout.scoring)`, and a `None` timeout is
+unbounded: a box that is reachable but *hangs* — a wedged daemon, a stuck
+exec, a test process that loops instead of finishing — would neither raise
+nor score, which defeats the same "infrastructure failure must raise, never
+score" guarantee `env.py`'s retry-then-raise exists to give from the other
+side.
 
 Measured on the container host: `astropy__astropy-12907` (15 tests) 2.3s;
 `sympy-14248` (435 tests) 99s (~0.23s/test, the slowest per-test rate
@@ -90,17 +90,20 @@ measured); `django__django-10097` — whose `test_patch` names no test files,
 so `get_test_directives` returns none and django's own runner falls back to
 its *entire* suite, 12,311 tests — ~226s of test execution, ~225s wall
 clock including checkout and teardown. Across the full 500-instance corpus,
-test count is median 52, mean 123, p90 254, max 2,488
-(`matplotlib__matplotlib-25122`, which could not be graded end to end on the
-measurement box: its image would not pull there, a Docker daemon
-subordinate-UID limit unrelated to timing). Projecting the slowest measured
-per-test rate onto that instance's 2,488 tests gives ~570s — above django's
-measured worst case despite fewer tests, because per-test cost varies by
-well over 10x across repository families and nothing measured here bounds
-it from above for every family. 1800s gives roughly 8x headroom over the
-worst wall-clock time actually observed and roughly 3x headroom over the
-pessimistic projection for the corpus's most test-heavy, unmeasured
-instance.
+test count is median 52.0, mean 123.3, p90 250, max 2,488 — re-measured
+directly from the loaded corpus rather than taken on trust (`p90` by sorting
+all 500 counts and indexing `round(0.9 * 499)`; a different interpolation
+method gives 254, the same ballpark, and nothing here turns on the
+difference). The max is `matplotlib__matplotlib-25122`, which could not be
+graded end to end on the measurement box: its image would not pull there, a
+Docker daemon subordinate-UID limit unrelated to timing. Projecting the
+slowest measured per-test rate onto that instance's 2,488 tests gives ~570s
+— above django's measured worst case despite fewer tests, because per-test
+cost varies by well over 10x across repository families and nothing
+measured here bounds it from above for every family. 1800s gives roughly 8x
+headroom over the worst wall-clock time actually observed and roughly 3x
+headroom over the pessimistic projection for the corpus's most test-heavy,
+unmeasured instance.
 
 ## Reward-hacking mitigation
 

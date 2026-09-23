@@ -64,6 +64,13 @@ enable_thinking = true
 
 [orchestrator.train]
 filter_zero_advantages = true
+# No [[orchestrator.train.source]] here, deliberately: SWE-bench Verified
+# (this taskset's only split) must never be trained on, and `TrainConfig`
+# has no non-empty-sources check, so a source silently pointed at it here
+# would run for real on `cp rl.toml x.toml && rl @ x.toml --max-steps 5000`.
+# With no source at all, prime-rl's own TrainSource raises "needs at least
+# one train env" before a step runs. See the README for how the smoke test
+# supplies one instead, and why. Do not add a source back here.
 
 [orchestrator.train.sampling]
 temperature = 1.0
@@ -72,30 +79,6 @@ temperature = 1.0
 # measured per-turn budget (4,096) is borrowed as a starting point, not
 # derived from anything observed in this environment.
 max_completion_tokens = 4096
-
-# IMPORTANT: SWE-bench Verified (this taskset's only split, `eval`) is an
-# evaluation set and must never be trained on -- see environment.toml's
-# `[data]` table and the design spec's section 8. Training is meant to come
-# from SWE-smith, which is not wired into this package yet (its rows carry no
-# `version`, `base_commit`, or `test_patch`, which changes the grader's own
-# test-restoration strategy, not only a corpus pin). Until that lands, this
-# `train.source` pointed at `split = "eval"` exists ONLY to exercise the
-# mechanical training loop end to end (`--dry-run`, a handful of
-# `--max-steps`) -- see the README's "Validate, then smoke test" section,
-# which stops there deliberately and does NOT give a full-run command.
-[[orchestrator.train.source]]
-name = "reliquary-swe-train"
-env.taskset.id = "reliquary-swe"
-env.taskset.split = "eval"
-env.agent.harness.id = "bash"
-env.agent.runtime.type = "docker"
-env.agent.runtime.allow = []
-env.agent.max_turns = 40
-
-[orchestrator.train.source.curriculum.gates.zero_signal]
-type = "advantage_range"
-reject_min = 0.0
-reject_max = 0.0
 
 [orchestrator.eval]
 interval = 15

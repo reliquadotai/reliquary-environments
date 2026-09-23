@@ -26,14 +26,37 @@ package yet: its rows carry no `version`, `base_commit`, or `test_patch`,
 which changes the grader's own test-restoration strategy, not only a corpus
 pin — its own piece of work.
 
-Until that lands, `rl.toml`'s `orchestrator.train.source` points at
-`split = "eval"` for one reason only: to exercise the mechanical training
-loop end to end — config resolution, container provisioning, the `bash`
-harness's tool calls, reward computation, a checkpoint write — with
-`--dry-run` and a handful of `--max-steps`. This README stops there
-deliberately. It gives no full-run command, unlike this repository's other
-Prime-RL examples, and none should be added until a real training corpus
-exists.
+A loud comment is not a control: an example is a template people copy, and
+nothing in a comment stops `cp rl.toml x.toml && rl @ x.toml --max-steps
+5000` from training on it for real. So `rl.toml` ships with **no
+`[[orchestrator.train.source]]` at all**. Prime-RL's `TrainConfig.source`
+defaults to an empty list — pydantic raises nothing on its own — but
+`TrainSource.__init__` does: `if not self.envs: raise ValueError("TrainSource
+needs at least one train env")`, before any rollout runs. Verified directly
+against the exact pinned commit (`ab5de8fff44b2c4a5c85e24b6e6e3f7d57eee7b1`):
+`TrainConfig` has no non-empty-sources validator (unlike `EvalConfig`, which
+has one), so the *only* thing standing between a bare copy of this file and
+training on SWE-bench Verified is that guard. A missing key that trips a
+real exception is a control; a comment on a key that is present is not.
+
+The smoke commands below instead supply a source from a second, separate
+file, `smoke-only-eval-split-source.toml`, via Prime-RL's own nested
+`@`-file CLI syntax: `--orchestrator.train @
+smoke-only-eval-split-source.toml` loads that file and merges it under
+`orchestrator.train`, adding `source` without touching `rl.toml`'s own
+`filter_zero_advantages`/`sampling` (verified against the exact pinned
+`pydantic-config` commit `65b15dffba82d4be19efdaf8b2b9705cc1756be8`'s
+`_process_args`/`_deep_merge`, and against these two actual files, by
+running that library's merge directly and inspecting the result). That
+file's own header repeats the warning, so a reader who opens only it still
+sees why it exists and why it is not `rl.toml` itself.
+
+This is a mechanical-loop check only — config resolution, container
+provisioning, the `bash` harness's tool calls, reward computation, a
+checkpoint write, run with `--dry-run` and a handful of `--max-steps`. This
+README stops there deliberately. It gives no full-run command, unlike this
+repository's other Prime-RL examples, and none should be added — to either
+file — until a real training corpus exists.
 
 ## Install the exact stack
 
@@ -89,17 +112,24 @@ Set `RELIQUARY_ENVS_PATH` to this repository checkout.
 
 ```bash
 PRIME_CONFIG_PATH="$RELIQUARY_ENVS_PATH/environments/code/reliquary_swe/examples/prime_rl/rl.toml"
+SMOKE_SOURCE_PATH="$RELIQUARY_ENVS_PATH/environments/code/reliquary_swe/examples/prime_rl/smoke-only-eval-split-source.toml"
 
 prime-rl/.venv/bin/python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary-swe'); print(next(iter(vf.load_taskset(c(id='reliquary-swe', split='eval')))).key)"
 
 prime-rl/.venv/bin/rl @ "$PRIME_CONFIG_PATH" \
+  --orchestrator.train @ "$SMOKE_SOURCE_PATH" \
   --model.name "$MODEL_SNAPSHOT_PATH" --dry-run True \
   --output-dir outputs --run.name reliquary-swe-dry-run
 
 prime-rl/.venv/bin/rl @ "$PRIME_CONFIG_PATH" \
+  --orchestrator.train @ "$SMOKE_SOURCE_PATH" \
   --model.name "$MODEL_SNAPSHOT_PATH" --max-steps 5 \
   --output-dir outputs --run.name reliquary-swe-smoke
 ```
+
+Running `rl @ "$PRIME_CONFIG_PATH"` without the `--orchestrator.train @
+...` override — including a naive copy of this file — fails fast with
+`TrainSource needs at least one train env`, by design (see above).
 
 The five-step smoke must produce well-formed `bash`/`edit` tool calls, a
 captured patch per rollout, non-zero mixed-outcome groups, a checkpoint, and
@@ -122,10 +152,12 @@ It is therefore accurate to report **Prime-RL v0.9.0 GRPO**, not an exact
 reproduction of INTELLECT-3's report-era IcePop loss.
 
 Every number this config carries that is not pinned by measurement is named
-as such, in this file and in `rl.toml` itself: the per-turn token budget, the
-turn budget, and the training corpus (temporarily `eval`, pending SWE-smith).
-None of them should be read as derived; see `environments/code/reliquary_swe/README.md`
-and the design spec's section 10 for what is actually settled and what is
-still open.
+as such, in this file and in `rl.toml` itself: the per-turn token budget and
+the turn budget. The training corpus is not a number to caveat — it is
+absent from `rl.toml` outright, and `smoke-only-eval-split-source.toml`
+supplies `eval` for the mechanical smoke commands only, never for a real
+run, pending SWE-smith. None of this should be read as derived; see
+`environments/code/reliquary_swe/README.md` and the design spec's section
+10 for what is actually settled and what is still open.
 
 Primary references: the [INTELLECT-3 technical report](https://storage.googleapis.com/intellect-3-paper/INTELLECT_3_Technical_Report.pdf), [Prime-RL v0.9.0](https://github.com/PrimeIntellect-ai/prime-rl/tree/v0.9.0), and its [multi-turn training design](https://github.com/PrimeIntellect-ai/prime-rl/blob/v0.9.0/docs/algorithms.md#multi-turn-trajectories).
