@@ -1555,7 +1555,12 @@ version = "0.1.0a1"
 source = { editable = "." }
 dependencies = [
     { name = "datasets" },
+    { name = "docker" },
+    { name = "ghapi" },
+    { name = "python-dotenv" },
     { name = "swebench" },
+    { name = "swesmith" },
+    { name = "unidiff" },
     { name = "verifiers" },
 ]
 
@@ -1568,7 +1573,12 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "datasets", specifier = ">=2.19" },
+    { name = "docker", specifier = ">=7,<8" },
+    { name = "ghapi", specifier = ">=1,<2" },
+    { name = "python-dotenv", specifier = ">=1,<2" },
     { name = "swebench", specifier = "==3.0.17" },
+    { name = "swesmith", specifier = "==0.0.9" },
+    { name = "unidiff", specifier = ">=0.7" },
     { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=b2e4e8157783b2c0dffc7821044c87f29f1c3ccf" },
 ]
 
@@ -1749,6 +1759,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/2f/b6/eecc99c33d52ff6e84fcac09a9d3a68caaeab9f8db6f7cbbb58e67867fff/swebench-3.0.17.tar.gz", hash = "sha256:4b86d02d7bdeb2113b3c1f7759ea2992d905f0e4053be39a6d6f4573d71c9bde", size = 109382, upload-time = "2025-04-18T06:08:51.297Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4a/b9/567431b08d0cc0ecc6b1e92296a89a47bc64f402e496d6f138287f534b58/swebench-3.0.17-py3-none-any.whl", hash = "sha256:5a2f6c6d6df164d81474e6901275e73802dc5817905c82902438928544c593b3", size = 126059, upload-time = "2025-04-18T06:08:49.835Z" },
+]
+
+[[package]]
+name = "swesmith"
+version = "0.0.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/07/97/e506b20fa59debc66e4660a86b0e98b45d32c87f23b994ad739e9c5d542a/swesmith-0.0.9.tar.gz", hash = "sha256:1726124ea43577853c6efb0a5a0db5fa3ce5c340e1bed479afa5bab85d8a69da", size = 214830, upload-time = "2026-02-27T01:06:13.455Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/80/2d/71b6ac5dadbe7199085de3815624775744d51b6c554efeeddfb12dc45ce1/swesmith-0.0.9-py3-none-any.whl", hash = "sha256:cbb98a52fc573b38032cde1179b6ce5f5862ce7c31d6931cfd5b8ad4969ce900", size = 275800, upload-time = "2026-02-27T01:06:11.864Z" },
 ]
 
 [[package]]

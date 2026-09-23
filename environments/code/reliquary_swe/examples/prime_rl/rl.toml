@@ -64,13 +64,17 @@ enable_thinking = true
 
 [orchestrator.train]
 filter_zero_advantages = true
-# No [[orchestrator.train.source]] here, deliberately: SWE-bench Verified
-# (this taskset's only split) must never be trained on, and `TrainConfig`
-# has no non-empty-sources check, so a source silently pointed at it here
-# would run for real on `cp rl.toml x.toml && rl @ x.toml --max-steps 5000`.
-# With no source at all, prime-rl's own TrainSource raises "needs at least
-# one train env" before a step runs. See the README for how the smoke test
-# supplies one instead, and why. Do not add a source back here.
+# No [[orchestrator.train.source]] here, deliberately: this taskset's
+# `eval` split is SWE-bench Verified, which must never be trained on, and
+# `TrainConfig` has no non-empty-sources check, so a source silently
+# pointed at it here would run for real on `cp rl.toml x.toml && rl @
+# x.toml --max-steps 5000`. With no source at all, prime-rl's own
+# TrainSource raises "needs at least one train env" before a step runs. See
+# the README for how the smoke test supplies one instead, and why. A real
+# run's own source belongs here, pointed at `env.taskset.split = "train"`
+# (SWE-smith; `num_images`/`max_test_count` choose its size and cost bound
+# -- see the package README's Corpus section) -- adding it is this
+# environment's user's decision to make, not this example's.
 
 [orchestrator.train.sampling]
 temperature = 1.0

@@ -77,15 +77,26 @@ def test_restore_strategy_is_the_test_patch_strategy_when_one_exists():
     assert grading._restore_strategy_for(data) is grading._restore_from_test_patch
 
 
-async def test_restore_strategy_is_a_no_op_with_no_test_patch():
+async def test_restore_strategy_is_the_pristine_image_strategy_with_no_test_patch():
     # The seam a SWE-smith-shaped row (no test_patch at all) lands in without
-    # `grade()` changing: nothing needs restoring when the corpus never
-    # modifies test files to begin with. True, not merely non-raising: a
-    # no-op restoration is trivially "successful" for Report.restored's
-    # purposes -- see _restore_strategy_for's own docstring for why that
-    # does not mean such a row would actually work today.
-    data = SimpleNamespace(test_patch="")
+    # `grade()` changing: it restores fail-to-pass/pass-to-pass test files
+    # from the pristine image instead of reapplying a test_patch (spec
+    # section 8's correction). A repo with no fail-to-pass/pass-to-pass
+    # entries has no files to restore, so this exercises the real strategy
+    # (not a stub) with no runtime needed at all: `test_files` returns `[]`
+    # and the checkout loop never runs.
+    data = SimpleNamespace(
+        instance_id="fake",
+        repo="swesmith/oauthlib__oauthlib.1fd52536",
+        base_commit="origin/fake~1",
+        version="",
+        fail_to_pass=(),
+        pass_to_pass=(),
+        gold_patch="",
+        test_patch="",
+    )
     strategy = grading._restore_strategy_for(data)
+    assert strategy is grading._restore_from_pristine_image
     assert strategy is not grading._restore_from_test_patch
     assert await strategy(None, data) is True
 

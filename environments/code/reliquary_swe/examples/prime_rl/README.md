@@ -18,13 +18,15 @@ Prime-RL v0.9.0 launcher and is not claimed here.
 
 ## This example does not train on SWE-bench Verified for real
 
-`reliquary-swe`'s only corpus split is `eval` — SWE-bench Verified, pinned in
+`reliquary-swe`'s `eval` split is SWE-bench Verified, pinned in
 `environment.toml`. It is an evaluation set and must never be trained on
 (design spec section 8, `docs/superpowers/specs/2026-09-22-reliquary-swe-env-design.md`).
-Training is meant to come from SWE-smith, which is not wired into this
-package yet: its rows carry no `version`, `base_commit`, or `test_patch`,
-which changes the grader's own test-restoration strategy, not only a corpus
-pin — its own piece of work.
+Training comes from SWE-smith instead (`env.taskset.split = "train"`,
+`num_images`/`max_test_count` choosing its size and cost bound — see the
+package README's Corpus section). This file still ships with no real
+`[[orchestrator.train.source]]`, on purpose: wiring one up is a decision
+for whoever configures a real run, not something this mechanical-smoke
+example should default to.
 
 A loud comment is not a control: an example is a template people copy, and
 nothing in a comment stops `cp rl.toml x.toml && rl @ x.toml --max-steps

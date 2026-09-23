@@ -18,7 +18,7 @@ from typing import ClassVar, Literal
 import verifiers.v1 as vf
 from verifiers.v1.utils.git import snapshot_untracked
 
-from reliquary_swe import corpus, swe_adapter
+from reliquary_swe import corpus, swe_adapter, swesmith_adapter
 
 WORKDIR = "/testbed"
 PATCH_PATH = f"{vf.ARTIFACTS_DIR}/patch.diff"
@@ -129,10 +129,21 @@ class SweTask(vf.Task[SweData]):
 class SweTasksetConfig(vf.TasksetConfig):
     # `vf.TasksetConfig` carries no `split`; every sibling package that loads
     # more than one split (see `reliquary_code.taskset.CodeConfig`) defines
-    # its own. SWE-bench Verified currently ships only "eval"
-    # (`corpus.SPLITS`), but the field stays user-configurable rather than
-    # baked in, matching that convention.
-    split: Literal["eval"] = "eval"
+    # its own. "eval" is SWE-bench Verified (spec section 8: an evaluation
+    # set, never trained on); "train" is SWE-smith, this package's training
+    # corpus.
+    split: Literal["eval", "train"] = "eval"
+    # Only read when split="train". Together with `max_test_count`, this
+    # determines the exact task set (spec section 8: "declared, never
+    # auto-detected"); see `corpus.load_swesmith_rows` for why a fixed pair
+    # is what lets two machines agree on what task #400 is.
+    num_images: int = corpus.DEFAULT_SWESMITH_IMAGES
+    # Only read when split="train". Caps fail-to-pass + pass-to-pass test
+    # count per instance -- SWE-smith's own per-instance cost is heavily
+    # right-skewed, and this is the declared, deterministic bound on it (see
+    # `corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT` for the measurements behind
+    # the default). `None` disables the cap.
+    max_test_count: int | None = corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT
 
 
 # Every phase of a rollout defaults to no limit at all (`TimeoutConfig`'s and
@@ -194,7 +205,20 @@ _SCORING_TIMEOUT_SECONDS = 1800.0
 
 class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
     def load(self) -> Iterator[SweTask]:
-        for index, row in enumerate(corpus.load_rows(self.config.split)):
+        if self.config.split == "train":
+            rows = corpus.load_swesmith_rows(
+                self.config.num_images, self.config.max_test_count
+            )
+            # Once per distinct repo, not once per row (registry.get_from_inst
+            # is cheap, but there is no reason to repeat it thousands of
+            # times for one repo's worth of instances) -- fails loudly at
+            # load time if `num_images` reaches a non-Python image, rather
+            # than mis-scoring every rollout for that repo silently.
+            for repo in dict.fromkeys(row.repo for row in rows):
+                swesmith_adapter.ensure_python_profile(repo)
+        else:
+            rows = corpus.load_rows(self.config.split)
+        for index, row in enumerate(rows):
             yield SweTask(
                 SweData(
                     idx=index,
@@ -202,7 +226,11 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
                     prompt=PROMPT.format(
                         workdir=WORKDIR, problem_statement=row.problem_statement
                     ),
-                    image=swe_adapter.image_for(row),
+                    # Given directly for SWE-smith (row.image); derived for
+                    # SWE-bench Verified, whose rows carry none (spec section
+                    # 8: "the image is given, not derived" -- Verified's own
+                    # derivation is the fallback, not the rule).
+                    image=row.image if row.image is not None else swe_adapter.image_for(row),
                     workdir=WORKDIR,
                     network_allow=[],
                     timeout=vf.TaskTimeout(

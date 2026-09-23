@@ -2,9 +2,13 @@
 
 Order matters: the agent's patch is applied first, then grading restores the
 paths its chosen strategy names to their `base_commit` state (see
-`_restore_from_test_patch`), then the instance's own `test_patch` is
-reapplied, then tests run. What that actually guarantees: the specific paths
-a strategy restores -- `test_patch`'s own touched files; the `conftest.py`
+`_restore_strategy_for`, which picks between `_restore_from_test_patch` --
+SWE-bench Verified, reapplies the instance's own `test_patch` -- and
+`_restore_from_pristine_image` -- SWE-smith, which never touches tests at
+all, so there is nothing to reapply, only fail-to-pass/pass-to-pass files to
+check out), then tests run. What that actually guarantees for the
+`test_patch` path: the specific paths a strategy restores -- `test_patch`'s
+own touched files; the `conftest.py`
 hierarchy above them, and, at every level of that same walk, pytest's own
 five config filenames (`pytest.ini`, `.pytest.ini`, `pyproject.toml`,
 `tox.ini`, `setup.cfg` -- pytest's own `locate_config` searches a file's
@@ -47,7 +51,7 @@ from pathlib import PurePosixPath
 
 import verifiers.v1 as vf
 
-from reliquary_swe import swe_adapter
+from reliquary_swe import swe_adapter, swesmith_adapter
 from reliquary_swe.corpus import SweRow
 from reliquary_swe.taskset import SweData
 
@@ -326,30 +330,52 @@ async def _restore_from_test_patch(runtime: vf.Runtime, data: SweData) -> bool:
     return ok
 
 
+async def _restore_from_pristine_image(runtime: vf.Runtime, data: SweData) -> bool:
+    """SWE-smith's strategy: there is no `test_patch` to reapply because
+    SWE-smith never touches tests at all -- its bug is injected purely into
+    source (spec section 8's correction). The property restoration exists
+    for -- "make the tests be what they should be, regardless of what the
+    agent did" -- still has to hold, and it is reached the same way
+    SWE-smith's own evaluation harness reaches it
+    (`swesmith.harness.utils.run_patch_in_container`'s own anti-tamper step,
+    `git checkout -- {f2p+p2p files}`): every fail-to-pass and pass-to-pass
+    test lives in a file that is pristine at `data.base_commit` by
+    construction (the bug commit never touched a test file), so restoring
+    is a plain per-file checkout against it, no patch involved.
+
+    Also walks the same `conftest.py`-and-pytest-config ancestry
+    `_conftest_ancestors` already walks for the SWE-bench Verified path:
+    that vector (a source-confined patch adding a `conftest.py` or
+    `pytest.ini` to redirect what "the tests" report) is not specific to
+    either corpus's restoration data, it is specific to pytest, so closing
+    it once, generically, for both paths costs nothing extra here.
+    """
+    row = _row_for(data)
+    files = swesmith_adapter.test_files(row)
+    ok = True
+    for path in files:
+        if not await _checkout(runtime, data.base_commit, path):
+            ok = False
+    for path in _conftest_ancestors(files):
+        if not await _restore_if_present(runtime, data.base_commit, path):
+            ok = False
+    return ok
+
+
 def _restore_strategy_for(data: SweData) -> RestoreTests:
     """Choose how to make the tests be what they should be -- from the data
     itself, never a step `grade()` hardcodes.
 
-    Every row today (SWE-bench Verified) carries a `test_patch`, so that is
-    the only strategy this returns. A future corpus with none -- SWE-smith
-    injects its bug into the source and ships already-pristine tests in the
-    image -- takes the no-op branch below, keyed off the field that
-    distinguishes the two corpora, without `grade()` changing at all. That
-    fixes only the restoration half of supporting such a corpus, not the
-    whole environment: `swe_adapter.test_command` derives its own directives
-    from `test_patch` too (`get_test_directives`), so a `test_patch`-less row
-    would run with none at all -- the entire suite, not the intended few
-    tests. Landing this branch here does not make that corpus work; it only
-    means `grade()` itself would not need to change when something else
-    does.
+    A row with a `test_patch` (SWE-bench Verified) reapplies it. A row
+    without one (SWE-smith, which never touches tests -- see
+    `_restore_from_pristine_image`'s own docstring) restores its
+    fail-to-pass/pass-to-pass test files from the pristine image instead.
+    Both answer the same question; `grade()` never branches on which corpus
+    it is looking at, only this one function does.
     """
     if data.test_patch.strip():
         return _restore_from_test_patch
-
-    async def _nothing_to_restore(runtime: vf.Runtime, data: SweData) -> bool:
-        return True
-
-    return _nothing_to_restore
+    return _restore_from_pristine_image
 
 
 async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
@@ -410,10 +436,19 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     # would touch the source-monkeypatch vector this module's own docstring
     # names. Deliberately not built now; see task-4-report.md.
     row = _row_for(data)
-    run = await runtime.run(swe_adapter.test_command(row), {})
-    results = swe_adapter.parse_results(
-        row, swe_adapter.wrap_test_output(run.stdout or "")
-    )
+    # `version` is what MAP_REPO_VERSION_TO_SPECS is keyed by (spec section
+    # 8); a row with none (SWE-smith) resolves its test command and log
+    # parser through swesmith_adapter's own per-repo registry instead. Same
+    # discriminator family as `_restore_strategy_for`, just keyed on the
+    # field that specific decision actually depends on.
+    if data.version.strip():
+        run = await runtime.run(swe_adapter.test_command(row), {})
+        results = swe_adapter.parse_results(
+            row, swe_adapter.wrap_test_output(run.stdout or "")
+        )
+    else:
+        run = await runtime.run(swesmith_adapter.test_command(row), {})
+        results = swesmith_adapter.parse_results(row, run.stdout or "")
 
     f2p = sum(1 for name in data.fail_to_pass if results.get(name) == "PASSED")
     p2p = sum(1 for name in data.pass_to_pass if results.get(name) == "PASSED")

@@ -20,6 +20,19 @@ dependencies = [
   # the (repo, version) -> spec API (`MAP_REPO_VERSION_TO_SPECS`) our corpus
   # shape matches (see reliquary_swe/swe_adapter.py's module docstring).
   "swebench==3.0.17",
+  # The only module importing this is swesmith_adapter.py, same pattern as
+  # swebench above: wrap a second library behind names we own rather than
+  # reinvent its per-repo test-command/log-parser knowledge (see that
+  # module's docstring). `swesmith`'s own PyPI package declares no required
+  # dependencies at all -- everything is behind extras -- so the four it
+  # actually needs to import (`swesmith.profiles`) are pinned individually
+  # rather than pulling an extra ("generate"/"validate"/"all") that also
+  # drags in tree-sitter, litellm, modal and friends this package never uses.
+  "swesmith==0.0.9",
+  "docker>=7,<8",
+  "ghapi>=1,<2",
+  "python-dotenv>=1,<2",
+  "unidiff>=0.7",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",

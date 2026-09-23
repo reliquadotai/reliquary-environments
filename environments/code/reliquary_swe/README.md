@@ -197,20 +197,93 @@ instead of four separate nights.
 
 ## Corpus
 
-`princeton-nlp/SWE-bench_Verified`, pinned at revision
+**Evaluation**: `princeton-nlp/SWE-bench_Verified`, pinned at revision
 `c104f840cc67f8b6eec6f759ebc8b2693d585d4a`, 500 human-validated instances.
-This is an **evaluation set and must never be trained on** — see
-`environment.toml`'s `[data]` table, which declares only `eval`. Training is
-meant to come from SWE-smith, which is not wired in: its rows carry no
-`version`, `base_commit`, or `test_patch`, which changes the task and the
-grader's test-restoration strategy, not only the corpus loader (design
-spec's section 8, "a second corpus is a profile, not a data pin").
+This is an **evaluation set and must never be trained on** — `--taskset.split`
+defaults to `"eval"`, and nothing in this package's own code path ever passes
+`"train"` for it.
+
+**Training**: SWE-smith (`SWE-bench/SWE-smith`, pinned at revision
+`ea6d7173829c7ec8fa16c22055699ff2e9188091`, 59,136 rows across 222 images —
+`--taskset.split train`). Its schema carries no `version`, `base_commit` or
+`test_patch`, which changes the task and the grader's test-restoration
+strategy, not only the corpus loader (design spec's section 8, "a second
+corpus is a profile, not a data pin"):
+
+- **The image is given, not derived.** SWE-smith's own `image_name` column
+  is the actual, pullable reference; a from-scratch derivation
+  (`swesmith.profiles.RepoProfile.image_name`) computes a *different*, wrong
+  Docker Hub namespace (checked directly — see the implementation report).
+- **No `version`.** `reliquary_swe/swesmith_adapter.py` — the only module
+  importing `swesmith`, same pattern as `swe_adapter.py` and `swebench` —
+  resolves the test command and log parser through
+  `swesmith.profiles.registry` instead, keyed on `repo` alone. Not every
+  SWE-smith repository is Python (92 of the pinned corpus's 222 images are
+  Go, PHP, Java or Rust); this module only knows how to run Python ones, and
+  `SweTaskset.load()` fails loudly at load time (not mid-rollout) if a
+  configured `num_images` reaches one — checked and not triggered below 31.
+- **No `base_commit`.** Each SWE-smith instance is its own git branch,
+  committed on top of the image's clean `main`: "Bug Patch" (the dataset's
+  `patch` column, source only), then "Remove F2P Tests" (deletes the
+  fail-to-pass tests' own files). `~1` from the branch tip — bug present,
+  every test file still pristine — is the state a rollout starts from, and
+  `SweRow.base_commit` carries it as a git revision expression
+  (`f"origin/{instance_id}~1"`) rather than a literal SHA; `setup()`'s
+  existing history-truncation cleanup consumes it identically either way,
+  and additionally strips every sibling instance's branch and `main` itself
+  — closing what would otherwise be the easiest reward hack in this whole
+  package, since the exact fix sits, unencrypted, in the very same
+  container's git history.
+- **No `test_patch`, and `patch`'s own direction is inverted.** SWE-smith's
+  `patch` column is the diff that *introduces* its bug, not the fix —
+  confirmed three ways (diff content, a real container run, and SWE-smith's
+  own harness applying "gold" predictions with `git apply --reverse`,
+  commented "fix = revert"). `corpus._reverse_unified_diff` normalizes this
+  once at load time, so `SweRow.gold_patch` means the same thing for every
+  row regardless of source corpus. Restoration has no `test_patch` to
+  reapply because SWE-smith never touches tests at all; `grading.py`'s
+  `_restore_from_pristine_image` — the second strategy
+  `_restore_strategy_for` was always meant to grow (spec section 8) — checks
+  out the instance's own fail-to-pass/pass-to-pass test files, plus the same
+  `conftest.py`/pytest-config ancestor walk the SWE-bench Verified path
+  uses, from that same base-commit expression.
+
+**Corpus selection is two declared parameters, never auto-detected**
+(`SweTasksetConfig.num_images`, default 20; `.max_test_count`, default
+5060) — see `corpus.load_swesmith_rows`. `num_images` takes the top N
+images by task count (ties broken by image name), because a size sized from
+local free disk would let two machines disagree on what task #400 is.
+`max_test_count` caps fail-to-pass + pass-to-pass test count per instance,
+because that count is heavily right-skewed (p50=415, p95=5060, max=22,028
+across the full corpus) and, for the minority of repositories whose
+`swesmith` profile narrows its test command to exactly those tests
+(`min_testing=True` — pandas, sqlglot, sunpy, conan, sqlfluff among the top
+20 images), that skew is a real per-instance cost difference. Both
+parameters participate in task identity: two configs differing in either one
+are different task sets, never a shared index with a subset relationship.
+Real container measurements (seven gradings across the size range, the
+implementation report has the transcripts) found the *actual* cost far
+below a naive per-test estimate — even the single most expensive instance in
+the whole corpus (pandas, 22,028 fail+pass-to-pass entries) graded in 40
+seconds — so `max_test_count`'s default (the measured p95) is a cheap
+backstop against an unmeasured, per-test-heavier repository, not a response
+to an observed bottleneck in this corpus. For the majority of repositories
+(profile `min_testing=False`, the default), this cap does not bound cost at
+all: their test command always runs the whole suite regardless of any one
+instance's counts, so cost there is a fixed per-repository quantity —
+measured directly at 3-34 seconds for four such repositories in the top 20
+images.
+
+**Zero repository overlap with the evaluation set**, checked at every image
+count from 5 through the full 222, not only the shipped default of 20 — see
+`tests/test_swesmith_adapter.py::test_no_repo_overlap_between_the_two_corpora`.
 
 The SWE-bench project itself (the harness and dataset-construction code) is
-MIT-licensed; the dataset's own Hugging Face card declares no license tag.
-Each row's actual content — a repository diff and the text of the issue
-that motivated it — is drawn from the underlying open-source project
-(astropy, django, sympy, sphinx, ...) under that project's own license.
+MIT-licensed; SWE-smith's own Hugging Face card declares `license: mit`
+too. Neither dataset's card license extends to a row's actual content — a
+repository diff and the text of the issue or bug that motivated it — which
+is drawn from the underlying open-source project (astropy, django, sympy,
+pandas, oauthlib, ...) under that project's own license.
 
 ## Test and load
 

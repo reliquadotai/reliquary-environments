@@ -6,7 +6,7 @@ entrypoint = "reliquary_swe:SweTaskset"
 license = "MIT"
 verification_tier = "container-reverified"
 owners = ["Reliquary contributors"]
-task_families = ["swe_bench_verified"]
+task_families = ["swe_bench_verified", "swe_smith"]
 
 # No `compatibility_entrypoint`. This environment is Verifiers-only: a
 # container cannot be replayed deterministically, so a replay surface would
@@ -60,12 +60,20 @@ section 9).
 
 [data]
 # SWE-bench Verified is an evaluation set and must never be trained on (spec
-# section 8): no `train` or `qualification` pin exists here on purpose.
-# Training is meant to come from SWE-smith, which is not wired in yet --
-# its schema lacks `version`, `base_commit` and `test_patch`, so adding it
-# changes the task and the grader's test-restoration strategy, not only this
-# table (spec section 8's correction). That is its own piece of work.
+# section 8): no `qualification` pin exists here, and `eval` below is never
+# passed `--taskset.split train`. Training comes from SWE-smith (`train`
+# below), wired in separately from the evaluation pin so the two can never
+# collide on a revision or a row.
 eval = "hf:princeton-nlp/SWE-bench_Verified@c104f840cc67f8b6eec6f759ebc8b2693d585d4a"
+# SWE-smith's own schema forced three of SweRow's fields (`base_commit`,
+# `version`, `test_patch`) to become optional rather than gain a sibling
+# dataclass -- see corpus.py's module docstring and the design spec's
+# section 8 correction. `rows`/`virtual_length` below describe this split
+# with the *default* `num_images`/`max_test_count`
+# (`SweTasksetConfig.num_images`, `.max_test_count`); either overridden
+# changes both the task set and its size, and is a different, equally valid
+# configuration of the same environment -- see corpus.load_swesmith_rows.
+train = "hf:SWE-bench/SWE-smith@ea6d7173829c7ec8fa16c22055699ff2e9188091"
 redistributable = true
 # The SWE-bench project itself (the harness and dataset-construction code)
 # is MIT-licensed; the dataset's own Hugging Face card declares no license
@@ -74,9 +82,28 @@ redistributable = true
 # open-source project (astropy, django, sympy, sphinx, ...) under that
 # project's own license, not SWE-bench's. Recorded as measured rather than
 # picked: this package claims no more than princeton-nlp's own widely-used
-# public redistribution already does.
-license = "MIT (SWE-bench project); per-row content inherits its source repository's own license"
+# public redistribution already does. SWE-smith's own card declares `license:
+# mit` for the harness; the same per-row inheritance applies to its 222
+# repositories (oauthlib, pandas, astroid, ...), none of which overlap
+# SWE-bench Verified's 12 (checked against the full 222, not sampled --
+# zero overlap at every image count from 5 to 222; see the implementation
+# report).
+license = "MIT (SWE-bench/SWE-smith projects); per-row content inherits its source repository's own license"
+# `eval`'s size: the published SWE-bench Verified instance count.
 rows = 500
+# `train`'s two sizes, both measured against the pinned revision above, not
+# guessed: the full corpus (`SweRow` rows SWE-smith's `train` split
+# publishes) versus what this package's *default* configuration
+# (`num_images=20`, `max_test_count=5060`) actually exposes -- 23,844 raw
+# rows in the top 20 images, minus 40 whose bug-injection patch cannot be
+# reversed (file add/delete/rename/copy; see corpus._reverse_unified_diff)
+# and 632 over the default test-count cap (see
+# corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT for why that cap exists and how it
+# was measured). A different `num_images`/`max_test_count` is a different,
+# equally valid task set of a different size -- these two numbers describe
+# the shipped default, not a hard limit.
+train_rows = 59136
+virtual_length = 23172
 
 # There is no `[execution]` field for a scoring deadline: `vf.TaskData.timeout`
 # is set per task, not per environment, so it is not declared here. Every
