@@ -440,7 +440,40 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
         # local name, not the caller's object) means every function below
         # that reads `data.base_commit` picks this up with no other change.
         resolved = await runtime.run(["git", "rev-parse", "HEAD"], {})
-        data = data.model_copy(update={"base_commit": (resolved.stdout or "").strip()})
+        if resolved.exit_code != 0:
+            # Unchecked, this was a real path to a wrongly-paid reward: a
+            # falsy `(resolved.stdout or "").strip()` becomes `""`, every
+            # restoration checkout below fails against that empty string,
+            # `restored=False` gets recorded -- and the test run proceeds
+            # anyway, on an unrestored box, exactly like the `checkout` and
+            # `sever` steps either side of this one refuse to let happen.
+            raise RuntimeError(
+                f"could not resolve HEAD after severing history for "
+                f"{data.instance_id}: "
+                f"{(resolved.stderr or resolved.stdout).strip()[-500:]}"
+            )
+        data = data.model_copy(update={"base_commit": resolved.stdout.strip()})
+    else:
+        # SWE-bench Verified's own leak, closed the same way `setup()`
+        # already closes it for the agent's box: the fix for this
+        # instance's own bug is a *descendant* of `base_commit`, reachable
+        # through whatever branch/tag ref still names it, and this
+        # grading box is provisioned fresh from the image and never put
+        # through that cleanup. No guard and no re-root needed here --
+        # unlike a train row, `base_commit` is already a raw SHA, and a
+        # descendant (unlike an ancestor) *is* pruned by `gc` once no ref
+        # reaches it, so stripping refs alone is enough. Same vector as
+        # the train case: the agent's patched source executes during the
+        # test run below, after restoration, so a patch reading git
+        # objects at import time to recover the fix would make the suite
+        # genuinely pass without deriving anything -- on the one number
+        # anyone actually compares against a published result.
+        strip = await runtime.run(["sh", "-c", "set -e ; " + _STRIP_AND_GC], {})
+        if strip.exit_code != 0:
+            raise RuntimeError(
+                f"could not strip history for {data.instance_id}: "
+                f"{(strip.stderr or strip.stdout).strip()[-500:]}"
+            )
 
     applied = True
     if patch.strip():
