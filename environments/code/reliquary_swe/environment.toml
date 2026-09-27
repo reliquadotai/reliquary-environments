@@ -6,7 +6,7 @@ entrypoint = "reliquary_swe:SweTaskset"
 license = "MIT"
 verification_tier = "container-reverified"
 owners = ["Reliquary contributors"]
-task_families = ["swe_bench_verified", "swe_smith"]
+task_families = ["swe_bench_verified", "swe_smith", "mimo_polyglot"]
 
 # No `compatibility_entrypoint`. This environment is Verifiers-only: a
 # container cannot be replayed deterministically, so a replay surface would
@@ -109,6 +109,16 @@ rows = 500
 # exclude 632 rows, leaving 23,172.
 train_rows = 59136
 virtual_length = 23803
+# A second training corpus, `--taskset.split polyglot`: MiMo-V2.6-RL-oss's
+# `code` config, 2,698 tasks in Python, Go, JS/TS, Ruby, PHP, Java, C++ and
+# Rust, one image per task under `xiaomimimo/mimo-v2.6-rl-oss:<instance_id>`.
+# No reference fix and no test lists are published; the verdict is the exit
+# status of the hidden `mimo_test_command.sh` (see corpus.load_polyglot_rows
+# and the README's "Polyglot corpus" section). Apache-2.0 per the dataset
+# card; per-row content inherits its source repository's own license, as for
+# the two corpora above.
+polyglot = "hf:XiaomiMiMo/MiMo-V2.6-RL-oss/code@639865fd3374018d6cb29b9fb82dd531406fcf5f"
+polyglot_rows = 2698
 
 # There is no `[execution]` field for a scoring deadline: `vf.TaskData.timeout`
 # is set per task, not per environment, so it is not declared here. Every

@@ -41,11 +41,22 @@ Fix the issue by editing the repository's source. Do not edit the tests.
 # `_TRAIN_GUARD_AND_REROOT`'s own docstring) -- order matters: the guard and
 # re-root must run before `reflog expire`+`gc`, or the ancestor they sever
 # survives (git will not let `gc` drop an ancestor of HEAD).
+#
+# Every step addresses the repository through `$WORKDIR` rather than a
+# literal path: the polyglot corpus ships images whose repository lives at
+# `/workspace/repo`, not `/testbed`.
+#
+# `--detach` matters only for the polyglot corpus, whose `base_commit` is the
+# symbolic `HEAD`: checking out `HEAD` leaves HEAD attached to its branch, the
+# ref stripping below then deletes that branch, and HEAD is left pointing at
+# an unborn one -- `git rev-parse HEAD` fails, and `gc` no longer counts the
+# base commit as reachable. Confirmed on a real polyglot image. For a SHA or
+# an `origin/<id>~1` expression it changes nothing: those already detach.
 _CHECKOUT = " ; ".join(
     [
         "set -e",
-        'git -C /testbed reset --hard "$BASE_COMMIT"',
-        'git -C /testbed checkout -q "$BASE_COMMIT"',
+        'git -C "$WORKDIR" reset --hard "$BASE_COMMIT"',
+        'git -C "$WORKDIR" checkout -q --detach "$BASE_COMMIT"',
     ]
 )
 
@@ -78,11 +89,11 @@ _CHECKOUT = " ; ".join(
 # `git cat-file --batch-all-objects --batch` scan.
 _TRAIN_GUARD_AND_REROOT = " ; ".join(
     [
-        'test "$(git -C /testbed log -1 --format=%s "$BASE_COMMIT")" = "Bug Patch"',
-        "NEW_ROOT=$(git -C /testbed -c user.name=reliquary-swe "
+        'test "$(git -C "$WORKDIR" log -1 --format=%s "$BASE_COMMIT")" = "Bug Patch"',
+        'NEW_ROOT=$(git -C "$WORKDIR" -c user.name=reliquary-swe '
         "-c user.email=reliquary-swe@localhost "
         "commit-tree HEAD^{tree} -m base)",
-        'git -C /testbed reset --hard "$NEW_ROOT"',
+        'git -C "$WORKDIR" reset --hard "$NEW_ROOT"',
     ]
 )
 
@@ -90,14 +101,21 @@ _STRIP_AND_GC = " ; ".join(
     [
         # Drop every ref that could reach a later commit, then expire the
         # reflog so neither `git log --all` nor `git fsck` finds one.
-        "git -C /testbed for-each-ref --format='%(refname)' "
-        "| xargs -r -n1 git -C /testbed update-ref -d",
-        "git -C /testbed reflog expire --expire=now --all",
-        "git -C /testbed gc --prune=now --quiet",
-        "rm -rf /testbed/.git/logs",
-        "rm -f /testbed/*.orig /testbed/*.rej",
+        """git -C "$WORKDIR" for-each-ref --format='%(refname)' """
+        '| xargs -r -n1 git -C "$WORKDIR" update-ref -d',
+        # `for-each-ref` skips a *broken* symbolic ref (one naming a branch
+        # that does not exist) with only a warning, so the loop above never
+        # deletes it -- and `gc` then dies on it ("failed to run repack").
+        # Real polyglot images ship exactly that: `refs/remotes/origin/HEAD`
+        # pointing at a remote branch the image never fetched. Any loose ref
+        # file left after the loop is one of these; remove it directly.
+        'find "$WORKDIR"/.git/refs -mindepth 1 -type f -delete',
+        'git -C "$WORKDIR" reflog expire --expire=now --all',
+        'git -C "$WORKDIR" gc --prune=now --quiet',
+        'rm -rf "$WORKDIR"/.git/logs',
+        'rm -f "$WORKDIR"/*.orig "$WORKDIR"/*.rej',
         "rm -f /*.patch /home/*.patch /tmp/*.patch /root/*.patch",
-        "find /testbed -name '__pycache__' -type d -prune -exec rm -rf {} + || true",
+        """find "$WORKDIR" -name '__pycache__' -type d -prune -exec rm -rf {} + || true""",
         "rm -rf /root/.cache/pip /tmp/build",
     ]
 )
@@ -117,6 +135,10 @@ class SweData(vf.TaskData):
     gold_patch: str
     test_patch: str
     split: str
+    # Polyglot only (see `corpus.SweRow.test_command`): the corpus's own
+    # command, whose exit status is the verdict. Defaulted so the wire shape
+    # of the other two corpora is unchanged.
+    test_command: str = ""
 
 
 class SweTask(vf.Task[SweData]):
@@ -139,13 +161,23 @@ class SweTask(vf.Task[SweData]):
         # and "eval" must not: a SWE-bench Verified `base_commit` has no
         # pristine-tree ancestor to sever, and asserting a "Bug Patch"
         # commit message on it would just fail every eval task.
+        #
+        # "polyglot" needs no re-root either. Its images come in two shapes,
+        # both checked on real images: HEAD is a parentless "task base"
+        # commit whose tree has the requested behaviour cut out, with the
+        # complete upstream -- implementation and tests -- still parked under
+        # `origin/<branch>`; or HEAD is upstream's own tip, with nothing after
+        # it. Either way nothing an agent could use sits in HEAD's ancestry,
+        # and the ref stripping below prunes the parked upstream: after it,
+        # a full object-store scan no longer finds the removed code.
         steps = [_CHECKOUT]
         if self.data.split == "train":
             steps.append(_TRAIN_GUARD_AND_REROOT)
         steps.append(_STRIP_AND_GC)
         cleanup = " ; ".join(steps)
         result = await runtime.run(
-            ["sh", "-c", cleanup], {"BASE_COMMIT": self.data.base_commit}
+            ["sh", "-c", cleanup],
+            {"BASE_COMMIT": self.data.base_commit, "WORKDIR": self.data.workdir},
         )
         if result.exit_code != 0:
             raise RuntimeError(
@@ -215,7 +247,12 @@ class SweTasksetConfig(vf.TasksetConfig):
     # `"eval"`. `rl.toml` shipping with no `[[orchestrator.train.source]]`
     # at all (`TrainSource` itself raises with none) remains the first line
     # of defense; this is the second, for the moment a real source exists.
-    split: Literal["eval", "train"] | None = None
+    #
+    # "polyglot" is a second training corpus: MiMo-V2.6-RL-oss's `code`
+    # config, 2,698 tasks in eight languages, graded by the exit status of a
+    # hidden test script rather than by test lists (see
+    # `corpus.load_polyglot_rows`).
+    split: Literal["eval", "train", "polyglot"] | None = None
     # Only read when split="train". Together with `max_test_count`, this
     # determines the exact task set (spec section 8: "declared, never
     # auto-detected"); see `corpus.load_swesmith_rows` for why a fixed pair
@@ -302,7 +339,8 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
         if self.config.split is None:
             raise ValueError(
                 "reliquary-swe: --taskset.split is required (\"eval\" for "
-                "SWE-bench Verified, \"train\" for SWE-smith) -- it has no "
+                "SWE-bench Verified, \"train\" for SWE-smith, \"polyglot\" "
+                "for MiMo-V2.6-RL-oss's code tasks) -- it has no "
                 "default so that an operator wiring a real training source "
                 "cannot silently fall back to the evaluation set"
             )
@@ -317,6 +355,8 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
             # than mis-scoring every rollout for that repo silently.
             for repo in dict.fromkeys(row.repo for row in rows):
                 swesmith_adapter.ensure_python_profile(repo)
+        elif self.config.split == "polyglot":
+            rows = corpus.load_polyglot_rows()
         else:
             rows = corpus.load_rows(self.config.split)
         for index, row in enumerate(rows):
@@ -325,14 +365,14 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
                     idx=index,
                     name=row.instance_id,
                     prompt=PROMPT.format(
-                        workdir=WORKDIR, problem_statement=row.problem_statement
+                        workdir=row.workdir, problem_statement=row.problem_statement
                     ),
                     # Given directly for SWE-smith (row.image); derived for
                     # SWE-bench Verified, whose rows carry none (spec section
                     # 8: "the image is given, not derived" -- Verified's own
                     # derivation is the fallback, not the rule).
                     image=row.image if row.image is not None else swe_adapter.image_for(row),
-                    workdir=WORKDIR,
+                    workdir=row.workdir,
                     network_allow=[],
                     timeout=vf.TaskTimeout(
                         setup=_SETUP_TIMEOUT_SECONDS,
@@ -349,6 +389,7 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
                     gold_patch=row.gold_patch,
                     test_patch=row.test_patch,
                     split=self.config.split,
+                    test_command=row.test_command,
                 ),
                 self.config.task,
             )

@@ -20,7 +20,7 @@ deterministically.
 | [`reliquary-dapo-math`](environments/reasoning/reliquary_dapo_math) | 17,171 competition problems whose answers are integers, so a comparison cannot be lost to surface form. |
 | [`reliquary-code`](environments/code/reliquary_code) | OpenCodeInstruct problems graded by executing the model's Python against pinned cases in a fresh, limited subprocess. |
 | [`reliquary-envscaler`](environments/tool_use/reliquary_envscaler) | Tool-use tasks whose difficulty is generated to order rather than sampled from a fixed corpus. |
-| [`reliquary-swe`](environments/code/reliquary_swe) | SWE-bench Verified repairs, graded by re-applying the captured patch and running the target repository's own tests in a second container the agent never entered. **Verifiers-only**: no synchronous replay surface — a container cannot be replayed deterministically. |
+| [`reliquary-swe`](environments/code/reliquary_swe) | SWE-bench Verified repairs for evaluation; SWE-smith and MiMo-V2.6's polyglot code tasks (Python, Go, JS/TS and five more languages) for training. Graded by re-applying the captured patch and running the target repository's own tests in a second container the agent never entered. **Verifiers-only**: no synchronous replay surface — a container cannot be replayed deterministically. |
 
 ```bash
 cd environments/<area>/<package>

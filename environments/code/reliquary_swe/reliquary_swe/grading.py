@@ -75,6 +75,55 @@ _TEST_CONFIG_FILES = (
 )
 
 
+# Polyglot only. The files each ecosystem's test runner reads before it runs
+# a single test, and that a patch confined to source could rewrite to make
+# `mimo_test_command.sh` exit 0 without the hidden tests passing: a `test`
+# script or `testPathIgnorePatterns` in `package.json`, a jest/vitest/mocha
+# config, a `replace` directive in `go.mod`, a Maven surefire `skip`, a
+# `Rakefile` or `Makefile` target. The polyglot verdict is an exit status,
+# not a parsed per-test report, so anything that controls what the runner
+# does is as good as a forged result.
+#
+# Restoring these can also revert a legitimate edit -- a fix that really
+# needs a new `exports` entry in `package.json` scores 0. Accepted for the
+# same reason `_TEST_CONFIG_FILES` accepted clobbering pylint-4661's own
+# `setup.cfg`: a false 0 on a rare fix is recoverable, a forgeable 1 is not.
+_POLYGLOT_RUNNER_FILES = (
+    # JavaScript / TypeScript
+    "package.json",
+    *(f"jest.config.{ext}" for ext in ("js", "cjs", "mjs", "ts", "json")),
+    *(f"vitest.config.{ext}" for ext in ("js", "cjs", "mjs", "ts", "mts")),
+    *(f"vite.config.{ext}" for ext in ("js", "mjs", "ts")),
+    *(f".mocharc.{ext}" for ext in ("js", "cjs", "json", "yml", "yaml")),
+    *(f"babel.config.{ext}" for ext in ("js", "cjs", "json")),
+    ".babelrc",
+    "tsconfig.json",
+    # Go
+    "go.mod",
+    "go.sum",
+    "go.work",
+    # Rust
+    "Cargo.toml",
+    ".cargo/config.toml",
+    # Java
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "settings.gradle.kts",
+    # Ruby
+    "Gemfile",
+    ".rspec",
+    "Rakefile",
+    # PHP
+    "composer.json",
+    "phpunit.xml",
+    "phpunit.xml.dist",
+    # Any
+    "Makefile",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Report:
     reward: float
@@ -107,6 +156,10 @@ class Report:
     # would have caught in one batch instead of four separate nights.
     results_parsed: int = 0
     test_command_exit_code: int | None = None
+    # Polyglot only: the verdict is an exit status, so the only evidence of
+    # *why* a run failed -- a real failing assertion, or a runner that never
+    # started -- is the end of its output.
+    test_output_tail: str = ""
 
 
 def _paths_touched_by(patch: str) -> list[str]:
@@ -225,16 +278,32 @@ def _conftest_ancestors(paths: list[str]) -> list[str]:
     additional -- so closing the vector completely costs nothing beyond what
     shipping already accepted.
     """
+    return _ancestor_paths(paths, ("conftest.py", *_TEST_CONFIG_FILES))
+
+
+def _ancestor_paths(paths: list[str], names: tuple[str, ...]) -> list[str]:
+    """Every one of `names`, at every directory from each of `paths`' own
+    up to the repository root -- the walk `_conftest_ancestors` documents,
+    over any set of file names."""
     seen: dict[str, None] = {}
     for path in paths:
         directory = PurePosixPath(path).parent
         while True:
-            for name in ("conftest.py", *_TEST_CONFIG_FILES):
+            for name in names:
                 seen[str(directory / name)] = None
             if str(directory) == ".":
                 break
             directory = directory.parent
     return list(seen)
+
+
+def _polyglot_infrastructure_paths(test_patch: str) -> list[str]:
+    """Every runner-config path, of every ecosystem, at the repository root
+    and above every file `test_patch` touches. Language-blind on purpose:
+    a row carries no language, and restoring a `go.mod` in a JavaScript
+    repository is a no-op, not a risk."""
+    names = ("conftest.py", *_TEST_CONFIG_FILES, *_POLYGLOT_RUNNER_FILES)
+    return _ancestor_paths(["_", *_paths_touched_by(test_patch)], names)
 
 
 def _test_infrastructure_paths(data: SweData) -> list[str]:
@@ -362,6 +431,60 @@ async def _restore_from_pristine_image(runtime: vf.Runtime, data: SweData) -> bo
     return ok
 
 
+async def _restore_all_if_present(
+    runtime: vf.Runtime, base_commit: str, paths: list[str]
+) -> bool:
+    """`_restore_if_present` over many paths in ONE command.
+
+    The polyglot walk names ~50 files per directory level; at two runtime
+    round trips per path that is hundreds of calls per grading, so the same
+    per-path logic -- confirmed existence at base, then checkout, else
+    remove -- runs as one shell loop instead. One path per `git checkout`
+    still, for the reason `_checkout` documents.
+    """
+    script = (
+        'ok=0; while IFS= read -r p; do '
+        'if git cat-file -e "$BASE:$p" 2>/dev/null; then '
+        'git checkout -q "$BASE" -- "$p" || ok=1; '
+        'else rm -rf -- "$p" || ok=1; fi; '
+        'done < /tmp/restore-paths; exit $ok'
+    )
+    await runtime.write("/tmp/restore-paths", ("\n".join(paths) + "\n").encode())
+    result = await runtime.run(["sh", "-c", script], {"BASE": base_commit})
+    return result.exit_code == 0
+
+
+async def _restore_polyglot(runtime: vf.Runtime, data: SweData) -> bool:
+    """The polyglot strategy: `_restore_from_test_patch`'s shape, minus
+    everything that asks SWE-bench's per-repository registry a question.
+
+    `test_patch`'s own paths are checked out at base when they existed there
+    and removed when the patch adds them (the hidden test files, and
+    `mimo_test_command.sh` itself), every runner config
+    `_polyglot_infrastructure_paths` names is put back, and `test_patch` is
+    reapplied. The agent never saw the hidden tests, but it may have guessed
+    a path or rewritten a runner; neither survives this.
+    """
+    existing = swe_adapter.get_modified_files(data.test_patch)
+    added = [p for p in _paths_touched_by(data.test_patch) if p not in set(existing)]
+    ok = True
+    for path in existing:
+        if not await _checkout(runtime, data.base_commit, path):
+            ok = False
+    for path in added:
+        if not await _remove(runtime, path):
+            ok = False
+    if not await _restore_all_if_present(
+        runtime, data.base_commit, _polyglot_infrastructure_paths(data.test_patch)
+    ):
+        ok = False
+    await runtime.write("/tmp/tests.diff", data.test_patch.encode())
+    result = await runtime.run(["git", "apply", "-v", "/tmp/tests.diff"], {})
+    if result.exit_code != 0:
+        ok = False
+    return ok
+
+
 def _restore_strategy_for(data: SweData) -> RestoreTests:
     """Choose how to make the tests be what they should be -- from the data
     itself, never a step `grade()` hardcodes.
@@ -373,6 +496,8 @@ def _restore_strategy_for(data: SweData) -> RestoreTests:
     Both answer the same question; `grade()` never branches on which corpus
     it is looking at, only this one function does.
     """
+    if data.split == "polyglot":
+        return _restore_polyglot
     if data.test_patch.strip():
         return _restore_from_test_patch
     return _restore_from_pristine_image
@@ -401,7 +526,12 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     separate nights, because a real adapter break zeroes p2p for every
     instance at once and a patch that is merely bad does not.
     """
-    checkout = await runtime.run(["git", "checkout", "-q", data.base_commit], {})
+    # `--detach` for the reason `taskset._CHECKOUT` documents: a polyglot
+    # `base_commit` is the symbolic `HEAD`, which the strip below would
+    # otherwise leave pointing at a deleted branch.
+    checkout = await runtime.run(
+        ["git", "checkout", "-q", "--detach", data.base_commit], {}
+    )
     if checkout.exit_code != 0:
         # Every image ships its repo already at base_commit; failing to reach
         # it back is not a real "0 result", it's a box that isn't what it
@@ -427,7 +557,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
         # verbatim rather than a second implementation of either.
         sever = await runtime.run(
             ["sh", "-c", "set -e ; " + _TRAIN_GUARD_AND_REROOT + " ; " + _STRIP_AND_GC],
-            {"BASE_COMMIT": data.base_commit},
+            {"BASE_COMMIT": data.base_commit, "WORKDIR": data.workdir},
         )
         if sever.exit_code != 0:
             raise RuntimeError(
@@ -453,6 +583,30 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
                 f"{(resolved.stderr or resolved.stdout).strip()[-500:]}"
             )
         data = data.model_copy(update={"base_commit": resolved.stdout.strip()})
+    elif data.split == "polyglot":
+        # A shape-one polyglot image parks the complete upstream --
+        # implementation included -- under `origin/<branch>` (see
+        # `SweTask.setup`). The agent's patched source executes during the
+        # test run below, so it could read that out of the object store at
+        # run time; strip it here exactly as setup() does for the agent's
+        # box. `base_commit` is `HEAD`, which means something else once
+        # the agent's patch is committed or applied, so it is pinned to the
+        # resolved SHA for every restoration checkout below.
+        strip = await runtime.run(
+            ["sh", "-c", "set -e ; " + _STRIP_AND_GC], {"WORKDIR": data.workdir}
+        )
+        if strip.exit_code != 0:
+            raise RuntimeError(
+                f"could not strip history for {data.instance_id}: "
+                f"{(strip.stderr or strip.stdout).strip()[-500:]}"
+            )
+        resolved = await runtime.run(["git", "rev-parse", "HEAD"], {})
+        if resolved.exit_code != 0:
+            raise RuntimeError(
+                f"could not resolve HEAD for {data.instance_id}: "
+                f"{(resolved.stderr or resolved.stdout).strip()[-500:]}"
+            )
+        data = data.model_copy(update={"base_commit": resolved.stdout.strip()})
     else:
         # SWE-bench Verified's own leak, closed the same way `setup()`
         # already closes it for the agent's box: the fix for this
@@ -468,7 +622,9 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
         # objects at import time to recover the fix would make the suite
         # genuinely pass without deriving anything -- on the one number
         # anyone actually compares against a published result.
-        strip = await runtime.run(["sh", "-c", "set -e ; " + _STRIP_AND_GC], {})
+        strip = await runtime.run(
+            ["sh", "-c", "set -e ; " + _STRIP_AND_GC], {"WORKDIR": data.workdir}
+        )
         if strip.exit_code != 0:
             raise RuntimeError(
                 f"could not strip history for {data.instance_id}: "
@@ -498,6 +654,22 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     # restoration and before the real test run, and is the only defense that
     # would touch the source-monkeypatch vector this module's own docstring
     # names. Deliberately not built now; see task-4-report.md.
+    if data.split == "polyglot":
+        # The corpus's own verdict, unchanged: `mimo_test_command.sh` exits
+        # 0 or it does not. No test lists exist to count against.
+        run = await runtime.run(["bash", "-c", data.test_command], {})
+        return Report(
+            1.0 if run.exit_code == 0 else 0.0,
+            applied,
+            restored,
+            0,
+            0,
+            {},
+            results_parsed=0,
+            test_command_exit_code=run.exit_code,
+            test_output_tail=((run.stdout or "") + (run.stderr or ""))[-2000:],
+        )
+
     row = _row_for(data)
     # `split` is already on the wire and is literally "which corpus is
     # this" -- the honest discriminator for this decision, rather than

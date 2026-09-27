@@ -139,6 +139,15 @@ class SweRow:
     # the module docstring). `None` for SWE-bench Verified, whose image is
     # derived instead (`swe_adapter.image_for`).
     image: str | None = None
+    # The shell command that runs this row's tests, when the corpus gives one
+    # rather than having it derived from a per-repository registry (SWE-bench
+    # Verified: `swe_adapter.test_command`; SWE-smith:
+    # `swesmith_adapter.test_command`). Polyglot only; empty elsewhere.
+    test_command: str = ""
+    # Where the repository lives inside the image. `/testbed` for SWE-bench
+    # Verified and SWE-smith; the polyglot corpus ships images of both
+    # `/testbed` and `/workspace/repo` shapes and says which per row.
+    workdir: str = "/testbed"
 
 
 def _tests(raw: object) -> tuple[str, ...]:
@@ -383,5 +392,66 @@ def load_swesmith_rows(
             total,
             skipped_too_costly,
             total,
+        )
+    return tuple(rows)
+
+
+# MiMo-V2.6-RL-oss's `code` config: 2,698 tasks across Python, Go, JS/TS,
+# Ruby, PHP, Java, C++ and Rust, one Docker image per task. Pinned like every
+# other source here.
+_POLYGLOT_SOURCE = (
+    "XiaomiMiMo/MiMo-V2.6-RL-oss",
+    "code",
+    "639865fd3374018d6cb29b9fb82dd531406fcf5f",
+)
+
+# The dataset's own `docker_image` column names a local tag
+# (`format-code-task-001457:latest`); what is published and pullable is this
+# repository, tagged with the instance id. Checked against Docker Hub: every
+# instance id in the pinned revision has a tag of its own name there.
+POLYGLOT_IMAGE_REPOSITORY = "xiaomimimo/mimo-v2.6-rl-oss"
+
+
+@functools.lru_cache(maxsize=None)
+def load_polyglot_rows() -> tuple[SweRow, ...]:
+    """Every row of the pinned polyglot corpus, in the dataset's own order.
+
+    What upstream publishes differs from both other corpora, and each
+    difference is a field left empty here rather than filled with a guess:
+
+    - No fix. There is no `patch` column at all: each task is a feature
+      request or bug report plus *hidden* tests, and `gold_patch` stays
+      empty. Where a reference exists, it lives inside the image instead
+      (see `grading.py`'s polyglot notes and `tests/test_polyglot_goldens.py`).
+    - No FAIL_TO_PASS/PASS_TO_PASS. The row's `test_command` runs
+      `mimo_test_command.sh`, a script `test_patch` itself adds, and its exit
+      status is the verdict: 0 passes, anything else fails.
+    - No base commit. Each image already sits at the state the agent must
+      start from, so `base_commit` is `"HEAD"`, resolved inside the box.
+    - No repository name. The row carries none, and nothing grades by it.
+
+    Checked against every row of the pinned revision, not sampled: every
+    `test_patch` is non-empty and adds `mimo_test_command.sh`, and every
+    instance id is unique.
+    """
+    name, config, revision = _POLYGLOT_SOURCE
+    dataset = load_dataset(name, config, split="train", revision=revision)
+    rows = []
+    for row in dataset:
+        instance = json.loads(row["extra_info"]["instance_json"])
+        rows.append(
+            SweRow(
+                instance_id=instance["instance_id"],
+                repo="",
+                problem_statement=instance["problem_statement"],
+                fail_to_pass=(),
+                pass_to_pass=(),
+                gold_patch="",
+                base_commit="HEAD",
+                test_patch=instance["test_patch"],
+                image=f"{POLYGLOT_IMAGE_REPOSITORY}:{instance['instance_id']}",
+                test_command=instance["test_command"],
+                workdir=instance["cwd"],
+            )
         )
     return tuple(rows)

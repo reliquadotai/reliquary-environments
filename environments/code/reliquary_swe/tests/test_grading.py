@@ -73,8 +73,17 @@ def test_conftest_ancestors_of_no_paths_is_empty():
 
 
 def test_restore_strategy_is_the_test_patch_strategy_when_one_exists():
-    data = SimpleNamespace(test_patch="diff --git a/x b/x\n")
+    data = SimpleNamespace(split="eval", test_patch="diff --git a/x b/x\n")
     assert grading._restore_strategy_for(data) is grading._restore_from_test_patch
+
+
+def test_restore_strategy_is_the_polyglot_strategy_for_a_polyglot_row():
+    # A polyglot row HAS a test_patch, so without its own branch it would
+    # land in `_restore_from_test_patch`, whose infrastructure walk asks
+    # SWE-bench's per-(repo, version) registry about a repo it has never
+    # heard of.
+    data = SimpleNamespace(split="polyglot", test_patch="diff --git a/x b/x\n")
+    assert grading._restore_strategy_for(data) is grading._restore_polyglot
 
 
 async def test_restore_strategy_is_the_pristine_image_strategy_with_no_test_patch():
@@ -86,6 +95,7 @@ async def test_restore_strategy_is_the_pristine_image_strategy_with_no_test_patc
     # (not a stub) with no runtime needed at all: `test_files` returns `[]`
     # and the checkout loop never runs.
     data = SimpleNamespace(
+        split="train",
         instance_id="fake",
         repo="swesmith/oauthlib__oauthlib.1fd52536",
         base_commit="origin/fake~1",

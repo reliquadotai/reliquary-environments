@@ -305,6 +305,66 @@ repository diff and the text of the issue or bug that motivated it — which
 is drawn from the underlying open-source project (astropy, django, sympy,
 pandas, oauthlib, ...) under that project's own license.
 
+## Polyglot corpus
+
+**Training, second corpus**: `XiaomiMiMo/MiMo-V2.6-RL-oss`, config `code`,
+pinned at revision `639865fd3374018d6cb29b9fb82dd531406fcf5f` — 2,698 tasks,
+`--taskset.split polyglot`. By the language of their hidden tests: 1,154
+Python, 701 Go, 348 JavaScript, 138 TypeScript, 24 TSX, then Ruby, PHP,
+Java, C++ and Rust. It differs from both corpora above in what it publishes:
+
+- **No fix, no test lists.** Each row is a feature request or bug report plus
+  a `test_patch` that adds *hidden* tests and `mimo_test_command.sh`. The
+  verdict is that script's exit status — 0 pays, anything else does not.
+  `SweRow.gold_patch`, `fail_to_pass` and `pass_to_pass` stay empty rather
+  than guessed.
+- **One image per task**, `xiaomimimo/mimo-v2.6-rl-oss:<instance_id>`, with
+  the repository at the `/testbed` or `/workspace/repo` the row names. On the
+  first 1,000 tags Docker Hub lists anonymously, the median is 3.1 GB
+  compressed (0.3–10.7 GB), about 2.6 TB for those 1,000 alone. There is no
+  `num_images` knob to lean on here: pulling the whole corpus is a disk
+  decision to take before pointing a run at it, not after.
+- **Two image shapes**, both checked on a real image. Either HEAD is a
+  parentless "task base" commit with the requested behaviour cut out of the
+  tree — and the complete upstream, implementation *and* tests, still parked
+  under `origin/<branch>` (`git diff HEAD origin/master` would have handed
+  the agent the answer) — or HEAD is upstream's own tip with nothing after
+  it. The ref stripping `setup()` and `grade()` already run removes the
+  first shape's parked upstream, verified by a full object-store scan; no
+  re-root is needed, because nothing leaks through HEAD's ancestry in either
+  shape. Two fixes to the shared cleanup came out of this corpus:
+  `git checkout --detach` (its `base_commit` is the symbolic `HEAD`, which
+  the strip otherwise leaves attached to a deleted branch) and deleting
+  broken symbolic refs directly (`for-each-ref` skips them, and `gc` then
+  dies on them).
+- **A wider restoration walk.** An exit status is only as honest as the
+  runner that produced it, so grading puts back, at the root and above every
+  file `test_patch` touches, the runner configuration of every ecosystem in
+  the corpus — `package.json`, jest/vitest/mocha configs, `go.mod`,
+  `Cargo.toml`, `pom.xml`, `Gemfile`, `phpunit.xml`, `Makefile`, and
+  pytest's own — alongside `test_patch`'s own paths (see
+  `grading._POLYGLOT_RUNNER_FILES`). It can revert a legitimate edit to one
+  of those files; the trade is the one `_TEST_CONFIG_FILES` already made.
+  The source-monkeypatch residual named under "Reward-hacking mitigation"
+  applies here too, and is wider: a Go `init()` that exits 0 needs no test
+  framework internals at all.
+
+**The reference fix is in the image, not the dataset.** For a shape-one
+image, the diff from HEAD to its parked upstream is a fix the hidden tests
+accept: `tests/test_polyglot_goldens.py` recovers it in a separate box and
+scores it 1.0 through the whole loop. A shape-two image has no such
+reference; only its negative control (an empty patch scores 0) is checked.
+Whether every task is solvable at all is therefore unmeasured, and so is the
+share of each shape across the corpus — two images were inspected, one of
+each.
+
+**Repository overlap with the evaluation set**: none found, but only by
+heuristic — rows carry no repository name. No `test_patch` path matches the
+layout of any of SWE-bench Verified's 12 repositories; the two partial
+matches (`testing/test_runner.py`, `tests/test_requests.py`) are xdoctest
+and Starlette. Problem statements that *mention* those projects (Django
+plugins, geopandas, pygmt) are downstream code, not the projects.
+
 ## Test and load
 
 ```bash
