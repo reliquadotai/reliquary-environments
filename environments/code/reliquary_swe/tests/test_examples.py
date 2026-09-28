@@ -23,3 +23,24 @@ def test_rl_toml_ships_with_no_train_source():
     # train on an evaluation set for real, with zero coverage catching it.
     run = tomllib.loads(_RL_TOML.read_text())
     assert "source" not in run["orchestrator"]["train"]
+
+
+_TRAIN_SOURCES = _RL_TOML.parent / "train-sources.toml"
+
+
+def test_train_sources_never_name_the_evaluation_split():
+    # The one file meant to be passed for a real run. Every source must
+    # declare its split explicitly (the taskset has no default, on purpose)
+    # and none may be SWE-bench Verified.
+    sources = tomllib.loads(_TRAIN_SOURCES.read_text())["source"]
+    assert sources
+    for source in sources:
+        assert source["env"]["taskset"]["split"] in ("train", "polyglot"), source["name"]
+
+
+def test_train_sources_bound_the_polyglot_disk_budget():
+    # One image per polyglot task: an unbounded source would try to pull
+    # the whole corpus, several terabytes, on the first pass through it.
+    for source in tomllib.loads(_TRAIN_SOURCES.read_text())["source"]:
+        if source["env"]["taskset"]["split"] == "polyglot":
+            assert isinstance(source["env"]["taskset"].get("num_tasks"), int)

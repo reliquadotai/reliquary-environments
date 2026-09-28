@@ -269,6 +269,10 @@ class SweTasksetConfig(vf.TasksetConfig):
     # `corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT` (its measured p95) explicitly
     # if a repository this package has not measured ever needs it.
     max_test_count: int | None = None
+    # Only read when split="polyglot": the first N tasks of the pinned
+    # corpus, `None` for all 2,698. One image per task, so this is the disk
+    # budget -- see `corpus.load_polyglot_rows`.
+    num_tasks: int | None = None
 
 
 # Every phase of a rollout defaults to no limit at all (`TimeoutConfig`'s and
@@ -356,7 +360,7 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
             for repo in dict.fromkeys(row.repo for row in rows):
                 swesmith_adapter.ensure_python_profile(repo)
         elif self.config.split == "polyglot":
-            rows = corpus.load_polyglot_rows()
+            rows = corpus.load_polyglot_rows(self.config.num_tasks)
         else:
             rows = corpus.load_rows(self.config.split)
         for index, row in enumerate(rows):

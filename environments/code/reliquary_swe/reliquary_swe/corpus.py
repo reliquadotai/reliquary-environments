@@ -413,8 +413,17 @@ POLYGLOT_IMAGE_REPOSITORY = "xiaomimimo/mimo-v2.6-rl-oss"
 
 
 @functools.lru_cache(maxsize=None)
-def load_polyglot_rows() -> tuple[SweRow, ...]:
-    """Every row of the pinned polyglot corpus, in the dataset's own order.
+def load_polyglot_rows(num_tasks: int | None = None) -> tuple[SweRow, ...]:
+    """The first `num_tasks` rows of the pinned polyglot corpus (all of them
+    for `None`), in the dataset's own order.
+
+    Why a count at all: every task is its own image, a median 3.1 GB
+    compressed, so the task count *is* the disk budget -- the role
+    `num_images` plays for SWE-smith. Why a plain prefix: the native order is
+    already shuffled across languages (measured: the first 200 rows split
+    91 Python / 47 Go / 32 JS / 10 TS, the full corpus 43/27/14/5 %), and a
+    prefix of a pinned order is a task set any second party recomputes from
+    the one number, like `num_images`. Declared, never sized from local disk.
 
     What upstream publishes differs from both other corpora, and each
     difference is a field left empty here rather than filled with a guess:
@@ -434,8 +443,12 @@ def load_polyglot_rows() -> tuple[SweRow, ...]:
     `test_patch` is non-empty and adds `mimo_test_command.sh`, and every
     instance id is unique.
     """
+    if num_tasks is not None and num_tasks < 1:
+        raise ValueError(f"num_tasks must be >= 1 or None, got {num_tasks}")
     name, config, revision = _POLYGLOT_SOURCE
     dataset = load_dataset(name, config, split="train", revision=revision)
+    if num_tasks is not None:
+        dataset = dataset.select(range(min(num_tasks, len(dataset))))
     rows = []
     for row in dataset:
         instance = json.loads(row["extra_info"]["instance_json"])

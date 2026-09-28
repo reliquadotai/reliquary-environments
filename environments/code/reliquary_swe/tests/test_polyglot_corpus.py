@@ -70,3 +70,22 @@ def test_restoration_names_every_ecosystem_runner_config_above_the_hidden_tests(
         assert expected in paths, expected
     # Duplicates would restore the same path twice; harmless, but noise.
     assert len(paths) == len(set(paths))
+
+
+def test_num_tasks_is_a_prefix_of_the_full_corpus():
+    full = corpus.load_polyglot_rows()
+    assert corpus.load_polyglot_rows(200) == full[:200]
+    assert corpus.load_polyglot_rows(10_000) == full
+
+
+def test_num_tasks_rejects_zero():
+    import pytest
+
+    with pytest.raises(ValueError):
+        corpus.load_polyglot_rows(0)
+
+
+def test_num_tasks_reaches_the_taskset():
+    config = vf.taskset_config_type("reliquary-swe")
+    taskset = vf.load_taskset(config(id="reliquary-swe", split="polyglot", num_tasks=7))
+    assert len(list(taskset)) == 7

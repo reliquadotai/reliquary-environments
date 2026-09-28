@@ -56,9 +56,8 @@ sees why it exists and why it is not `rl.toml` itself.
 This is a mechanical-loop check only — config resolution, container
 provisioning, the `bash` harness's tool calls, reward computation, a
 checkpoint write, run with `--dry-run` and a handful of `--max-steps`. This
-README stops there deliberately. It gives no full-run command, unlike this
-repository's other Prime-RL examples, and none should be added — to either
-file — until a real training corpus exists.
+A real run goes through a third file, `train-sources.toml`, never through
+`rl.toml` itself — see "Train for real" below.
 
 ## Install the exact stack
 
@@ -137,8 +136,36 @@ The five-step smoke must produce well-formed `bash`/`edit` tool calls, a
 captured patch per rollout, non-zero mixed-outcome groups, a checkpoint, and
 clean train/eval traces. Keep Prime-RL's resolved configs, metrics, traces,
 and checkpoint manifests as the evidence bundle; do not invent a parallel
-logging format. There is no further "then train" step here — see "This
-example does not train on SWE-bench Verified for real", above.
+logging format.
+
+## Train for real
+
+`train-sources.toml` is the training corpus: SWE-smith (`split = "train"`,
+top 20 images) and the MiMo-V2.6 polyglot tasks (`split = "polyglot"`, first
+100 tasks), mixed evenly. It is supplied exactly like the smoke file, so
+`rl.toml` still carries no source of its own, and
+`tests/test_examples.py` checks it never names `eval`.
+
+Pre-pull every image first — one per polyglot task, gigabytes each — and
+check the Docker disk before starting, not after:
+
+```bash
+for args in "--split train --num-images 20" "--split polyglot --num-tasks 100"; do
+  prime-rl/.venv/bin/python -m reliquary_swe.images $args
+done | xargs -P 4 -n 1 docker pull -q
+df -h "$(docker info --format '{{.DockerRootDir}}')"
+
+TRAIN_SOURCES_PATH="$RELIQUARY_ENVS_PATH/environments/code/reliquary_swe/examples/prime_rl/train-sources.toml"
+prime-rl/.venv/bin/rl @ "$PRIME_CONFIG_PATH" \
+  --orchestrator.train @ "$TRAIN_SOURCES_PATH" \
+  --model.name "$MODEL_SNAPSHOT_PATH" --max-steps 5 \
+  --output-dir outputs --run.name reliquary-swe-train-smoke
+```
+
+Start with a handful of steps, as above: the turn budget, the per-turn token
+budget and the corpus mix are all unmeasured (see `rl.toml`'s own comments),
+and the first run is what measures them. Raise `--max-steps` once a smoke
+shows mixed-outcome groups from both sources.
 
 ## Scientific boundary
 
@@ -156,9 +183,9 @@ reproduction of INTELLECT-3's report-era IcePop loss.
 Every number this config carries that is not pinned by measurement is named
 as such, in this file and in `rl.toml` itself: the per-turn token budget and
 the turn budget. The training corpus is not a number to caveat — it is
-absent from `rl.toml` outright, and `smoke-only-eval-split-source.toml`
-supplies `eval` for the mechanical smoke commands only, never for a real
-run, pending SWE-smith. None of this should be read as derived; see
+absent from `rl.toml` outright, `smoke-only-eval-split-source.toml`
+supplies `eval` for the mechanical smoke commands only, and
+`train-sources.toml` supplies the real corpus. None of this should be read as derived; see
 `environments/code/reliquary_swe/README.md` and the design spec's section
 10 for what is actually settled and what is still open.
 
