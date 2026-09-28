@@ -1,0 +1,60 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/terminal"
+version = "0.1.0a1"
+taskset = "reliquary-terminal"
+entrypoint = "reliquary_terminal:TerminalTaskset"
+license = "MIT"
+verification_tier = "container-reverified"
+owners = ["Reliquary contributors"]
+task_families = ["terminal_bench_2_1", "mimo_terminal"]
+
+# No `compatibility_entrypoint`: Verifiers-only, like reliquary-swe -- a
+# container cannot be replayed deterministically.
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+# True because `eval` needs it: it keeps Terminal-Bench 2.1's own policy,
+# which lets all 89 tasks reach the internet. `train` runs with no network
+# at all, agent box and grading box alike, as its rows declare
+# (`allow_internet = false` on all 64) -- checked by tests/test_taskset.py.
+network = true
+secrets = []
+resource_class = "container"
+# Provisional and unmeasured, borrowed from reliquary-swe's own provisional
+# 40; to be re-derived from a pilot's observed trajectory lengths.
+max_turns = 40
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+# Each task's own `tests/test.sh` writes the verdict; `HarborTask.solved`
+# reads it.
+components = ["solved"]
+
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """
+Every task is a diagnosis in an unfamiliar tree -- a vendored project, a
+broken repository, a service to configure -- before the first command that
+changes anything, and the shell is the only other place reasoning can go.
+An argument, not a measurement, as for reliquary-swe: to be rewritten with a
+measured band after a first pilot.
+"""
+
+[data]
+# Evaluation: Terminal-Bench 2.1, pinned by content digest (revision 6 on
+# the Harbor registry at the time of pinning). Never trained on.
+eval = "harbor:terminal-bench/terminal-bench-2-1@sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
+rows = 89
+# Training: the Terminal-Bench-format rows of MiMo-V2.6-RL-oss's `general`
+# config, with images under `xiaomimimo/mimo-v2.6-rl-oss:general-agent-env-<n>`
+# (about 0.3 GB compressed each, ~20 GB for all 64).
+train = "hf:XiaomiMiMo/MiMo-V2.6-RL-oss/general@639865fd3374018d6cb29b9fb82dd531406fcf5f"
+train_rows = 64
+redistributable = true
+license = "Terminal-Bench: Apache-2.0; MiMo-V2.6-RL-oss: Apache-2.0 per its dataset card; vendored project trees inherit their own licenses"

@@ -1,0 +1,96 @@
+# Two-GPU reference run: one training GPU and one inference GPU. Same shape
+# as reliquary-swe's example; every unmeasured number is named as such.
+max_steps = 100
+# Room for 40 turns of tool calls and capped observations. Unmeasured.
+seq_len = 32768
+dashboard = false
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[ckpt]
+interval = 5
+keep_last = 3
+keep_interval = 15
+
+[weight_broadcast]
+type = "filesystem"
+
+[monitors.file]
+
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-5
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 32
+group_size = 16
+max_off_policy_steps = 8
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.renderer]
+# Named, not auto-resolved (see the repository README), and thinking on, as
+# environment.toml's `[policy]` declares.
+name = "qwen3"
+enable_thinking = true
+
+[orchestrator.train]
+filter_zero_advantages = true
+# No [[orchestrator.train.source]] here, on purpose, as in reliquary-swe:
+# the real corpus comes from `train-sources.toml`
+# (`--orchestrator.train @ train-sources.toml`), so a bare copy of this file
+# fails fast instead of training on whatever it last pointed at.
+
+[orchestrator.train.sampling]
+temperature = 1.0
+# Per-turn budget, unmeasured, borrowed from reliquary-swe.
+max_completion_tokens = 4096
+
+[orchestrator.eval]
+interval = 15
+num_examples = 12
+group_size = 4
+skip_first_step = false
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_p = 1.0
+max_completion_tokens = 4096
+
+[[orchestrator.eval.source]]
+name = "terminal-bench-2-1"
+env.taskset.id = "reliquary-terminal"
+env.taskset.split = "eval"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "docker"
+env.agent.max_turns = 40
+
+[inference]
+
+[inference.vllm]
+dtype = "bfloat16"
+max_model_len = 32768
+tool_call_parser = "hermes"
+seed = 0
+gpu_memory_utilization = 0.9
+enable_lora = true
+max_lora_rank = 32

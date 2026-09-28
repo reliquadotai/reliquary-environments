@@ -1,7 +1,7 @@
 # reliquary-terminal: a Terminal-Bench environment
 
 Date: 2026-09-23
-Status: design, **awaiting a decision that is not mine to make** (section 4)
+Status: implemented as `environments/code/reliquary_terminal`. Section 4 decided 2026-09-28: option C -- `eval` = Terminal-Bench 2.1 graded as shipped, `train` = MiMo-V2.6-RL-oss's 64 terminal tasks graded in a separate box.
 
 ## 1. What the spike established
 

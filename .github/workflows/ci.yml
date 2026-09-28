@@ -279,3 +279,22 @@ jobs:
       - run: uv run --no-sync pytest -m "not slow"
       - run: uv run --no-sync validate reliquary-swe -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
+
+  reliquary-terminal:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/code/reliquary_terminal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
+      - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
+      # The @docker goldens pull two small images: alexgshaw/fix-git and
+      # xiaomimimo/mimo-v2.6-rl-oss:general-agent-env-1 (~0.3 GB compressed).
+      - run: uv run --no-sync pytest
+      - run: uv build --clear

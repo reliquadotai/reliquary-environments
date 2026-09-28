@@ -1,0 +1,22 @@
+# The training corpus for rl.toml: `--orchestrator.train @ train-sources.toml`.
+# Only the `train` split -- MiMo-V2.6's 64 terminal tasks, graded in a fresh
+# box that receives only the agent's /app. Terminal-Bench 2.1 (`eval`) is
+# held out; tests/test_examples.py checks nothing here names it.
+#
+# 64 tasks is a small corpus: expect it to be a component of a mix (see
+# reliquary-swe's train-sources.toml, and `ratio`), not a run on its own.
+
+[[source]]
+name = "reliquary-terminal-train"
+ratio = 1.0
+env.taskset.id = "reliquary-terminal"
+env.taskset.split = "train"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 40
+
+[source.curriculum.gates.zero_signal]
+type = "advantage_range"
+reject_min = 0.0
+reject_max = 0.0
