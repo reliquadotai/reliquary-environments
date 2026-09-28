@@ -364,39 +364,45 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
         else:
             rows = corpus.load_rows(self.config.split)
         for index, row in enumerate(rows):
-            yield SweTask(
-                SweData(
-                    idx=index,
-                    name=row.instance_id,
-                    prompt=PROMPT.format(
-                        workdir=row.workdir, problem_statement=row.problem_statement
-                    ),
-                    # Given directly for SWE-smith (row.image); derived for
-                    # SWE-bench Verified, whose rows carry none (spec section
-                    # 8: "the image is given, not derived" -- Verified's own
-                    # derivation is the fallback, not the rule).
-                    image=row.image if row.image is not None else swe_adapter.image_for(row),
-                    workdir=row.workdir,
-                    network_allow=[],
-                    timeout=vf.TaskTimeout(
-                        setup=_SETUP_TIMEOUT_SECONDS,
-                        agent=_AGENT_TIMEOUT_SECONDS,
-                        finalize=_FINALIZE_TIMEOUT_SECONDS,
-                        scoring=_SCORING_TIMEOUT_SECONDS,
-                    ),
-                    instance_id=row.instance_id,
-                    repo=row.repo,
-                    base_commit=row.base_commit,
-                    version=row.version,
-                    fail_to_pass=row.fail_to_pass,
-                    pass_to_pass=row.pass_to_pass,
-                    gold_patch=row.gold_patch,
-                    test_patch=row.test_patch,
-                    split=self.config.split,
-                    test_command=row.test_command,
-                ),
-                self.config.task,
-            )
+            yield task_for(row, index, self.config.split, self.config.task)
 
 
-__all__ = ["SweData", "SweTask", "SweTasksetConfig", "SweTaskset"]
+def task_for(row: corpus.SweRow, index: int, split: str, task_config=None) -> SweTask:
+    """One corpus row as a task -- the construction `SweTaskset.load` uses
+    for every row, exposed so a caller needing ONE task (a golden test) can
+    build it without materializing the whole split: SWE-smith's default 20
+    images cost more than 5 GB of memory as tasks, more than a CI runner has.
+    """
+    return SweTask(
+        SweData(
+            idx=index,
+            name=row.instance_id,
+            prompt=PROMPT.format(workdir=row.workdir, problem_statement=row.problem_statement),
+            # Given directly for SWE-smith and polyglot (row.image); derived
+            # for SWE-bench Verified, whose rows carry none (spec section 8:
+            # "the image is given, not derived" -- Verified's own derivation
+            # is the fallback, not the rule).
+            image=row.image if row.image is not None else swe_adapter.image_for(row),
+            workdir=row.workdir,
+            network_allow=[],
+            timeout=vf.TaskTimeout(
+                setup=_SETUP_TIMEOUT_SECONDS,
+                agent=_AGENT_TIMEOUT_SECONDS,
+                finalize=_FINALIZE_TIMEOUT_SECONDS,
+                scoring=_SCORING_TIMEOUT_SECONDS,
+            ),
+            instance_id=row.instance_id,
+            repo=row.repo,
+            base_commit=row.base_commit,
+            version=row.version,
+            fail_to_pass=row.fail_to_pass,
+            pass_to_pass=row.pass_to_pass,
+            gold_patch=row.gold_patch,
+            test_patch=row.test_patch,
+            split=split,
+            test_command=row.test_command,
+        ),
+        task_config,
+    )
+
+__all__ = ["SweData", "SweTask", "SweTasksetConfig", "SweTaskset", "task_for"]

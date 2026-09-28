@@ -283,6 +283,45 @@ def _swesmith_row_defect(
     return None
 
 
+def _swesmith_row(
+    row: dict, fail_to_pass: tuple[str, ...], pass_to_pass: tuple[str, ...]
+) -> SweRow:
+    """One dataset row as a `SweRow`. Raises `ValueError` when its patch cannot
+    be reversed (see `_reverse_unified_diff`)."""
+    return SweRow(
+        instance_id=row["instance_id"],
+        repo=row["repo"],
+        problem_statement=row["problem_statement"],
+        fail_to_pass=fail_to_pass,
+        pass_to_pass=pass_to_pass,
+        gold_patch=_reverse_unified_diff(row["patch"]),
+        base_commit=f"origin/{row['instance_id']}~1",
+        image=row["image_name"],
+    )
+
+
+def swesmith_row(instance_id: str) -> SweRow:
+    """A single SWE-smith row, built exactly as `load_swesmith_rows` builds
+    it, without building any other. For callers that need one instance --
+    the goldens -- since the default 20-image task set costs more than 5 GB
+    of memory to materialize (measured), more than a CI runner has.
+
+    Raises `KeyError` for an id not in the pinned revision, and for one
+    `load_swesmith_rows` would exclude (see `_swesmith_row_defect`).
+    """
+    name, hf_split, revision = _SOURCES["train"]
+    dataset = load_dataset(name, split=hf_split, revision=revision or None)
+    ids = dataset["instance_id"]
+    if instance_id not in ids:
+        raise KeyError(instance_id)
+    row = dataset[ids.index(instance_id)]
+    fail_to_pass = _tests(row["FAIL_TO_PASS"])
+    pass_to_pass = _tests(row["PASS_TO_PASS"])
+    if _swesmith_row_defect(fail_to_pass, pass_to_pass, None) is not None:
+        raise KeyError(f"{instance_id} is excluded from every task set")
+    return _swesmith_row(row, fail_to_pass, pass_to_pass)
+
+
 @functools.lru_cache(maxsize=None)
 def load_swesmith_rows(
     num_images: int = DEFAULT_SWESMITH_IMAGES,
@@ -361,22 +400,10 @@ def load_swesmith_rows(
             skipped_too_costly += 1
             continue
         try:
-            gold_patch = _reverse_unified_diff(row["patch"])
+            rows.append(_swesmith_row(row, fail_to_pass, pass_to_pass))
         except ValueError:
             skipped_unreversible += 1
             continue
-        rows.append(
-            SweRow(
-                instance_id=row["instance_id"],
-                repo=row["repo"],
-                problem_statement=row["problem_statement"],
-                fail_to_pass=fail_to_pass,
-                pass_to_pass=pass_to_pass,
-                gold_patch=gold_patch,
-                base_commit=f"origin/{row['instance_id']}~1",
-                image=row["image_name"],
-            )
-        )
     total = skipped_empty_f2p + skipped_unreversible + skipped_too_costly + len(rows)
     if skipped_empty_f2p or skipped_unreversible or skipped_too_costly:
         logging.getLogger(__name__).warning(

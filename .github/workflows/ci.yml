@@ -221,6 +221,16 @@ jobs:
       run:
         working-directory: environments/code/reliquary_swe
     steps:
+      # The docker tests now pull, on top of the SWE-bench images budgeted
+      # below, the two polyglot goldens' images (~3.4 GB on disk) and the
+      # SWE-smith golden's (~3.9 GB) -- past the runner's 14 GB. The first
+      # run that reached them lost its runner. Preinstalled toolchains this
+      # job never uses are removed first to make room.
+      - name: Free disk space
+        working-directory: /
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v7
         with:

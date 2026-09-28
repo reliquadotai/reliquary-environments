@@ -15,8 +15,8 @@ import verifiers.v1 as vf
 from verifiers.v1.runtimes import provision_runtime
 
 from conftest import _trace, run_gold_episode
-from reliquary_swe import grading
-from reliquary_swe.taskset import SweTask
+from reliquary_swe import corpus, grading
+from reliquary_swe.taskset import SweTask, task_for
 
 docker = pytest.mark.docker
 
@@ -76,12 +76,18 @@ SWESMITH_GOLDEN = "oauthlib__oauthlib.1fd52536.combine_file__09vlzwgc"
 
 
 def _train_task(instance_id: str = SWESMITH_GOLDEN) -> SweTask:
-    config_cls = vf.taskset_config_type("reliquary-swe")
-    taskset = vf.load_taskset(config_cls(id="reliquary-swe", split="train", num_images=20))
-    for task in taskset:
-        if task.data.instance_id == instance_id:
-            return task
-    raise AssertionError(f"{instance_id} is not in the top-20-image train taskset")
+    # Built alone, through the same row and task construction the taskset
+    # uses: materializing the whole 20-image split to find one instance cost
+    # more than 5 GB and took the 7 GB CI runner down with it. That this
+    # instance IS in the default split is checked separately, cheaply, by
+    # `test_the_golden_is_in_the_default_train_split` below.
+    return task_for(corpus.swesmith_row(instance_id), 0, "train")
+
+
+def test_the_golden_is_in_the_default_train_split():
+    rank = corpus.swesmith_image_rank()
+    image = corpus.swesmith_row(SWESMITH_GOLDEN).image
+    assert image in rank[: corpus.DEFAULT_SWESMITH_IMAGES]
 
 
 @asynccontextmanager
