@@ -1,0 +1,116 @@
+# Two-GPU reference run: one training GPU and one inference GPU.
+max_steps = 100
+# Room for 40 turns' worth of tool calls, bash output (capped at
+# `max_observation_bytes = 16384` per `environment.toml`) and the model's own
+# completions. Unmeasured, like `max_turns` below -- sized generously rather
+# than derived, and expected to shrink or grow once a pilot's real trajectory
+# lengths are observed.
+seq_len = 32768
+dashboard = false
+
+[deployment]
+type = "single_node"
+gpus_per_node = 2
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+# For a reproducible run, override this with the revision-pinned local snapshot
+# from README.md. Prime-RL v0.9.0 has no model-revision config field.
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[ckpt]
+interval = 5
+keep_last = 3
+keep_interval = 15
+
+[weight_broadcast]
+type = "filesystem"
+
+[monitors.file]
+
+[trainer.model]
+impl = "auto"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.model.lora]
+rank = 32
+alpha = 64
+
+[trainer.optim]
+type = "adamw"
+lr = 1e-5
+weight_decay = 0.0
+
+[orchestrator]
+batch_size = 32
+group_size = 16
+max_off_policy_steps = 8
+
+[orchestrator.algo]
+type = "grpo"
+
+[orchestrator.renderer]
+# Named, not auto-resolved: auto-resolution falls back to a renderer with no
+# tool support for any model outside its map, which would silently lose the
+# `bash` harness's tool calling. `enable_thinking` is what applies the
+# `reasoning = "thinking"` this environment declares; the two drift the
+# moment one is edited alone, and CI's check_example_matches_policy.py
+# checks they agree.
+name = "qwen3"
+enable_thinking = true
+
+[orchestrator.train]
+filter_zero_advantages = true
+# No [[orchestrator.train.source]] here, deliberately: this taskset's
+# `eval` split is SWE-bench Verified, which must never be trained on, and
+# `TrainConfig` has no non-empty-sources check, so a source silently
+# pointed at it here would run for real on `cp rl.toml x.toml && rl @
+# x.toml --max-steps 5000`. With no source at all, prime-rl's own
+# TrainSource raises "needs at least one train env" before a step runs. See
+# the README for how the smoke test supplies one instead, and why. A real
+# run's own source belongs here, pointed at `env.taskset.split = "train"`
+# (SWE-smith; `num_images`/`max_test_count` choose its size and cost bound
+# -- see the package README's Corpus section) -- adding it is this
+# environment's user's decision to make, not this example's.
+
+[orchestrator.train.sampling]
+temperature = 1.0
+# Per-turn budget, unmeasured -- see `seq_len`'s own comment above and
+# `environment.toml`'s `max_turns` comment. `reliquary-telecom-solo`'s
+# measured per-turn budget (4,096) is borrowed as a starting point, not
+# derived from anything observed in this environment.
+max_completion_tokens = 4096
+
+[orchestrator.eval]
+interval = 15
+num_examples = 12
+group_size = 4
+skip_first_step = false
+
+[orchestrator.eval.sampling]
+temperature = 1.0
+top_p = 1.0
+max_completion_tokens = 4096
+
+[[orchestrator.eval.source]]
+name = "reliquary-swe-eval"
+env.taskset.id = "reliquary-swe"
+env.taskset.split = "eval"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 40
+
+[inference]
+
+[inference.vllm]
+dtype = "bfloat16"
+max_model_len = 32768
+tool_call_parser = "hermes"
+seed = 0
+gpu_memory_utilization = 0.9
+enable_lora = true
+max_lora_rank = 32

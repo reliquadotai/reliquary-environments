@@ -1,0 +1,127 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/swe"
+version = "0.1.0a1"
+taskset = "reliquary-swe"
+entrypoint = "reliquary_swe:SweTaskset"
+license = "MIT"
+verification_tier = "container-reverified"
+owners = ["Reliquary contributors"]
+task_families = ["swe_bench_verified", "swe_smith", "mimo_polyglot"]
+
+# No `compatibility_entrypoint`. This environment is Verifiers-only: a
+# container cannot be replayed deterministically, so a replay surface would
+# be a promise the implementation cannot keep. This is a conscious deviation
+# from the repository README, which states that every package exposes both
+# surfaces -- recorded here and in the README table below so it reads as a
+# decision rather than an omission (see the design spec's section 2,
+# docs/superpowers/specs/2026-09-22-reliquary-swe-env-design.md).
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "container"
+# Provisional, and carries no measurement. Unlike this repository's other
+# budgets, this number was not derived from an observed distribution -- the
+# design spec (section 10) lists the turn budget as an open question, to be
+# re-derived after a pilot the same way reliquary-telecom-solo derived 40
+# from a measured reference-solution length. This 40 borrows that number as
+# a starting point; it is not evidence about this environment.
+max_turns = 40
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+# Matches what `env.py` actually records: `SweEnv.finalize` calls
+# `solution.record_reward("patch_passes_tests", report.reward)`, and nothing
+# else. `grading.Report` carries additional fields (`applied`, `restored`,
+# fail/pass-to-pass counts) surfaced onto `solution.info["swe_report"]` for
+# auditing, but they are not reward components.
+components = ["patch_passes_tests"]
+
+[policy]
+# How the policy should be prompted. The environment knows whether its task
+# rewards deliberation; the harness running it does not.
+reasoning = "thinking"
+reasoning_rationale = """
+A repair starts with diagnosis: the agent must read code it has never seen
+and locate a fault from a bug report before its first edit, and with a shell
+as its only tool there is nowhere else for that reasoning to happen. This is
+an argument, not a measurement -- the other environments in this repository
+earned their reasoning mode by measurement, and this one must be rewritten
+with a measured band once a first pilot exists (see the design spec's
+section 9).
+"""
+
+[data]
+# SWE-bench Verified is an evaluation set and must never be trained on (spec
+# section 8): no `qualification` pin exists here, and `eval` below is never
+# passed `--taskset.split train`. Training comes from SWE-smith (`train`
+# below), wired in separately from the evaluation pin so the two can never
+# collide on a revision or a row.
+eval = "hf:princeton-nlp/SWE-bench_Verified@c104f840cc67f8b6eec6f759ebc8b2693d585d4a"
+# SWE-smith's own schema forced three of SweRow's fields (`base_commit`,
+# `version`, `test_patch`) to become optional rather than gain a sibling
+# dataclass -- see corpus.py's module docstring and the design spec's
+# section 8 correction. `rows`/`virtual_length` below describe this split
+# with the *default* `num_images`/`max_test_count`
+# (`SweTasksetConfig.num_images`, `.max_test_count`); either overridden
+# changes both the task set and its size, and is a different, equally valid
+# configuration of the same environment -- see corpus.load_swesmith_rows.
+train = "hf:SWE-bench/SWE-smith@ea6d7173829c7ec8fa16c22055699ff2e9188091"
+redistributable = true
+# The SWE-bench project itself (the harness and dataset-construction code)
+# is MIT-licensed; the dataset's own Hugging Face card declares no license
+# tag of its own. Each row's actual content -- a repository diff and the
+# text of the issue that motivated it -- is drawn from the underlying
+# open-source project (astropy, django, sympy, sphinx, ...) under that
+# project's own license, not SWE-bench's. Recorded as measured rather than
+# picked: this package claims no more than princeton-nlp's own widely-used
+# public redistribution already does. SWE-smith's own card declares `license:
+# mit` for the harness; the same per-row inheritance applies to its 222
+# repositories (oauthlib, pandas, astroid, ...), none of which overlap
+# SWE-bench Verified's 12 (checked against the full 222, not sampled --
+# zero overlap at every image count from 5 to 222; see the implementation
+# report).
+license = "MIT (SWE-bench/SWE-smith projects); per-row content inherits its source repository's own license"
+# `eval`'s size: the published SWE-bench Verified instance count.
+rows = 500
+# `train`'s two sizes, both measured against the pinned revision above, not
+# guessed: the full corpus (`SweRow` rows SWE-smith's `train` split
+# publishes) versus what this package's *default* configuration
+# (`num_images=20`, `max_test_count=None` -- uncapped; real container
+# measurements found this corpus's cost a non-problem, see
+# corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT's own docstring) actually exposes:
+# 23,844 raw rows in the top 20 images, minus 41 whose bug-injection patch
+# cannot be reversed (file add/delete/rename/copy; see
+# corpus._reverse_unified_diff) and 0 with an empty FAIL_TO_PASS (a further,
+# always-applied exclusion; none observed in the pinned revision, checked
+# against every row). A different `num_images`/`max_test_count` is a
+# different, equally valid task set of a different size -- these numbers
+# describe the shipped default, not a hard limit. Passing
+# `max_test_count=5060` (the measured p95, named as
+# `corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT`) instead would additionally
+# exclude 632 rows, leaving 23,172.
+train_rows = 59136
+virtual_length = 23803
+# A second training corpus, `--taskset.split polyglot`: MiMo-V2.6-RL-oss's
+# `code` config, 2,698 tasks in Python, Go, JS/TS, Ruby, PHP, Java, C++ and
+# Rust, one image per task under `xiaomimimo/mimo-v2.6-rl-oss:<instance_id>`.
+# No reference fix and no test lists are published; the verdict is the exit
+# status of the hidden `mimo_test_command.sh` (see corpus.load_polyglot_rows
+# and the README's "Polyglot corpus" section). Apache-2.0 per the dataset
+# card; per-row content inherits its source repository's own license, as for
+# the two corpora above.
+polyglot = "hf:XiaomiMiMo/MiMo-V2.6-RL-oss/code@639865fd3374018d6cb29b9fb82dd531406fcf5f"
+polyglot_rows = 2698
+
+# There is no `[execution]` field for a scoring deadline: `vf.TaskData.timeout`
+# is set per task, not per environment, so it is not declared here. Every
+# task this taskset yields carries `timeout.scoring = 1800.0` seconds (30
+# minutes), set in `reliquary_swe/taskset.py` next to the measured tail it is
+# sized past -- see that module's comment, and the README's own section.

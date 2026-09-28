@@ -7,6 +7,10 @@ Each package has no dependency on Reliquary core and exposes:
 - a native Verifiers v1 `Taskset` for evaluation and `prime-rl`;
 - a synchronous JSON compatibility surface for Reliquary replay.
 
+One exception is noted in the table below: `reliquary-swe` ships no
+compatibility surface, because a container cannot be replayed
+deterministically.
+
 | Package | What it is |
 | --- | --- |
 | [`reliquary-stateful-tools`](environments/tool_use/reliquary_stateful_tools) | A deterministic multi-turn CRM world with exact state-based rewards. |
@@ -16,6 +20,8 @@ Each package has no dependency on Reliquary core and exposes:
 | [`reliquary-dapo-math`](environments/reasoning/reliquary_dapo_math) | 17,171 competition problems whose answers are integers, so a comparison cannot be lost to surface form. |
 | [`reliquary-code`](environments/code/reliquary_code) | OpenCodeInstruct problems graded by executing the model's Python against pinned cases in a fresh, limited subprocess. |
 | [`reliquary-envscaler`](environments/tool_use/reliquary_envscaler) | Tool-use tasks whose difficulty is generated to order rather than sampled from a fixed corpus. |
+| [`reliquary-swe`](environments/code/reliquary_swe) | SWE-bench Verified repairs for evaluation; SWE-smith and MiMo-V2.6's polyglot code tasks (Python, Go, JS/TS and five more languages) for training. Graded by re-applying the captured patch and running the target repository's own tests in a second container the agent never entered. **Verifiers-only**: no synchronous replay surface — a container cannot be replayed deterministically. |
+| [`reliquary-terminal`](environments/code/reliquary_terminal) | Terminal-Bench 2.1 for evaluation, graded as it ships; MiMo-V2.6's 64 terminal tasks for training, graded in a fresh box that receives only the agent's `/app`. **Verifiers-only**, like `reliquary-swe`. |
 
 ```bash
 cd environments/<area>/<package>

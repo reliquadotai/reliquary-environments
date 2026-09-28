@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reliquary-terminal"
+version = "0.1.0a1"
+description = "Terminal-Bench 2.1 for evaluation and MiMo-V2.6's terminal tasks for training, graded by each task's own tests"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "verifiers==0.3.1",
+  # The version verifiers' own `harbor` extra pins: `HarborTaskset` parses
+  # task.toml through it, and its CLI downloads Terminal-Bench.
+  "harbor==0.21.0",
+  "datasets>=2.19",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.21.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["reliquary_terminal"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-q", "--strict-markers"]
+asyncio_mode = "auto"
+markers = [
+  "docker: tests that provision a Docker container",
+]
+
+[tool.uv]
+required-version = ">=0.11.1"
+
+[tool.uv.sources]
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf" }

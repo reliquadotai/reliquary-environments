@@ -1,0 +1,48 @@
+# The real training corpus for `rl.toml`, supplied the same way the smoke
+# file is -- `--orchestrator.train @ train-sources.toml` -- so `rl.toml`
+# itself still carries no train source (see README.md and
+# tests/test_examples.py, which also checks that nothing here ever names
+# the `eval` split: SWE-bench Verified is held out).
+#
+# Every number below is a declared starting point, not a measurement:
+#
+# - `num_images = 20` is SWE-smith's shipped default, ~23,800 tasks and
+#   ~78 GB of images on disk.
+# - `num_tasks = 100` is 100 polyglot images at a median 3.1 GB compressed
+#   each -- roughly 0.3 TB compressed, more once unpacked. Raise it only
+#   after checking the Docker disk; `python -m reliquary_swe.images` prints
+#   the exact list to pre-pull.
+# - `ratio = 1.0` each: an even mix until a pilot says which corpus carries
+#   more signal per rollout.
+
+[[source]]
+name = "reliquary-swe-smith"
+ratio = 1.0
+env.taskset.id = "reliquary-swe"
+env.taskset.split = "train"
+env.taskset.num_images = 20
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 40
+
+[source.curriculum.gates.zero_signal]
+type = "advantage_range"
+reject_min = 0.0
+reject_max = 0.0
+
+[[source]]
+name = "reliquary-swe-polyglot"
+ratio = 1.0
+env.taskset.id = "reliquary-swe"
+env.taskset.split = "polyglot"
+env.taskset.num_tasks = 100
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 40
+
+[source.curriculum.gates.zero_signal]
+type = "advantage_range"
+reject_min = 0.0
+reject_max = 0.0

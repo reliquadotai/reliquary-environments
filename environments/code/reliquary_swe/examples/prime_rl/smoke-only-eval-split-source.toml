@@ -1,0 +1,25 @@
+# NOT a training corpus. This file supplies `orchestrator.train`'s missing
+# `source` for the mechanical smoke commands in README.md ONLY
+# (`--orchestrator.train @ smoke-only-eval-split-source.toml`).
+#
+# It points at `reliquary-swe`'s `eval` split -- SWE-bench Verified, which
+# must never be trained on for real (see rl.toml's own comment and the
+# design spec's section 8). This file exists so a few `--max-steps` can
+# exercise the training loop end to end without baking a real train source
+# into rl.toml itself, where a careless `cp rl.toml x.toml && rl @ x.toml
+# --max-steps 5000` could otherwise train on it silently. Do not point a
+# real run at this file; do not raise its `--max-steps` past a smoke count.
+
+[[source]]
+name = "reliquary-swe-eval-smoke-only"
+env.taskset.id = "reliquary-swe"
+env.taskset.split = "eval"
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 40
+
+[source.curriculum.gates.zero_signal]
+type = "advantage_range"
+reject_min = 0.0
+reject_max = 0.0
