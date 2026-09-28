@@ -287,7 +287,7 @@ jobs:
       # headroom. Re-measure if the images this job pulls change (a new
       # golden instance, a corpus revision).
       - run: uv run --no-sync pytest -m "not slow"
-      - run: uv run --no-sync validate reliquary-swe -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+      - run: uv run --no-sync validate reliquary-swe -n 3 --only-gold true --taskset.split eval --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
 
   reliquary-terminal:
