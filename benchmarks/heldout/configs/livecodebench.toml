@@ -1,0 +1,14 @@
+# LiveCodeBench v6 in its official window (contests 2024-08-01 to 2025-05-01),
+# 1,055 problems. The model's solution is executed by the task's reward inside
+# the rollout's container, never on the host.
+num_rollouts = 1
+
+[env.taskset]
+id = "livecodebench"
+
+[env.agent]
+harness.id = "null"
+max_turns = 1
+
+[sampling]
+max_tokens = 32768

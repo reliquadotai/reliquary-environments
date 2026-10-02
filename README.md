@@ -23,6 +23,11 @@ deterministically.
 | [`reliquary-swe`](environments/code/reliquary_swe) | SWE-bench Verified repairs for evaluation; SWE-smith and MiMo-V2.6's polyglot code tasks (Python, Go, JS/TS and five more languages) for training. Graded by re-applying the captured patch and running the target repository's own tests in a second container the agent never entered. **Verifiers-only**: no synchronous replay surface — a container cannot be replayed deterministically. |
 | [`reliquary-terminal`](environments/code/reliquary_terminal) | Terminal-Bench 2.1 for evaluation, graded as it ships; MiMo-V2.6's 64 terminal tasks for training, graded in a fresh box that receives only the agent's `/app`. **Verifiers-only**, like `reliquary-swe`. |
 
+[`benchmarks/heldout`](benchmarks/heldout) is not an environment: it pins seven public
+benchmarks no Reliquary run trains on (IFBench, BFCL v3, AIME 2025 and 2026,
+LiveCodeBench, GPQA Diamond, MMLU-Pro), all taken unmodified from Prime Intellect's
+native tasksets, and runs them against a checkpoint to measure transfer.
+
 ```bash
 cd environments/<area>/<package>
 uv sync --locked

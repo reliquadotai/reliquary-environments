@@ -1,0 +1,17 @@
+# GPQA Diamond, 198 questions, four draws each. The upstream LLM-judge fallback
+# is replaced by the deterministic letter check in gpqa_letter.py.
+num_rollouts = 4
+
+[env.taskset]
+id = "gpqa"
+diamond = true
+
+[env.taskset.task.rewards.correct]
+fn = "gpqa_letter.py:correct"
+
+[env.agent]
+harness.id = "null"
+max_turns = 1
+
+[sampling]
+max_tokens = 32768

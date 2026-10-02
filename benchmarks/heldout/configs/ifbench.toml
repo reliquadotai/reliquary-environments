@@ -1,0 +1,15 @@
+# IFBench test, 300 prompts whose 58 constraints were written not to overlap
+# IFEval's — the verifiers reliquary-instruction-following trains on. Strict
+# mode, so a response passes only if every instruction checks out as written.
+num_rollouts = 1
+
+[env.taskset]
+id = "ifbench"
+task.mode = "strict"
+
+[env.agent]
+harness.id = "null"
+max_turns = 1
+
+[sampling]
+max_tokens = 16384

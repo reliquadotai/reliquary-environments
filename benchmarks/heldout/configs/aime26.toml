@@ -1,0 +1,13 @@
+# AIME 2026 I+II, 30 problems. Thirty is too few for one sample per problem to
+# separate two checkpoints, so each problem is drawn eight times (avg@8).
+num_rollouts = 8
+
+[env.taskset]
+id = "aime26"
+
+[env.agent]
+harness.id = "null"
+max_turns = 1
+
+[sampling]
+max_tokens = 32768

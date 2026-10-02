@@ -1,0 +1,13 @@
+# AIME 2025 I+II. Older than aime26 and so more likely to sit in the base
+# model's pretraining data; kept because every published model card reports it.
+num_rollouts = 8
+
+[env.taskset]
+id = "aime25"
+
+[env.agent]
+harness.id = "null"
+max_turns = 1
+
+[sampling]
+max_tokens = 32768
