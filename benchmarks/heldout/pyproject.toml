@@ -1,0 +1,27 @@
+[project]
+name = "reliquary-heldout-benchmarks"
+version = "0.1.0"
+description = "Public benchmarks no Reliquary run trains on, pinned and configured to measure transfer."
+requires-python = ">=3.12,<3.13"
+# Every benchmark is Prime Intellect's own native Verifiers v1 taskset, taken
+# unmodified at one commit of research-environments. Nothing here reimplements
+# a task or a grader: the suite is the pin, the configs and the runner.
+dependencies = [
+    "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b2e4e8157783b2c0dffc7821044c87f29f1c3ccf",
+    "ifbench @ git+https://github.com/PrimeIntellect-ai/research-environments.git@f2e0d70968f9d89421c8035091febee8e9ac3975#subdirectory=environments/if/ifbench",
+    "bfcl-v3 @ git+https://github.com/PrimeIntellect-ai/research-environments.git@f2e0d70968f9d89421c8035091febee8e9ac3975#subdirectory=environments/tool_use/bfcl_v3",
+    "aime25 @ git+https://github.com/PrimeIntellect-ai/research-environments.git@f2e0d70968f9d89421c8035091febee8e9ac3975#subdirectory=environments/math/aime25",
+    "aime26 @ git+https://github.com/PrimeIntellect-ai/research-environments.git@f2e0d70968f9d89421c8035091febee8e9ac3975#subdirectory=environments/math/aime26",
+    "livecodebench @ git+https://github.com/PrimeIntellect-ai/research-environments.git@f2e0d70968f9d89421c8035091febee8e9ac3975#subdirectory=environments/code/livecodebench",
+    "gpqa @ git+https://github.com/PrimeIntellect-ai/research-environments.git@f2e0d70968f9d89421c8035091febee8e9ac3975#subdirectory=environments/science/gpqa",
+    "mmlu-pro @ git+https://github.com/PrimeIntellect-ai/research-environments.git@f2e0d70968f9d89421c8035091febee8e9ac3975#subdirectory=environments/knowledge/mmlu_pro",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

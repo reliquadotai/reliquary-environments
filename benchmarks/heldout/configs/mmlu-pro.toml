@@ -1,0 +1,13 @@
+# MMLU-Pro test split, 12,032 questions over 14 subjects. A guard rather than a
+# target: it says whether RL has cost general knowledge.
+num_rollouts = 1
+
+[env.taskset]
+id = "mmlu-pro"
+
+[env.agent]
+harness.id = "null"
+max_turns = 1
+
+[sampling]
+max_tokens = 16384
