@@ -265,6 +265,7 @@ def swesmith_image_rank() -> tuple[str, ...]:
 
 
 def _swesmith_row_defect(
+    problem_statement: str,
     fail_to_pass: tuple[str, ...],
     pass_to_pass: tuple[str, ...],
     max_test_count: int | None,
@@ -278,6 +279,8 @@ def _swesmith_row_defect(
     """
     if not fail_to_pass:
         return "empty_fail_to_pass"
+    if not problem_statement.strip():
+        return "empty_problem_statement"
     if max_test_count is not None and len(fail_to_pass) + len(pass_to_pass) > max_test_count:
         return "too_costly"
     return None
@@ -317,7 +320,7 @@ def swesmith_row(instance_id: str) -> SweRow:
     row = dataset[ids.index(instance_id)]
     fail_to_pass = _tests(row["FAIL_TO_PASS"])
     pass_to_pass = _tests(row["PASS_TO_PASS"])
-    if _swesmith_row_defect(fail_to_pass, pass_to_pass, None) is not None:
+    if _swesmith_row_defect(row["problem_statement"], fail_to_pass, pass_to_pass, None) is not None:
         raise KeyError(f"{instance_id} is excluded from every task set")
     return _swesmith_row(row, fail_to_pass, pass_to_pass)
 
@@ -348,7 +351,7 @@ def load_swesmith_rows(
     sets, never a subset/superset relationship a shared index could paper
     over.
 
-    Two further, small, unconditional exclusions, always applied regardless
+    Three further unconditional exclusions, always applied regardless
     of `max_test_count`:
 
     - Empty `FAIL_TO_PASS`. Not observed in the pinned revision (checked
@@ -364,6 +367,13 @@ def load_swesmith_rows(
       that one guards the branch upstream actually built; this one guards
       the row upstream published, which is the more direct fix for this
       specific failure mode and does not need a container to check.
+    - An empty `problem_statement`. The agent's prompt is built from it
+      (`taskset.PROMPT`), so such a task asks the agent to "fix the issue"
+      without saying which: it can only ever score 0, and every rollout
+      spent on it is wasted generation and container time that also looks
+      like a policy failure. Measured against the pinned revision, 5,257 of
+      the 23,844 rows of the top 20 images (22%) have one; found by a real
+      policy run on 2026-10-02, where the model answered "nothing to fix".
     - A patch `_reverse_unified_diff` cannot reverse: it adds, deletes,
       renames or copies a file (see that function's own docstring), and
       measured against the top 20 images, 41 of 23,844 rows (0.17%) do
@@ -385,6 +395,7 @@ def load_swesmith_rows(
     selected = set(swesmith_image_rank()[:num_images])
     rows = []
     skipped_empty_f2p = 0
+    skipped_empty_statement = 0
     skipped_unreversible = 0
     skipped_too_costly = 0
     for row in dataset:
@@ -392,9 +403,14 @@ def load_swesmith_rows(
             continue
         fail_to_pass = _tests(row["FAIL_TO_PASS"])
         pass_to_pass = _tests(row["PASS_TO_PASS"])
-        reason = _swesmith_row_defect(fail_to_pass, pass_to_pass, max_test_count)
+        reason = _swesmith_row_defect(
+            row["problem_statement"], fail_to_pass, pass_to_pass, max_test_count
+        )
         if reason == "empty_fail_to_pass":
             skipped_empty_f2p += 1
+            continue
+        if reason == "empty_problem_statement":
+            skipped_empty_statement += 1
             continue
         if reason == "too_costly":
             skipped_too_costly += 1
@@ -404,16 +420,25 @@ def load_swesmith_rows(
         except ValueError:
             skipped_unreversible += 1
             continue
-    total = skipped_empty_f2p + skipped_unreversible + skipped_too_costly + len(rows)
-    if skipped_empty_f2p or skipped_unreversible or skipped_too_costly:
+    total = (
+        skipped_empty_f2p
+        + skipped_empty_statement
+        + skipped_unreversible
+        + skipped_too_costly
+        + len(rows)
+    )
+    if skipped_empty_f2p or skipped_empty_statement or skipped_unreversible or skipped_too_costly:
         logging.getLogger(__name__).warning(
             "load_swesmith_rows(num_images=%d, max_test_count=%s): excluded "
-            "%d/%d rows with empty FAIL_TO_PASS, %d/%d rows whose patch "
+            "%d/%d rows with empty FAIL_TO_PASS, %d/%d rows with an empty "
+            "problem statement, %d/%d rows whose patch "
             "adds/deletes/renames/copies a file, and %d/%d rows over the "
             "test-count cap",
             num_images,
             max_test_count,
             skipped_empty_f2p,
+            total,
+            skipped_empty_statement,
             total,
             skipped_unreversible,
             total,
