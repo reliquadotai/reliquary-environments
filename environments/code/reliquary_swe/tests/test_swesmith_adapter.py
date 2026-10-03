@@ -73,11 +73,12 @@ def test_default_num_images_is_twenty():
 
 def test_load_swesmith_rows_default_is_uncapped_and_stays_unique():
     rows = corpus.load_swesmith_rows(20)
-    # 23,844 minus the 41 add/delete/rename/copy rows -- `max_test_count`
+    # 23,844 minus the 41 add/delete/rename/copy rows and the 5,257 rows with
+    # an empty problem statement (disjoint sets) -- `max_test_count`
     # defaults to `None` (uncapped): real measurement showed the cost this
     # would guard against is not a problem for this corpus (see
     # corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT's own docstring).
-    assert len(rows) == 23844 - 41 == 23803
+    assert len(rows) == 23844 - 41 - 5257 == 18546
     ids = [row.instance_id for row in rows]
     assert len(ids) == len(set(ids))
 
@@ -99,7 +100,7 @@ def test_the_documented_cap_value_excludes_real_rows():
     uncapped = corpus.load_swesmith_rows(20, max_test_count=None)
     capped = corpus.load_swesmith_rows(20, max_test_count=corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT)
     assert len(capped) < len(uncapped)
-    assert len(capped) == 23172
+    assert len(capped) == 18065
 
 
 def test_load_swesmith_rows_rejects_a_nonpositive_max_test_count():
@@ -117,17 +118,34 @@ def test_swesmith_row_defect_flags_empty_fail_to_pass():
     # filter existed at all.
     from reliquary_swe.corpus import _swesmith_row_defect
 
-    assert _swesmith_row_defect((), ("some::test",), max_test_count=None) == "empty_fail_to_pass"
-    assert _swesmith_row_defect(("f::t",), (), max_test_count=None) is None
+    assert _swesmith_row_defect("bug", (), ("some::test",), max_test_count=None) == "empty_fail_to_pass"
+    assert _swesmith_row_defect("bug", ("f::t",), (), max_test_count=None) is None
+
+
+def test_swesmith_row_defect_flags_an_empty_problem_statement():
+    # The prompt is built from the statement: without one the agent is told
+    # to "fix the issue" and nothing else, so the task can only score 0.
+    from reliquary_swe.corpus import _swesmith_row_defect
+
+    for statement in ("", "  \n\t"):
+        assert (
+            _swesmith_row_defect(statement, ("f::t",), (), max_test_count=None)
+            == "empty_problem_statement"
+        )
+
+
+def test_no_loaded_swesmith_row_has_an_empty_problem_statement():
+    rows = corpus.load_swesmith_rows(20)
+    assert all(row.problem_statement.strip() for row in rows)
 
 
 def test_swesmith_row_defect_flags_too_costly_only_when_capped():
     from reliquary_swe.corpus import _swesmith_row_defect
 
     f2p, p2p = ("f::a", "f::b"), ("p::a", "p::b", "p::c")  # 5 total
-    assert _swesmith_row_defect(f2p, p2p, max_test_count=4) == "too_costly"
-    assert _swesmith_row_defect(f2p, p2p, max_test_count=5) is None
-    assert _swesmith_row_defect(f2p, p2p, max_test_count=None) is None
+    assert _swesmith_row_defect("bug", f2p, p2p, max_test_count=4) == "too_costly"
+    assert _swesmith_row_defect("bug", f2p, p2p, max_test_count=5) is None
+    assert _swesmith_row_defect("bug", f2p, p2p, max_test_count=None) is None
 
 
 def test_swesmith_rows_carry_the_fields_grading_needs():
