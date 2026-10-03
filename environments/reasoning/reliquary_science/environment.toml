@@ -1,0 +1,74 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/science"
+version = "0.1.0a1"
+taskset = "reliquary-science"
+entrypoint = "reliquary_science:ScienceTaskset"
+compatibility_entrypoint = "reliquary_science:ScienceEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["science_numeric"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 1
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["numeric_answer"]
+
+[data]
+train = "intellect-3-rl-science-numeric:v1:train"
+eval = "intellect-3-rl-science-numeric:v1:eval"
+qualification = "intellect-3-rl-science-numeric:v1:qualification"
+# Fetched rather than shipped: the upstream card declares no licence, so the
+# wheel carries the derivation and the pins, not the rows. `source_sha256`
+# covers the parquet at `source_revision`; `sha256` covers the derived corpus
+# as `corpus.corpus_body` serialises it.
+redistributable = false
+license = "unspecified"
+source = "PrimeIntellect/INTELLECT-3-RL"
+source_path = "science/train-00000-of-00001.parquet"
+source_revision = "a9eb9183224cec63fe9a71e7a3a80cff14868624"
+source_url = "https://huggingface.co/datasets/PrimeIntellect/INTELLECT-3-RL"
+source_sha256 = "2dd5a390ee42c0a7829552e83361d19a952b7e480786254ea38eee657fbc78da"
+# `rows` is what the subset holds, `numeric` the rows whose reference is one
+# number, `virtual_length` what is served once the problems that point at a
+# figure they do not carry are dropped.
+rows = 29307
+numeric = 14224
+virtual_length = 14145
+sha256 = "64b8527aed2ebc2d991fd6300389873afa425a875a2c60885317bb94123a1383"
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary-environments"
+upstream = "https://github.com/PrimeIntellect-ai/research-environments/tree/main/environments/science/i3_science"
+upstream_license = "unspecified"
+port = "numeric-subset-without-judge"
+
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """
+A science problem here is a quantitative derivation — a drag polar, a heat
+balance, an equilibrium constant — with one number at the end, which is the
+shape on which every reasoning model reports a large gap between a chain of
+thought and a direct answer. Nothing grades the reasoning: only the last box
+is read, so deliberation costs tokens and never costs reward.
+"""
+max_new_tokens = 32768
+max_new_tokens_rationale = """
+Not yet measured on a policy. Set to the ceiling of the sibling maths corpus,
+whose derivations are of comparable length, rather than to a short budget that
+would cut a derivation before its box and score it zero for a reason that has
+nothing to do with the problem. To be replaced by a measured value as
+`reliquary-dapo-math`'s was.
+"""
