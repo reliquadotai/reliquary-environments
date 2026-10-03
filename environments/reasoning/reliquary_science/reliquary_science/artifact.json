@@ -1,0 +1,22 @@
+{
+  "schema": "reliquary/environment-artifact/v1",
+  "environment": "reliquary_science_v1",
+  "contract": "reliquary/boxed-answer/v1",
+  "distribution": {
+    "name": "reliquary-science",
+    "version": "0.1.0a1"
+  },
+  "entrypoints": {
+    "taskset": "reliquary_science:ScienceTaskset",
+    "replay": "reliquary_science:ScienceEnvironment"
+  },
+  "source_manifest_sha256": "ebd2a31ef8bd33ca3266d3608589f746c943b7cdaa6d3af76e39be53ad12ff5e",
+  "files": {
+    "reliquary_science/__init__.py": "6c8d237215a43bb12295898ec449fda9104f148d2bcf1f85e84c6e44ff6000f4",
+    "reliquary_science/corpus.py": "b4e519d9387b2aa9c49cc7b1579921105edbaa538d75d45f14bc8bd0331ba270",
+    "reliquary_science/environment.py": "49c7d6e13b876778f67df2900f728193bb90e9c2acc55f2824d4496668aecd6c",
+    "reliquary_science/goldens/reference.jsonl": "87e069d88296ebf4e171a513930d4fd643cbd325eab2286b3bc8870abf70fd33",
+    "reliquary_science/grading.py": "1fc85206c562420822bfda8d4f1058d76e91334afce54295fca4b28cf46443a5",
+    "reliquary_science/taskset.py": "5a639a23d2a8ea3d66fb10228aefe6d5ba41571357a945715e42afd2caf7a189"
+  }
+}
