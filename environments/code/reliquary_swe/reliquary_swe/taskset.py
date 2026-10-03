@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from typing import ClassVar, Literal
 
 import verifiers.v1 as vf
+from pydantic import field_validator
 from verifiers.v1.utils.git import snapshot_untracked
 
 from reliquary_swe import corpus, swe_adapter, swesmith_adapter
@@ -258,6 +259,14 @@ class SweTasksetConfig(vf.TasksetConfig):
     # auto-detected"); see `corpus.load_swesmith_rows` for why a fixed pair
     # is what lets two machines agree on what task #400 is.
     num_images: int = corpus.DEFAULT_SWESMITH_IMAGES
+
+    @field_validator("num_images")
+    @classmethod
+    def _num_images_within_the_pins(cls, value: int) -> int:
+        # Refused at config time rather than as a KeyError deep in loading:
+        # only the top images carry a pinned digest.
+        corpus._check_swesmith_num_images(value)
+        return value
     # Only read when split="train". Caps fail-to-pass + pass-to-pass test
     # count per instance -- SWE-smith's own per-instance cost is heavily
     # right-skewed, and this is the declared, deterministic bound on it.
