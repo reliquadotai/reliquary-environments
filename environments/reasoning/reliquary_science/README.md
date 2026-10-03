@@ -1,8 +1,8 @@
 # reliquary-science
 
-Science problems — physics, chemistry, computer science, biology, economics —
+Science problems — physics, chemistry, computer science, economics —
 whose answer is one number, graded by whether the last `\boxed{}` span states
-the reference to within one percent. Single turn, no tools, no state, no judge
+the reference to within two percent. Single turn, no tools, no state, no judge
 model.
 
 ## Corpus
@@ -17,11 +17,11 @@ parquet's sha256.
 | upstream rows | 29,307 |
 | reference is one number followed by nothing or a unit | 14,224 |
 | point at a figure or table the text does not carry | −79 |
-| **served** | **14,145** |
-| train / eval / qualification | 11,364 / 1,381 / 1,400 |
+| biology: the teacher solved 0 of 9 numeric ones | −598 |
+| **served** | **13,547** |
+| train / eval / qualification | 10,871 / 1,319 / 1,357 |
 
-Physics 7,812, chemistry 4,799, computer science 844, biology 598,
-economics 92.
+Physics 7,812, chemistry 4,799, computer science 844, economics 92.
 
 The other half of the source has references such as `Glucose and galactose`
 or `\frac{kq}{r^2}`, which only a judge model can grade. Upstream's own
@@ -64,9 +64,21 @@ Because a unit is not converted, the prompt names the unit the reference is
 in whenever it has one ("Give the final answer in kJ/mol.", "Give the final
 answer as a percentage."), followed by the answer instruction.
 
-The tolerance is relative, 1%: wider than the rounding of a
-three-significant-figure answer (at most 0.5%) and narrower than any honest
-disagreement about the physics. A reference of zero needs `|x| ≤ 1e-9`.
+The tolerance is relative, 2%, and measured: on 200 eval problems answered by
+Qwen3.8-27B, the misses 1-2% from the reference were the rounding of a constant
+or an intermediate (`g = 9.8` against `9.81`), and past 2% they were different
+answers. A reference of zero needs `|x| ≤ 1e-9`.
+
+## Measured on the teacher
+
+200 eval problems, Qwen3.8-27B, thinking, 32,768 tokens, T = 1, top_p = 1,
+graded at 1% before the tolerance was set: 46.5% scored, 14% truncated at the
+budget, 9% within 1-5% of the reference, 4% off by a power of ten (a unit),
+26% different numbers. No box was missing or unreadable. A sample of the
+"different numbers" shows the references are noisy — at least two in six were
+the dataset's error, not the teacher's (a factor of two in a de Broglie mass,
+a decay constant left in hours) — so a filter at 1.0 keeps the rows where the
+teacher and the reference agree, at the cost of about half the slots.
 
 ## Policy
 

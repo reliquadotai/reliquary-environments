@@ -1,7 +1,7 @@
 """Whether the boxed answer is the right number, and what that is worth.
 
 One reward and no partial credit: the last `\\boxed{}` span states one number
-within one percent of the reference, or the answer scores zero.
+within two percent of the reference, or the answer scores zero.
 
 Unlike the integer corpus of `reliquary-dapo-math`, a science answer is a
 measurement. `109`, `108.7` and `1.09 \\times 10^{2}` are the same answer to a
@@ -25,14 +25,15 @@ import math
 import re
 from fractions import Fraction
 
-GRADER_VERSION = "boxed-number-rel1pct-v1"
+GRADER_VERSION = "boxed-number-rel2pct-v1"
 SPEC_SCHEMA = "reliquary/science-verifier/v1"
 
 # Within this share of the reference, or the answer is a different number.
-# One percent is wider than the rounding of a three-significant-figure answer
-# (at most 0.5% away from the value it rounds) and narrower than any honest
-# disagreement about the physics.
-RELATIVE_TOLERANCE = 0.01
+# Two percent, measured: on 200 eval problems answered by Qwen3.8-27B, 9 of
+# the 200 landed 1-2% from the reference, and those were the rounding of a
+# constant or an intermediate (g = 9.8 against 9.81) rather than a different
+# derivation; past 2% the misses were different answers.
+RELATIVE_TOLERANCE = 0.02
 # A reference of zero has no relative scale; this is the slack it gets instead.
 ZERO_TOLERANCE = 1e-9
 

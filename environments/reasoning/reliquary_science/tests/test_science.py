@@ -35,7 +35,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by the packaged whee
 # import it, and these tests say so by still running when it is absent.
 needs_verifiers = pytest.mark.skipif(vf is None, reason="verifiers is not installed")
 
-SPLIT_SIZES = {"train": 11364, "eval": 1381, "qualification": 1400}
+SPLIT_SIZES = {"train": 10871, "eval": 1319, "qualification": 1357}
 
 
 def _trace(task, completion: str):
@@ -114,10 +114,12 @@ def test_the_corpus_counts_what_the_build_dropped() -> None:
         "rows": corpus.UPSTREAM_ROWS,
         "numeric": corpus.NUMERIC_ANSWERS,
         "figures": corpus.FIGURE_PROBLEMS,
+        "biology": corpus.BIOLOGY_PROBLEMS,
         "conflicting": 0,
         "kept": corpus.VIRTUAL_LENGTH,
     }
     assert derived == corpus.load()
+    assert not any(problem.domain == "biology" for problem in derived)
 
 
 def test_no_two_tasks_share_a_prompt() -> None:
@@ -277,12 +279,12 @@ def test_an_answer_outside_the_box_scores_nothing(completion: str) -> None:
     assert grade(verifier_spec(109.0), completion) == 0.0
 
 
-def test_the_comparison_tolerates_one_percent_and_no_more() -> None:
+def test_the_comparison_tolerates_two_percent_and_no_more() -> None:
     """A measurement's rounding passes and a different number does not."""
     spec = verifier_spec(109.0)
-    for right in ("108.7", "109.5 hp", "1.09 \\times 10^{2}", "110.0", "108.0"):
+    for right in ("108.7", "109.5 hp", "1.09 \\times 10^{2}", "111.1", "106.9"):
         assert grade(spec, f"\\boxed{{{right}}}") == 1.0, right
-    for wrong in ("110.2", "107.8", "1090", "-109", "0.109"):
+    for wrong in ("111.3", "106.7", "1090", "-109", "0.109"):
         assert grade(spec, f"\\boxed{{{wrong}}}") == 0.0, wrong
     zero = verifier_spec(0.0)
     assert grade(zero, "\\boxed{0}") == 1.0

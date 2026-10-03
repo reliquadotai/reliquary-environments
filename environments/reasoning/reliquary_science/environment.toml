@@ -43,11 +43,11 @@ source_url = "https://huggingface.co/datasets/PrimeIntellect/INTELLECT-3-RL"
 source_sha256 = "2dd5a390ee42c0a7829552e83361d19a952b7e480786254ea38eee657fbc78da"
 # `rows` is what the subset holds, `numeric` the rows whose reference is one
 # number, `virtual_length` what is served once the problems that point at a
-# figure they do not carry are dropped.
+# figure they do not carry, and the biology ones, are dropped.
 rows = 29307
 numeric = 14224
-virtual_length = 14145
-sha256 = "64b8527aed2ebc2d991fd6300389873afa425a875a2c60885317bb94123a1383"
+virtual_length = 13547
+sha256 = "0a5add9e1e8e9ef50ebe220b3428ff6e4166d74c24b319fba1db49ff810c69b8"
 
 [provenance]
 source_repository = "https://github.com/reliquadotai/reliquary-environments"

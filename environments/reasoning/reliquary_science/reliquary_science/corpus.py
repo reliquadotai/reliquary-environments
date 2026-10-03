@@ -1,6 +1,6 @@
 """The problem corpus, where it comes from, and why it is half of its source.
 
-Science problems — physics, chemistry, computer science, biology, economics —
+Science problems — physics, chemistry, computer science, economics —
 from the `science` subset of `PrimeIntellect/INTELLECT-3-RL`, kept only where
 the reference answer is one number. Fetched rather than shipped: the upstream
 card declares no licence, so this package redistributes the derivation and not
@@ -36,10 +36,11 @@ UPSTREAM_ROWS = 29_307
 # The digest covers the derived corpus serialised by `corpus_body`, one JSON
 # record per line in identity order — what the environment serves, rather than
 # the parquet container it was read from.
-CORPUS_SHA256 = "64b8527aed2ebc2d991fd6300389873afa425a875a2c60885317bb94123a1383"
+CORPUS_SHA256 = "0a5add9e1e8e9ef50ebe220b3428ff6e4166d74c24b319fba1db49ff810c69b8"
 NUMERIC_ANSWERS = 14_224
 FIGURE_PROBLEMS = 79
-VIRTUAL_LENGTH = NUMERIC_ANSWERS - FIGURE_PROBLEMS
+BIOLOGY_PROBLEMS = 598
+VIRTUAL_LENGTH = NUMERIC_ANSWERS - FIGURE_PROBLEMS - BIOLOGY_PROBLEMS
 
 SPLITS = ("train", "eval", "qualification")
 # Shares rather than thirds, as in the sibling maths corpus: 1,400 problems
@@ -90,7 +91,7 @@ def derive(rows: list[dict[str, object]]) -> tuple[tuple[Problem, ...], dict[str
     """The corpus a list of upstream rows yields, and what each rule dropped."""
     kept: dict[str, Problem] = {}
     conflicting: set[str] = set()
-    numeric = figures = 0
+    numeric = figures = biology = 0
     for row in rows:
         parsed = split_number(str(row["answer"]), relation=False)
         if parsed is None:
@@ -103,6 +104,12 @@ def derive(rows: list[dict[str, object]]) -> tuple[tuple[Problem, ...], dict[str
         value, unit = parsed
         info = row.get("info") or {}
         domain = str(info.get("domain") or "unknown") if isinstance(info, dict) else "unknown"
+        if domain == "biology":
+            # Measured, not assumed: the teacher solved 0 of 9 numeric biology
+            # problems, which read as recall of a textbook figure ("the minimum
+            # urine output per day") rather than a derivation with one answer.
+            biology += 1
+            continue
         # Whitespace is the one difference that is not a difference: one
         # problem laid out twice is one problem, served from one index.
         layout_free = " ".join(text.split())
@@ -120,6 +127,7 @@ def derive(rows: list[dict[str, object]]) -> tuple[tuple[Problem, ...], dict[str
         "rows": len(rows),
         "numeric": numeric,
         "figures": figures,
+        "biology": biology,
         "conflicting": len(conflicting),
         "kept": len(corpus),
     }
@@ -158,8 +166,8 @@ def load() -> tuple[Problem, ...]:
     digest = hashlib.sha256(corpus_body(corpus)).hexdigest()
     if digest != CORPUS_SHA256:
         raise RuntimeError(f"corpus digest is {digest}, expected {CORPUS_SHA256}")
-    if (counts["numeric"], counts["figures"], len(corpus)) != (
-        NUMERIC_ANSWERS, FIGURE_PROBLEMS, VIRTUAL_LENGTH
+    if (counts["numeric"], counts["figures"], counts["biology"], len(corpus)) != (
+        NUMERIC_ANSWERS, FIGURE_PROBLEMS, BIOLOGY_PROBLEMS, VIRTUAL_LENGTH
     ):
         raise RuntimeError(f"corpus counts {counts} differ from the pins")
     return corpus
@@ -190,6 +198,7 @@ def problems(split: str = "train") -> tuple[Problem, ...]:
 
 __all__ = [
     "CORPUS_SHA256",
+    "BIOLOGY_PROBLEMS",
     "FIGURE_PROBLEMS",
     "NUMERIC_ANSWERS",
     "SOURCE_REPOSITORY",

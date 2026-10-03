@@ -16,7 +16,7 @@ from reliquary_science import VIRTUAL_LENGTH, ScienceEnvironment
 from reliquary_science.corpus import SPLITS
 from reliquary_science.grading import ANSWER_INSTRUCTION
 
-QUALIFICATION_TASKS = 1400
+QUALIFICATION_TASKS = 1357
 
 root = importlib.resources.files("reliquary_science")
 

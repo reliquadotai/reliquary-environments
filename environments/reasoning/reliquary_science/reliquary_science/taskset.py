@@ -2,7 +2,7 @@
 
 A problem arrives from the `science` subset of `INTELLECT-3-RL`, the policy
 reasons for as long as it needs, and the reward is whether the last `\\boxed{}`
-span states the reference number to within one percent. Single turn, no tools,
+span states the reference number to within two percent. Single turn, no tools,
 no state.
 """
 
