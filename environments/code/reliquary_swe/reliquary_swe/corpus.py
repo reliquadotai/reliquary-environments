@@ -9,7 +9,8 @@ gain a sibling dataclass (see the design spec's section 8 correction):
 `base_commit`, `version` and `test_patch` are all empty for a SWE-smith row,
 and `image` -- unset for SWE-bench Verified, which derives its image instead
 (`swe_adapter.image_for`) -- is given directly, because SWE-smith's own
-`image_name` column is authoritative and a from-scratch derivation
+`image_name` column is authoritative (resolved to its registry digest pinned
+in `swesmith_digests.json`, see `scripts/pin_swesmith_digests.py`) and a from-scratch derivation
 (`swesmith.profiles.RepoProfile.image_name`) was checked and found to compute
 a *different*, wrong Docker Hub namespace (`swebench/...` rather than the
 dataset's actual `jyangballin/...`). "The image is given, not derived" is not
@@ -286,6 +287,23 @@ def _swesmith_row_defect(
     return None
 
 
+@functools.cache
+def _swesmith_digests() -> dict[str, str]:
+    from importlib.resources import files
+
+    return json.loads(files("reliquary_swe").joinpath("swesmith_digests.json").read_text())
+
+
+def _pinned_swesmith_image(image_name: str) -> str:
+    try:
+        return _swesmith_digests()[image_name]
+    except KeyError:
+        raise KeyError(
+            f"SWE-smith image {image_name!r} has no pinned digest in swesmith_digests.json; "
+            "run scripts/pin_swesmith_digests.py"
+        ) from None
+
+
 def _swesmith_row(
     row: dict, fail_to_pass: tuple[str, ...], pass_to_pass: tuple[str, ...]
 ) -> SweRow:
@@ -299,7 +317,7 @@ def _swesmith_row(
         pass_to_pass=pass_to_pass,
         gold_patch=_reverse_unified_diff(row["patch"]),
         base_commit=f"origin/{row['instance_id']}~1",
-        image=row["image_name"],
+        image=_pinned_swesmith_image(row["image_name"]),
     )
 
 

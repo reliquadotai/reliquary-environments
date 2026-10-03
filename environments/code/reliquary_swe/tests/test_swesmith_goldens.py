@@ -87,7 +87,7 @@ def _train_task(instance_id: str = SWESMITH_GOLDEN) -> SweTask:
 def test_the_golden_is_in_the_default_train_split():
     rank = corpus.swesmith_image_rank()
     image = corpus.swesmith_row(SWESMITH_GOLDEN).image
-    assert image in rank[: corpus.DEFAULT_SWESMITH_IMAGES]
+    assert image.split("@")[0] in rank[: corpus.DEFAULT_SWESMITH_IMAGES]
 
 
 @asynccontextmanager
