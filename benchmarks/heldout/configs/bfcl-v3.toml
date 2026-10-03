@@ -1,0 +1,13 @@
+# BFCL v3, all 17 categories, single- and multi-turn, scored by the official
+# AST and state checkers. The null harness exposes only the BFCL functions: the
+# bash harness would add bash/edit tools whose calls count as wrong.
+num_rollouts = 1
+
+[env.taskset]
+id = "bfcl-v3"
+
+[env.agent]
+harness.id = "null"
+
+[sampling]
+max_tokens = 8192
