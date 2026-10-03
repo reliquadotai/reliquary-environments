@@ -294,6 +294,22 @@ def _swesmith_digests() -> dict[str, str]:
     return json.loads(files("reliquary_swe").joinpath("swesmith_digests.json").read_text())
 
 
+def pinned_swesmith_images() -> int:
+    """How many SWE-smith images carry a pinned digest: the largest
+    `num_images` a task set can be built for."""
+    return len(_swesmith_digests())
+
+
+def _check_swesmith_num_images(num_images: int) -> None:
+    pinned = pinned_swesmith_images()
+    if num_images > pinned:
+        raise ValueError(
+            f"num_images={num_images} exceeds the {pinned} SWE-smith images pinned by "
+            "digest in swesmith_digests.json; pin more with "
+            "scripts/pin_swesmith_digests.py --num-images N first"
+        )
+
+
 def _pinned_swesmith_image(image_name: str) -> str:
     try:
         return _swesmith_digests()[image_name]
@@ -328,7 +344,9 @@ def swesmith_row(instance_id: str) -> SweRow:
     of memory to materialize (measured), more than a CI runner has.
 
     Raises `KeyError` for an id not in the pinned revision, and for one
-    `load_swesmith_rows` would exclude (see `_swesmith_row_defect`).
+    `load_swesmith_rows` would exclude (see `_swesmith_row_defect`);
+    `ValueError` for one whose image has no pinned digest (outside the top
+    `pinned_swesmith_images()` images).
     """
     name, hf_split, revision = _SOURCES["train"]
     dataset = load_dataset(name, split=hf_split, revision=revision or None)
@@ -340,6 +358,13 @@ def swesmith_row(instance_id: str) -> SweRow:
     pass_to_pass = _tests(row["PASS_TO_PASS"])
     if _swesmith_row_defect(row["problem_statement"], fail_to_pass, pass_to_pass, None) is not None:
         raise KeyError(f"{instance_id} is excluded from every task set")
+    if row["image_name"] not in _swesmith_digests():
+        raise ValueError(
+            f"{instance_id} runs on {row['image_name']!r}, outside the "
+            f"{pinned_swesmith_images()} SWE-smith images pinned by digest in "
+            "swesmith_digests.json; pin more with scripts/pin_swesmith_digests.py "
+            "--num-images N first"
+        )
     return _swesmith_row(row, fail_to_pass, pass_to_pass)
 
 
@@ -408,6 +433,7 @@ def load_swesmith_rows(
         raise ValueError(f"num_images must be >= 1, got {num_images}")
     if max_test_count is not None and max_test_count < 1:
         raise ValueError(f"max_test_count must be >= 1 or None, got {max_test_count}")
+    _check_swesmith_num_images(num_images)
     name, hf_split, revision = _SOURCES["train"]
     dataset = load_dataset(name, split=hf_split, revision=revision or None)
     selected = set(swesmith_image_rank()[:num_images])
