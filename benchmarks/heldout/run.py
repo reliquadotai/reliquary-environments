@@ -67,6 +67,17 @@ def eval_command(args: argparse.Namespace, benchmark: str, config: Path) -> list
     return command
 
 
+WIREFIX = HERE / "wirefix"
+
+
+def eval_environment() -> dict:
+    """The run's environment, with `wirefix/` first on PYTHONPATH: its
+    sitecustomize drops the empty tools array vLLM refuses (see that file)."""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(WIREFIX), env.get("PYTHONPATH")]))
+    return env
+
+
 def summarize(run_dir: Path) -> dict:
     traces = run_dir / "traces.jsonl"
     if not traces.exists():
@@ -117,7 +128,8 @@ def main(argv: list[str] | None = None) -> int:
     results = {}
     for benchmark in args.only:
         print(f"== {benchmark}", flush=True)
-        completed = subprocess.run(eval_command(args, benchmark, write_config(args, benchmark)), cwd=HERE)
+        completed = subprocess.run(eval_command(args, benchmark, write_config(args, benchmark)),
+                                   cwd=HERE, env=eval_environment())
         results[benchmark] = summarize(args.output_dir / benchmark)
         results[benchmark]["exit_code"] = completed.returncode
 

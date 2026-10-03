@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import tomllib
@@ -21,7 +22,7 @@ def runner_args(tmp_path: Path, *extra: str):
     parser_args = ["--model", "m", "--base-url", "http://127.0.0.1:9/v1", "--output-dir", str(tmp_path), *extra]
     captured = {}
 
-    def fake_run(command, cwd):
+    def fake_run(command, cwd, **kwargs):
         captured.setdefault("commands", []).append(command)
         return SimpleNamespace(returncode=0)
 
@@ -110,3 +111,31 @@ def test_gpqa_scores_the_extracted_letter_without_a_judge(reply, expected):
     task = SimpleNamespace(answer="C")
     trace = SimpleNamespace(last_reply=reply)
     assert asyncio.run(gpqa_letter.correct(task, trace)) == expected
+
+
+def test_the_runner_puts_the_wire_fix_first_on_the_path(monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", "/elsewhere")
+    path = run.eval_environment()["PYTHONPATH"].split(os.pathsep)
+    assert path == [str(HERE / "wirefix"), "/elsewhere"]
+
+
+def test_a_request_without_tools_leaves_the_field_out():
+    """vLLM answers 400 to `tools: []`; verifiers turns the harness's null into one."""
+    completed = subprocess.run(
+        [sys.executable, "-c",
+         "from verifiers.v1.dialects.chat import ChatDialect\n"
+         "from verifiers.v1 import DockerConfig\n"
+         "d = ChatDialect.__new__(ChatDialect)\n"
+         "for body in ({'messages': [{'role': 'user', 'content': 'q'}], 'tools': None},\n"
+         "             {'messages': [{'role': 'user', 'content': 'q'}], 'tools': [],"
+         " 'tool_choice': 'auto'}):\n"
+         "    out, _ = d.mediate_external_capabilities(body, DockerConfig(allow=[]))\n"
+         "    assert 'tools' not in out and 'tool_choice' not in out, out\n"
+         "tool = {'type': 'function', 'function': {'name': 'f', 'parameters': {}}}\n"
+         "out, _ = d.mediate_external_capabilities(\n"
+         "    {'messages': [{'role': 'user', 'content': 'q'}], 'tools': [tool]},"
+         " DockerConfig(allow=[]))\n"
+         "assert out['tools'] == [tool]\n"
+         "print('ok')\n"],
+        cwd=HERE, env=run.eval_environment(), capture_output=True, text=True)
+    assert completed.returncode == 0 and completed.stdout.strip() == "ok", completed.stderr[-2000:]
