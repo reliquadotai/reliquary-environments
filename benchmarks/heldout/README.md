@@ -69,6 +69,10 @@ measurement or sent it somewhere:
   and that judge defaults to a hosted model. `gpqa_letter.py` replaces the task's
   `correct` reward under the same name: the upstream extractor still decides, and an
   answer it cannot read scores 0.
+- **A request without tools leaves the field out.** verifiers' chat mediation turns the
+  null harness's `tools: null` into `tools: []`, which vLLM refuses with a 400 on every
+  request. `wirefix/sitecustomize.py`, put first on `PYTHONPATH` by the runner (so the
+  processes verifiers spawns carry it), drops the empty array.
 - **IFBench runs in `strict` mode**, upstream's default being `loose`: a response
   passes only if every instruction checks out as written. `--env.taskset.task.mode
   loose` in `configs/ifbench.toml` gives the published loose figure.
