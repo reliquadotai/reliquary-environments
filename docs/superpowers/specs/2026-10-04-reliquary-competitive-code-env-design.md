@@ -1,7 +1,7 @@
 # reliquary-competitive-code: competitive programming graded on stdin/stdout
 
 Date: 2026-10-04
-Status: design, awaiting review. Nothing implemented.
+Status: implemented as environments/code/reliquary_competitive_code (Tasks 1-9); Task 10 (build/publish/pin) pending.
 
 ## 1. Why this environment
 
@@ -78,7 +78,7 @@ statement      text shown to the model
 tests          list of {stdin, stdout}, hidden from the model
 time_limit_s   per test, Python, calibrated (below)
 origin         {source, upstream_id, contest_id?, date?}
-reference      a Python solution known to pass every kept test (build only, not published to miners)
+reference      a Python solution known to pass every kept test (published in references.parquet: the solutions are public upstream)
 ```
 
 ### Build pipeline (offline, on a build box with disk; never on the local VPS)
@@ -133,6 +133,8 @@ records the real number.
   `string`, `itertools`, `threading` (recursion via a large-stack thread is common),
   and a **`sys` shim** exposing only `stdin`, `stdout`, `setrecursionlimit`,
   `maxsize` and `exit`. `input()` and `print()` work. No `os`, no `io` file access.
+  As implemented, the allow-list is `ALLOWED_IMPORT_ROOTS` in `judge/guest.py`,
+  and the prompt lists it, generated from that set.
 - Per test: CPU time limit `time_limit_s`; wall clock = 2 x CPU limit as backstop.
 
 ### Comparator (pure function, the single source of truth)
@@ -150,7 +152,9 @@ records the real number.
 - **Stop at the first failing test.** It changes nothing to a binary reward and
   bounds the cost of wrong submissions, which are most of them.
 - Statuses kept for diagnostics: `ok`, `wrong_answer`, `timeout`, `runtime_error`,
-  `forbidden_import`, `output_limit`, `no_code`.
+  `forbidden_import`, `output_limit`, `no_code`. `harness_overload` (the wall
+  clock fired before the program used its CPU limit) is not a verdict: grading
+  raises rather than return a reward.
 
 ### Where it runs
 
@@ -168,6 +172,10 @@ records the real number.
   the expected output; the trusted server compares. RLIMIT_CPU is cumulative per
   warm worker, so the worker's lifetime budget (`worker_lifetime_cpu_budget_seconds`)
   must be raised or workers recycled per submission; measured, not guessed.
+  `judge/guest.py`'s contract: one run per fresh process (or fork), never
+  concurrent; module state (e.g. monkeypatched math, random seed, daemon
+  threads) is not isolated between runs in one process. The core imports
+  `extract_program` and `outputs_match` from this package.
 - **Registry**: an `EnvironmentSpec` `reliquary_competitive_code_v1`,
   `admission_resource_class="sandbox"`, `final_answer_policy="fenced_python"`,
   `reward_lattice_policy="binary-v1"`, `attainable_rewards=(0.0, 1.0)`,

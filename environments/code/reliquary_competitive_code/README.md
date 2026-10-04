@@ -25,20 +25,37 @@ token-wise output comparison, so trailing whitespace does not matter.
 
 ## Building the dataset
 
-    uv run python -m reliquary_competitive_code.build.fetch --out raw/
-    uv run python -m reliquary_competitive_code.build --deepcoder raw/... --lcb raw/... --out dataset/
+    uv run python -m reliquary_competitive_code.build.fetch --out DIR
+    uv run python -m reliquary_competitive_code.build --deepcoder DIR/deepcoder --lcb DIR/lcb --out dataset/
 
-`build.fetch` downloads the upstream data; `build` curates it and writes the
-dataset (`--workers`, `--limit` for a smoke run; see `--help`).
+`build.fetch` downloads the pinned upstream data into `DIR/deepcoder` and
+`DIR/lcb`; `build` curates it and writes the dataset (`--workers`, `--limit`
+for a smoke run; see `--help`). The build is not streaming: use a box with at
+least 16 GB of RAM.
 
 ## Published revision
 
 Drop counts: filled in with the published revision.
+
+## Grading rules
+
+- The program is the last fenced block tagged `python`/`py`/`python3` after
+  the last `</think>` (an untagged block only when there is no tagged one).
+- Output is compared token by token, with two relaxations: `yes`/`no` in any
+  case, and decimals within 1e-6 (an integer answer accepts only an exactly
+  equal decimal, `2.000000` for `2`).
+- Importable modules: `abc`, `array`, `bisect`, `cmath`, `collections`, `copy`,
+  `dataclasses`, `datetime`, `decimal`, `enum`, `fractions`, `functools`,
+  `heapq`, `itertools`, `math`, `operator`, `queue`, `random`, `re`,
+  `statistics`, `string`, `sys` (a reduced shim), `threading`, `time`,
+  `typing` (and `__future__`). The prompt states the same list.
 
 ## Known limits
 
 - Problems with several valid answers are excluded: the comparison is exact
   on tokens, there is no checker.
 - Python only.
+- Deduplication across sources is MinHash on statements; about 161 residual
+  near-duplicate pairs remain across splits.
 - The local runner is a process with resource limits, not a sandbox; run it
   where an untrusted program may be executed.

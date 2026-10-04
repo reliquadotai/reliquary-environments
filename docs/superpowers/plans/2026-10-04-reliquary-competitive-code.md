@@ -2329,7 +2329,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 ### Task 10: Real build, publish, pin, goldens and CI (operator-gated)
 
-This task needs two things a subagent does not have: a build box (8+ dedicated cores, 20 GB free disk; **not** the local VPS, **not** `sandbox-dev-01` without the user's say-so, since it is the agentic corpus executor) and a Hugging Face token with write access to `R0mAI`. Stop and ask the user for both before Step 1.
+This task needs two things a subagent does not have: a build box (8+ dedicated cores, 20 GB free disk, **at least 16 GB of RAM**: the build is not streaming, estimated 6-12 GB peak; **not** the local VPS, **not** `sandbox-dev-01` without the user's say-so, since it is the agentic corpus executor) and a Hugging Face token with write access to `R0mAI`. Stop and ask the user for both before Step 1.
 
 **Files:**
 - Modify: `reliquary_competitive_code/corpus.py` (`PINNED`), `environment.toml` (`[data]`), `README.md`, `.github/workflows/ci.yml` (repo root)
@@ -2379,10 +2379,17 @@ virtual_length = <curated from the report>
 
 - [ ] **Step 5: Goldens and artifact**
 
+First extend `scripts/write_goldens.py` with **discrimination goldens on ~30 real
+problems** of the published dataset (strided across the splits), each frozen with
+four completions and their expected status: the stored reference (reward 1.0,
+`ok`), a wrong variant of it (reward 0.0, `wrong_answer`), an infinite loop
+(`timeout`) and `import os` (`forbidden_import`). `scripts/verify_wheel.py`
+replays them from the installed wheel.
+
 Run: `uv run python scripts/write_goldens.py && uv run pytest -v`
 Expected: all pass.
 
-- [ ] **Step 6: CI job** — add to `.github/workflows/ci.yml` a job `competitive-code` copied from the `science` job, with `working-directory: environments/code/reliquary_competitive_code`, the validate line `uv run --no-sync validate reliquary-competitive-code -n 3 --only-gold true --split eval --runtime.type docker --runtime.allow '[]' --rich false`, and the wheel name `reliquary_competitive_code-0.1.0a1-py3-none-any.whl`.
+- [ ] **Step 6: CI job** — add to `.github/workflows/ci.yml` a job `competitive-code` copied from the `science` job, with `working-directory: environments/code/reliquary_competitive_code`, the validate line `uv run --no-sync validate reliquary-competitive-code -n 3 --only-gold true --taskset.split eval --runtime.type docker --runtime.allow '[]' --rich false`, and the wheel name `reliquary_competitive_code-0.1.0a1-py3-none-any.whl`.
 
 - [ ] **Step 7: Commit, push, open the PR**
 ```bash
