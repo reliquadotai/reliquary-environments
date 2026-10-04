@@ -6,7 +6,8 @@ sandboxed grader both call this function on the captured output.
 Token by token on whitespace, so line endings and spacing never decide a
 verdict. Two relaxations, both what the original judges accept: `yes`/`no` in
 any case, and a tolerance on decimals. An expected integer is compared
-exactly, so a float that happens to be close to an integer answer is wrong.
+exactly: a decimal matches it only when its value is exactly that integer
+("2.000000" for "2"), so a float that is merely close is wrong.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ def _tokens_match(want: str, got: str) -> bool:
     if want.lower() in _CASELESS:
         return want.lower() == got.lower()
     if not _is_decimal(want):
-        return False
+        return _is_integer(want) and _is_decimal(got) and float(got) == int(want)
     a, b = _finite(want), _finite(got)
     return (
         a is not None
@@ -39,6 +40,14 @@ def _tokens_match(want: str, got: str) -> bool:
 
 def _is_decimal(token: str) -> bool:
     return any(c in token for c in ".eE") and _finite(token) is not None
+
+
+def _is_integer(token: str) -> bool:
+    try:
+        int(token)
+    except ValueError:
+        return False
+    return True
 
 
 def _finite(token: str) -> float | None:

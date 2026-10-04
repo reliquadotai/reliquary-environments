@@ -8,6 +8,10 @@ The import gate and the reduced builtins are rules of the task, not a security
 boundary. Containment is the sandbox's job (gVisor in production, a limited
 subprocess locally). What this file guarantees is that the rules are the same
 everywhere: the same modules, the same `sys`, the same verdict for an exit.
+
+Contract for a host: one run per fresh process (or fork), never concurrent;
+module state (e.g. monkeypatched math, random seed, daemon threads) is not
+isolated between runs in one process.
 """
 
 from __future__ import annotations
@@ -20,9 +24,10 @@ import time
 import types
 
 ALLOWED_IMPORT_ROOTS = frozenset({
-    "abc", "array", "bisect", "collections", "copy", "dataclasses", "decimal",
-    "enum", "fractions", "functools", "heapq", "itertools", "math", "operator",
-    "random", "re", "statistics", "string", "sys", "threading", "typing",
+    "__future__", "abc", "array", "bisect", "cmath", "collections", "copy",
+    "dataclasses", "datetime", "decimal", "enum", "fractions", "functools",
+    "heapq", "itertools", "math", "operator", "queue", "random", "re",
+    "statistics", "string", "sys", "threading", "time", "typing",
 })
 DENIED_BUILTINS = frozenset({
     "breakpoint", "compile", "dir", "eval", "exec", "globals", "help",
@@ -56,6 +61,7 @@ def _sys_shim(stdin, stdout) -> types.ModuleType:
     shim.stderr = io.StringIO()
     shim.argv = ["main.py"]
     shim.maxsize = sys.maxsize
+    shim.float_info = sys.float_info
     shim.version_info = sys.version_info
     shim.exit = sys.exit
     shim.setrecursionlimit = sys.setrecursionlimit
@@ -109,6 +115,9 @@ def run(code: str, stdin_text: str, output_cap: int) -> dict:
     saved_stack = threading.stack_size()
     threads_before = set(threading.enumerate())
     sys.stdin, sys.stdout = stdin, stdout
+    # Competitive answers routinely print integers beyond the default 4300
+    # digits; the original judges have no such limit.
+    sys.set_int_max_str_digits(0)
     status = "ok"
     start = time.process_time()
     try:

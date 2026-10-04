@@ -33,3 +33,11 @@ def test_non_finite_tokens_compare_as_text() -> None:
     assert outputs_match("nan", "nan")
     assert not outputs_match("1.0", "nan")
     assert not outputs_match("inf", "1e400")
+
+
+def test_an_integer_answer_accepts_an_exactly_equal_decimal() -> None:
+    assert outputs_match("2", "2.000000")
+    assert outputs_match("-3", "-3.0")
+    assert not outputs_match("2", "2.0000001")
+    assert not outputs_match("2", "2.5")
+    assert not outputs_match("123456789012345678901", "1.23456789012345678901e20")

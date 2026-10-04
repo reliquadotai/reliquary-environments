@@ -14,15 +14,22 @@ from typing import Any
 from reliquary_competitive_code.corpus import Corpus, pinned_corpus
 from reliquary_competitive_code.extraction import extract_program
 from reliquary_competitive_code.judge import judge
+from reliquary_competitive_code.judge.guest import ALLOWED_IMPORT_ROOTS
+from reliquary_competitive_code.judge.runner import HARNESS_OVERLOAD
 from reliquary_competitive_code.layout import SPLITS
 
 ENVIRONMENT = "reliquary_competitive_code_v1"
 TASK_FAMILY = "competitive_programming_stdio_v1"
 JUDGE_VERSION = "stdio-tokens-v1"
+# Generated from the import gate, so the prompt cannot drift from the rules.
+# `__future__` is compiler machinery, not a module a solution chooses.
+PROMPTED_MODULES = tuple(sorted(m for m in ALLOWED_IMPORT_ROOTS if not m.startswith("_")))
 INSTRUCTION = (
     "\n\nWrite a complete Python 3 program that reads the input from standard "
-    "input and prints the answer to standard output. Use input() or sys.stdin; "
-    "the os and io modules and file access are not available. Put the whole "
+    "input and prints the answer to standard output. Use input() or sys.stdin. "
+    "Only these standard library modules can be imported: "
+    + ", ".join(PROMPTED_MODULES)
+    + "; the os and io modules and file access are not available. Put the whole "
     "program in a single ```python code block at the end of your answer."
 )
 
@@ -78,6 +85,12 @@ class CompetitiveCodeEnvironment:
             tests,
             time_limit_s=problem.time_limit_s,
         )
+        if verdict.status == HARNESS_OVERLOAD:
+            # The wall clock fired before the program used its CPU budget: the
+            # host, not the program, decided. Never turn that into a reward.
+            raise RuntimeError(
+                f"problem {problem.problem_id}: {HARNESS_OVERLOAD} on test {verdict.tests_run}, no verdict"
+            )
         reward = 1.0 if verdict.passed else 0.0
         return {
             "reward": reward,

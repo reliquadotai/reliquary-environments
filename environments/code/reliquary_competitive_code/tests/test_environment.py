@@ -121,3 +121,18 @@ def test_serving_does_not_import_the_build() -> None:
         "assert not bad, bad"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_a_harness_overload_is_never_a_reward(corpus) -> None:
+    environment = CompetitiveCodeEnvironment("train", corpus=corpus)
+    with pytest.raises(RuntimeError, match="harness_overload"):
+        environment.grade(5, "```python\nimport time\ntime.sleep(5)\n```")
+
+
+def test_the_instruction_lists_the_allowed_modules() -> None:
+    from reliquary_competitive_code.judge.guest import ALLOWED_IMPORT_ROOTS
+
+    for module in ALLOWED_IMPORT_ROOTS - {"__future__"}:
+        assert f"{module}," in INSTRUCTION or f"{module}." in INSTRUCTION or f"{module};" in INSTRUCTION
+    assert "__future__" not in INSTRUCTION
+    assert "os" in INSTRUCTION and "file access" in INSTRUCTION
