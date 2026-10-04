@@ -40,9 +40,11 @@ class _CappedBytes(io.BytesIO):
     def __init__(self, cap: int) -> None:
         super().__init__()
         self._cap = cap
+        self.exceeded = False
 
     def write(self, data) -> int:
         if self.tell() + len(data) > self._cap:
+            self.exceeded = True
             raise OutputLimitExceeded()
         return super().write(data)
 
@@ -83,14 +85,19 @@ def _safe_builtins(shim: types.ModuleType) -> dict:
     return safe
 
 
-def _join_threads() -> None:
+def _join_new_threads(before: set) -> None:
+    """Join the non-daemon threads the submission started, and only those."""
     for thread in threading.enumerate():
-        if thread is not threading.main_thread() and not thread.daemon:
+        if thread not in before and not thread.daemon:
             thread.join()
 
 
 def run(code: str, stdin_text: str, output_cap: int) -> dict:
-    """Run `code` as a script on `stdin_text`; return status, stdout, CPU time."""
+    """Run `code` as a script on `stdin_text`; return status, stdout, CPU time.
+
+    `cpu_seconds` is `time.process_time()`, the whole process's CPU: exact in a
+    fresh subprocess only. An in-process host must account CPU itself.
+    """
     raw_out = _CappedBytes(output_cap)
     stdout = io.TextIOWrapper(raw_out, encoding="utf-8", write_through=True)
     stdin = io.TextIOWrapper(io.BytesIO(stdin_text.encode("utf-8")), encoding="utf-8")
@@ -98,31 +105,37 @@ def run(code: str, stdin_text: str, output_cap: int) -> dict:
     namespace = {"__name__": "__main__", "__builtins__": _safe_builtins(shim)}
     saved_stdin, saved_stdout = sys.stdin, sys.stdout
     saved_limit = sys.getrecursionlimit()
+    saved_digits = sys.get_int_max_str_digits()
+    saved_stack = threading.stack_size()
+    threads_before = set(threading.enumerate())
     sys.stdin, sys.stdout = stdin, stdout
     status = "ok"
     start = time.process_time()
     try:
-        exec(compile(code, "<submission>", "exec"), namespace)
-        _join_threads()
-    except OutputLimitExceeded:
-        status = "output_limit"
-    except SystemExit as stop:
-        if stop.code not in (None, 0):
+        try:
+            exec(compile(code, "<submission>", "exec"), namespace)
+        except OutputLimitExceeded:
+            status = "output_limit"
+        except SystemExit as stop:
+            if stop.code not in (None, 0):
+                status = "runtime_error"
+        except ImportError as error:
+            status = "forbidden_import" if GATE_MESSAGE in str(error) else "runtime_error"
+        except BaseException:
             status = "runtime_error"
-        else:
-            _join_threads()
-    except ImportError as error:
-        status = "forbidden_import" if GATE_MESSAGE in str(error) else "runtime_error"
-    except BaseException:
-        status = "runtime_error"
+        _join_new_threads(threads_before)
     finally:
         cpu_seconds = time.process_time() - start
         try:
             stdout.flush()
         except OutputLimitExceeded:
+            pass
+        if raw_out.exceeded:
             status = "output_limit"
         sys.stdin, sys.stdout = saved_stdin, saved_stdout
         sys.setrecursionlimit(saved_limit)
+        sys.set_int_max_str_digits(saved_digits)
+        threading.stack_size(saved_stack)
     text = raw_out.getvalue().decode("utf-8", errors="replace")
     return {
         "status": status,

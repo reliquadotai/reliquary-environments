@@ -19,6 +19,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ MEMORY_BYTES = 2 << 30
 OUTPUT_CAP_SLACK = 64 * 1024
 WALL_FACTOR = 2.0
 WALL_SLACK_S = 1.0
+READ_SLACK = 1 << 20
 
 _GUEST_SOURCE = Path(__file__).with_name("guest.py").read_text(encoding="utf-8")
 _DRIVER = """
@@ -44,6 +46,8 @@ if __name__ == "__main__":
 
 @dataclass(frozen=True, slots=True)
 class TestCase:
+    __test__ = False  # not a pytest class
+
     stdin: str
     stdout: str
 
@@ -90,8 +94,24 @@ def _kill_group(proc: subprocess.Popen) -> tuple[bytes, bytes]:
         return proc.communicate()
 
 
+def _reap(proc: subprocess.Popen) -> tuple[int, float]:
+    """Wait for the child ourselves: its exit code and CPU as the kernel counted them."""
+    _, status, usage = os.wait4(proc.pid, 0)
+    proc.returncode = os.waitstatus_to_exitcode(status)
+    return proc.returncode, usage.ru_utime + usage.ru_stime
+
+
+def _killpg(proc: subprocess.Popen) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def run_test(code: str, stdin: str, *, time_limit_s: float, output_cap: int) -> RunResult:
-    request = json.dumps({"code": code, "stdin": stdin, "output_cap": output_cap})
+    """CPU time and exit status come from the kernel (wait4), never from what the
+    child prints: the submission shares the child's stdout and could forge it."""
+    request = json.dumps({"code": code, "stdin": stdin, "output_cap": output_cap}).encode("utf-8")
     try:
         proc = subprocess.Popen(
             [sys.executable, "-I", "-S", "-c", _program(math.ceil(time_limit_s) + 1)],
@@ -104,24 +124,55 @@ def run_test(code: str, stdin: str, *, time_limit_s: float, output_cap: int) -> 
         )
     except OSError:
         return RunResult("runtime_error", "", 0.0)
-    timed_out = False
+    chunks: list[bytes] = []
+    keep = output_cap + READ_SLACK
+
+    def read_out() -> None:
+        kept = 0
+        while True:
+            block = proc.stdout.read(65536)
+            if not block:
+                return
+            if kept < keep:
+                chunks.append(block)
+                kept += len(block)
+
+    def write_in() -> None:
+        try:
+            proc.stdin.write(request)
+            proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+
+    readers = [threading.Thread(target=read_out, daemon=True), threading.Thread(target=write_in, daemon=True)]
+    for thread in readers:
+        thread.start()
+    wall_fired = threading.Event()
+
+    def on_wall_clock() -> None:
+        wall_fired.set()
+        _killpg(proc)
+
+    timer = threading.Timer(WALL_FACTOR * time_limit_s + WALL_SLACK_S, on_wall_clock)
+    timer.start()
     try:
-        out, _ = proc.communicate(
-            input=request.encode("utf-8"),
-            timeout=WALL_FACTOR * time_limit_s + WALL_SLACK_S,
-        )
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        out, _ = _kill_group(proc)
-    if timed_out or proc.returncode in (-signal.SIGXCPU, -signal.SIGKILL):
-        return RunResult("timeout", "", time_limit_s)
-    try:
-        result = json.loads(out.decode("utf-8", errors="replace").rstrip().rsplit("\n", 1)[-1])
-        status, text, cpu = str(result["status"]), str(result["stdout"]), float(result["cpu_seconds"])
-    except (ValueError, KeyError, TypeError, IndexError):
-        return RunResult("runtime_error", "", 0.0)
-    if cpu > time_limit_s:
+        exit_code, cpu = _reap(proc)
+    finally:
+        timer.cancel()
+        _killpg(proc)  # anything the submission left behind
+    for thread in readers:
+        thread.join(timeout=5)
+    proc.stdout.close()
+    if wall_fired.is_set() or exit_code in (-signal.SIGXCPU, -signal.SIGKILL) or cpu > time_limit_s:
         return RunResult("timeout", "", cpu)
+    if exit_code != 0:
+        return RunResult("runtime_error", "", cpu)
+    try:
+        line = b"".join(chunks).decode("utf-8", errors="replace").rstrip().rsplit("\n", 1)[-1]
+        result = json.loads(line)
+        status, text = str(result["status"]), str(result["stdout"])
+    except (ValueError, KeyError, TypeError, IndexError):
+        return RunResult("runtime_error", "", cpu)
     return RunResult(status, text, cpu)
 
 

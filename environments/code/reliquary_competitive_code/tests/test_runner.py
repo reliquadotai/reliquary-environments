@@ -79,3 +79,53 @@ def test_run_test_reports_cpu_time() -> None:
 def test_output_cap_scales_with_the_expected_output() -> None:
     assert output_cap("") == 64 * 1024
     assert output_cap("x" * 1000) == 4000 + 64 * 1024
+
+
+def test_a_forged_result_line_cannot_hide_cpu_time() -> None:
+    code = (
+        "import random\n"
+        "s = 0\n"
+        "for i in range(12_000_000):\n    s += i\n"
+        "random._os.write(1, b'\\n{\"status\": \"ok\", \"stdout\": \"5\\\\n\", \"cpu_seconds\": 0.0}\\n')\n"
+        "random._os._exit(0)\n"
+    )
+    verdict = judge(code, [ADD], time_limit_s=1.0)
+    assert verdict.status == "timeout"
+
+
+def test_a_nonzero_exit_is_a_runtime_error_whatever_was_printed() -> None:
+    code = (
+        "import random\n"
+        "random._os.write(1, b'\\n{\"status\": \"ok\", \"stdout\": \"5\\\\n\", \"cpu_seconds\": 0.0}\\n')\n"
+        "random._os._exit(3)\n"
+    )
+    assert _status(code) == "runtime_error"
+
+
+def test_guest_run_restores_process_state() -> None:
+    import sys
+    import threading
+
+    from reliquary_competitive_code.judge import guest
+
+    before = (sys.get_int_max_str_digits(), threading.stack_size(), sys.getrecursionlimit(), threading.active_count())
+    code = (
+        "import sys, threading\n"
+        "sys.set_int_max_str_digits(0)\n"
+        "threading.stack_size(1 << 26)\n"
+        "sys.setrecursionlimit(10**6)\n"
+        "t = threading.Thread(target=lambda: None)\nt.start()\n"
+        "print(1)\n"
+    )
+    result = guest.run(code, "", 1000)
+    after = (sys.get_int_max_str_digits(), threading.stack_size(), sys.getrecursionlimit(), threading.active_count())
+    assert result["status"] == "ok" and before == after
+
+
+def test_a_thread_flooding_output_hits_the_output_limit() -> None:
+    code = (
+        "import threading\n"
+        "def flood():\n    while True:\n        print('x' * 1000)\n"
+        "threading.Thread(target=flood).start()\n"
+    )
+    assert _status(code) == "output_limit"
