@@ -20,7 +20,7 @@ def test_exact_duplicates_merge_and_keep_the_most_tests() -> None:
     ])
     assert len(merged) == 1
     assert merged[0].source == "primeintellect" and len(merged[0].tests) == 10
-    assert merged[0].references == ("r1", "r2")
+    assert merged[0].references == ("r2", "r1")
     assert merged[0].contest_date == "2021-01-01"
 
 
@@ -34,11 +34,17 @@ def test_different_problems_stay_apart() -> None:
     assert len(deduplicate([_row(LONG, 3, ("a",)), _row(other, 3, ("b",))])) == 2
 
 
-def test_output_order_is_deterministic() -> None:
+def test_output_order_and_references_are_deterministic() -> None:
     near = LONG.replace("print the answer", "output the answer")
-    rows = [_row(LONG, 3, ("a",)), _row(near, 2, ("b",))]
+    rows = [
+        _row(LONG, 3, ("a",), "x"),
+        _row(LONG.upper(), 3, ("b",), "y"),
+        _row(LONG + "!", 3, ("c",), "w"),
+        _row(near, 2, ("d",), "z"),
+    ]
     assert len(deduplicate(rows)) == 1
     assert deduplicate(rows) == deduplicate(list(reversed(rows)))
+    assert deduplicate(rows)[0].references == ("b", "c", "a", "d")
 
 
 def test_references_come_lead_first() -> None:
@@ -65,3 +71,14 @@ def test_chain_of_near_duplicates_is_one_cluster() -> None:
     b = base.replace("print the answer", "output the answer", 1)
     c = b.replace("minimum", "smallest", 1)
     assert len(deduplicate([_row(base, 3, ("a",)), _row(b, 4, ("b",)), _row(c, 5, ("c",))])) == 1
+
+
+def test_formatting_of_numbers_does_not_split_duplicates() -> None:
+    caret = LONG + " where n is at most 10^5 and s is at most 200 000"
+    sup = LONG + " where n is at most 10<sup>5</sup> and s is at most 200000"
+    assert len(deduplicate([_row(caret, 3, ("a",)), _row(sup, 4, ("b",))])) == 1
+
+
+def test_shared_version_boilerplate_still_merges() -> None:
+    text = "The only difference between easy and hard versions is the constraints on n. " + LONG
+    assert len(deduplicate([_row(text, 3, ("a",)), _row(text.replace("print", "output"), 4, ("b",))])) == 1
