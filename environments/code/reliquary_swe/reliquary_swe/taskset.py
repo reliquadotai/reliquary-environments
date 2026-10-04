@@ -122,6 +122,45 @@ _STRIP_AND_GC = " ; ".join(
 )
 
 
+# R2E only, in place of `_CHECKOUT`. An R2E image's working tree is NOT its
+# HEAD: measured on the pandas golden, the image builder staged edits to
+# `pandas/__init__.py`, `_version.py` and `versioneer.py`, edited `setup.cfg`
+# (dropping an `addopts = --strict-data-files` that the hidden tests cannot
+# run under) and deleted `pyproject.toml` -- and `_CHECKOUT`'s
+# `git reset --hard` puts all of it back, after which pytest refuses to start
+# and every rollout scores 0, gold patch included. So the image's own state
+# is committed instead, as a child of HEAD (the pre-fix commit), and that
+# commit is the base the agent's diff is taken against and the base grading
+# restores from (`grade()` runs the same step). On a clean image (coveragepy,
+# tornado) it is an empty commit. Untracked files (`run_tests.sh`,
+# `install.sh`, build output) stay untracked, as `snapshot_untracked`
+# expects.
+_R2E_CHECKOUT = " ; ".join(
+    [
+        "set -e",
+        'git -C "$WORKDIR" checkout -q --detach HEAD',
+        'git -C "$WORKDIR" -c user.name=reliquary-swe '
+        "-c user.email=reliquary-swe@localhost "
+        "commit -q -a --allow-empty --no-verify -m base",
+    ]
+)
+
+# R2E only, run after `_STRIP_AND_GC`. Every R2E image carries its hidden
+# tests inside the very box the agent works in -- `/r2e_tests` (the test
+# files) and `/testbed/run_tests.sh` (the command that runs them), measured
+# on three images -- and R2E's own runtime hides both before its agent starts
+# (`SKIP_FILES_NEW` moved under `/root`). Deleting them is enough here: the
+# agent's box is never graded, and grading takes both from a fresh box of the
+# same image (see `grading._restore_r2e`). `$WORKDIR/r2e_tests` is not in the
+# image; it is removed in case a future image ships R2E's symlink already.
+_R2E_HIDE_TESTS = " ; ".join(
+    [
+        'rm -rf /r2e_tests "$WORKDIR"/r2e_tests "$WORKDIR"/run_tests.sh',
+        'test ! -e /r2e_tests && test ! -e "$WORKDIR"/run_tests.sh',
+    ]
+)
+
+
 class SweData(vf.TaskData):
     instance_id: str
     repo: str
@@ -140,6 +179,10 @@ class SweData(vf.TaskData):
     # command, whose exit status is the verdict. Defaulted so the wire shape
     # of the other two corpora is unchanged.
     test_command: str = ""
+    # R2E only (see `corpus.SweRow.expected_output_json`): the exact verdict
+    # map grading must reproduce. Defaulted so the other corpora's wire
+    # shape is unchanged.
+    expected_output_json: str = ""
 
 
 class SweTask(vf.Task[SweData]):
@@ -171,10 +214,18 @@ class SweTask(vf.Task[SweData]):
         # it. Either way nothing an agent could use sits in HEAD's ancestry,
         # and the ref stripping below prunes the parked upstream: after it,
         # a full object-store scan no longer finds the removed code.
-        steps = [_CHECKOUT]
+        steps = [_R2E_CHECKOUT if self.data.split == "r2e" else _CHECKOUT]
         if self.data.split == "train":
             steps.append(_TRAIN_GUARD_AND_REROOT)
         steps.append(_STRIP_AND_GC)
+        # "r2e" needs no re-root either: HEAD is detached at the pre-fix
+        # commit, and the fix commit is a *descendant* reachable only through
+        # the full upstream history's branch refs, which the strip deletes
+        # and `gc` then prunes (asserted on real images in
+        # tests/test_r2e_goldens.py). It does need its hidden tests out of
+        # the box.
+        if self.data.split == "r2e":
+            steps.append(_R2E_HIDE_TESTS)
         cleanup = " ; ".join(steps)
         result = await runtime.run(
             ["sh", "-c", cleanup],
@@ -253,7 +304,11 @@ class SweTasksetConfig(vf.TasksetConfig):
     # config, 2,698 tasks in eight languages, graded by the exit status of a
     # hidden test script rather than by test lists (see
     # `corpus.load_polyglot_rows`).
-    split: Literal["eval", "train", "polyglot"] | None = None
+    #
+    # "r2e" is a third: R2E-Gym-Subset, 4,578 tasks from the real commit
+    # history of 10 Python repositories, graded by reproducing the exact
+    # verdict map of hidden tests (see `corpus.load_r2e_rows`).
+    split: Literal["eval", "train", "polyglot", "r2e"] | None = None
     # Only read when split="train". Together with `max_test_count`, this
     # determines the exact task set (spec section 8: "declared, never
     # auto-detected"); see `corpus.load_swesmith_rows` for why a fixed pair
@@ -278,9 +333,10 @@ class SweTasksetConfig(vf.TasksetConfig):
     # `corpus.DEFAULT_SWESMITH_MAX_TEST_COUNT` (its measured p95) explicitly
     # if a repository this package has not measured ever needs it.
     max_test_count: int | None = None
-    # Only read when split="polyglot": the first N tasks of the pinned
-    # corpus, `None` for all 2,698. One image per task, so this is the disk
-    # budget -- see `corpus.load_polyglot_rows`.
+    # Only read when split="polyglot" or "r2e": the first N tasks of the
+    # pinned corpus, `None` for all of them (2,698 and 4,578). One image per
+    # task in both, so this is the disk budget -- see
+    # `corpus.load_polyglot_rows` and `corpus.load_r2e_rows`.
     num_tasks: int | None = None
 
 
@@ -353,7 +409,8 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
             raise ValueError(
                 "reliquary-swe: --taskset.split is required (\"eval\" for "
                 "SWE-bench Verified, \"train\" for SWE-smith, \"polyglot\" "
-                "for MiMo-V2.6-RL-oss's code tasks) -- it has no "
+                "for MiMo-V2.6-RL-oss's code tasks, \"r2e\" for "
+                "R2E-Gym-Subset) -- it has no "
                 "default so that an operator wiring a real training source "
                 "cannot silently fall back to the evaluation set"
             )
@@ -370,6 +427,8 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
                 swesmith_adapter.ensure_python_profile(repo)
         elif self.config.split == "polyglot":
             rows = corpus.load_polyglot_rows(self.config.num_tasks)
+        elif self.config.split == "r2e":
+            rows = corpus.load_r2e_rows(self.config.num_tasks)
         else:
             rows = corpus.load_rows(self.config.split)
         for index, row in enumerate(rows):
@@ -387,7 +446,7 @@ def task_for(row: corpus.SweRow, index: int, split: str, task_config=None) -> Sw
             idx=index,
             name=row.instance_id,
             prompt=PROMPT.format(workdir=row.workdir, problem_statement=row.problem_statement),
-            # Given directly for SWE-smith and polyglot (row.image); derived
+            # Given directly for SWE-smith, polyglot and R2E (row.image); derived
             # for SWE-bench Verified, whose rows carry none (spec section 8:
             # "the image is given, not derived" -- Verified's own derivation
             # is the fallback, not the rule).
@@ -410,6 +469,7 @@ def task_for(row: corpus.SweRow, index: int, split: str, task_config=None) -> Sw
             test_patch=row.test_patch,
             split=split,
             test_command=row.test_command,
+            expected_output_json=row.expected_output_json,
         ),
         task_config,
     )

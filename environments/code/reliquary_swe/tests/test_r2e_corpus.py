@@ -10,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+import verifiers.v1 as vf
 
 from reliquary_swe import corpus
 
@@ -222,3 +223,17 @@ def test_no_repo_overlap_with_the_evaluation_set():
     assert len(r2e_names) == 10
     assert r2e_names.isdisjoint(eval_names)
 
+
+def test_the_r2e_split_yields_tasks_that_carry_the_expected_verdicts():
+    config = vf.taskset_config_type("reliquary-swe")
+    tasks = list(vf.load_taskset(config(id="reliquary-swe", split="r2e", num_tasks=3)))
+    assert len(tasks) == 3
+    rows = corpus.load_r2e_rows(3)
+    for task, row in zip(tasks, rows, strict=True):
+        assert task.data.split == "r2e"
+        assert task.data.instance_id == row.instance_id
+        assert task.data.image == row.image
+        assert task.data.workdir == "/testbed"
+        assert task.data.expected_output_json == row.expected_output_json
+        assert task.data.network_allow == []
+        assert "at /testbed." in str(task.data.prompt)

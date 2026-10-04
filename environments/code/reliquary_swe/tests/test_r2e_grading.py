@@ -1,0 +1,108 @@
+"""R2E grading's pure pieces -- the log parser and the reward rule -- with no
+container. `tests/test_r2e_goldens.py` checks them against real images."""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+from reliquary_swe import grading
+
+# Shaped like real output: tornado's own runner on the golden image (stdout,
+# captured on the box), and pytest's `-rA` summary.
+TORNADO_LOG = """\
+AttributeError: 'HTTPRequest' object has no attribute 'partition'
+
+==================== short test summary info ====================
+PASSED r2e_tests.test_1::WebSocketTest::test_websocket_callbacks
+ERROR r2e_tests.test_1::WebSocketTest::test_websocket_headers
+=================== 1 error, 1 passed in 0.03s ===================
+"""
+
+PYTEST_LOG = """\
+PASSED r2e_tests/test_1.py::TestX::test_before_the_summary
+=========================== short test summary info ============================
+PASSED r2e_tests/test_1.py::TestX::test_ok
+FAILED r2e_tests/test_1.py::TestX::test_bad - AssertionError: assert 1 == 2
+ERROR r2e_tests/test_1.py::test_fixture - RuntimeError: boom
+PASSED r2e_tests/test_1.py::test_param[a - b]
+========================= 1 failed, 2 passed, 1 error in 0.50s =========================
+"""
+
+
+def test_parse_reads_only_the_short_test_summary():
+    assert grading.parse_log_pytest(PYTEST_LOG) == {
+        "TestX.test_ok": "PASSED",
+        "TestX.test_bad": "FAILED",
+        "test_fixture": "ERROR",
+        # R2E keeps " - " in a PASSED name; the reward rule splits it off.
+        "test_param[a - b]": "PASSED",
+    }
+
+
+def test_parse_reads_tornados_own_runner():
+    assert grading.parse_log_pytest(TORNADO_LOG) == {
+        "WebSocketTest.test_websocket_callbacks": "PASSED",
+        "WebSocketTest.test_websocket_headers": "ERROR",
+    }
+
+
+def test_parse_without_a_summary_is_empty():
+    assert grading.parse_log_pytest("Traceback (most recent call last):\n") == {}
+    assert grading.parse_log_pytest("") == {}
+
+
+def test_a_collection_error_parses_to_the_empty_name():
+    log = "=== short test summary info ===\nERROR r2e_tests/test_1.py - ImportError: x\n"
+    assert grading.parse_log_pytest(log) == {"": "ERROR"}
+
+
+def _expected(mapping: dict[str, str]) -> str:
+    return json.dumps(mapping)
+
+
+def test_reward_is_one_only_for_the_exact_verdict_map():
+    expected = _expected({"TestX.test_ok": "PASSED", "TestX.test_bad": "FAILED"})
+    assert grading.r2e_reward({"TestX.test_ok": "PASSED", "TestX.test_bad": "FAILED"}, expected) == 1.0
+    # A test expected to fail must fail: "all green" is not the target.
+    assert grading.r2e_reward({"TestX.test_ok": "PASSED", "TestX.test_bad": "PASSED"}, expected) == 0.0
+    assert grading.r2e_reward({"TestX.test_ok": "PASSED"}, expected) == 0.0
+    assert (
+        grading.r2e_reward(
+            {"TestX.test_ok": "PASSED", "TestX.test_bad": "FAILED", "TestX.extra": "PASSED"},
+            expected,
+        )
+        == 0.0
+    )
+
+
+def test_reward_for_an_empty_parse_is_zero_even_against_an_empty_map():
+    # R2E's own rule (same size, every key matches) would pay 0 == 0.
+    assert grading.r2e_reward({}, _expected({})) == 0.0
+    assert grading.r2e_reward({}, _expected({"t": "PASSED"})) == 0.0
+
+
+def test_a_collection_error_cannot_stand_in_for_a_test():
+    # R2E's own comparison skips an empty name, so on a task with ONE
+    # expected test (46 rows in the pinned revision) a patch that breaks the
+    # test module's import -- parsed as {"": "ERROR"} -- would pay 1.0.
+    assert grading.r2e_reward({"": "ERROR"}, _expected({"test_fix": "PASSED"})) == 0.0
+
+
+def test_an_expected_collection_error_must_still_be_reproduced():
+    # One row (orange3 f813020a9c0a) expects {"": "ERROR"} among 27 entries.
+    expected = _expected({"": "ERROR", "T.test_a": "PASSED"})
+    assert grading.r2e_reward({"": "ERROR", "T.test_a": "PASSED"}, expected) == 1.0
+    assert grading.r2e_reward({"T.test_a": "PASSED", "T.test_b": "PASSED"}, expected) == 0.0
+
+
+def test_reward_normalises_names_as_r2e_does():
+    # Keys are cut at " - " on both sides, and ANSI bold is stripped from
+    # expected names (369 rows store them that way).
+    expected = _expected({"\x1b[1mtest_param[a - b]\x1b[0m": "PASSED"})
+    assert grading.r2e_reward({"test_param[a - b]": "PASSED"}, expected) == 1.0
+
+
+def test_restore_strategy_is_the_r2e_strategy_for_an_r2e_row():
+    data = SimpleNamespace(split="r2e", test_patch="")
+    assert grading._restore_strategy_for(data) is grading._restore_r2e

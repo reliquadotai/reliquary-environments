@@ -44,6 +44,7 @@ tested against any box and keeps the retry policy in one place.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -53,7 +54,12 @@ import verifiers.v1 as vf
 
 from reliquary_swe import swe_adapter, swesmith_adapter
 from reliquary_swe.corpus import SweRow
-from reliquary_swe.taskset import _STRIP_AND_GC, _TRAIN_GUARD_AND_REROOT, SweData
+from reliquary_swe.taskset import (
+    _R2E_CHECKOUT,
+    _STRIP_AND_GC,
+    _TRAIN_GUARD_AND_REROOT,
+    SweData,
+)
 
 _DIFF_TARGET = re.compile(r"^\+\+\+ b/(.+)$", re.MULTILINE)
 
@@ -124,6 +130,28 @@ _POLYGLOT_RUNNER_FILES = (
 )
 
 
+# R2E only. Where a grading box keeps the image's hidden tests while the
+# agent's patch is applied: outside the repository, so `git apply` can neither
+# write into them nor refuse a patch over them (a patch that adds its own
+# `run_tests.sh` would otherwise not apply onto the image's untracked one).
+# R2E's own runtime uses `/root` for the same purpose.
+_R2E_STASH = "/r2e_grading"
+
+# R2E only: the deadline on `run_tests.sh`, R2E's own default
+# (`DockerRuntime._calculate_reward_r2e(timeout=300)`). Measured on the three
+# goldens' images: 0-3 s per run. A run cut short prints no complete summary
+# and scores 0, which is the agent's result (a patch that hangs the tests),
+# not ours.
+_R2E_TEST_TIMEOUT_SECONDS = 300
+
+# R2E's `DockerRuntime.run_tests` strips this from the test output before
+# parsing, and `execution_log_parser.decolor_dict_keys` this narrower one
+# from the expected map's keys. 369 rows of the pinned revision store
+# expected names wrapped in ANSI bold, so both matter.
+_ANSI_OUTPUT = re.compile(r"\x1b\[[0-9;]*m|\r")
+_ANSI_KEY = re.compile(r"\x1b\[\d+m")
+
+
 @dataclass(frozen=True, slots=True)
 class Report:
     reward: float
@@ -156,9 +184,10 @@ class Report:
     # would have caught in one batch instead of four separate nights.
     results_parsed: int = 0
     test_command_exit_code: int | None = None
-    # Polyglot only: the verdict is an exit status, so the only evidence of
-    # *why* a run failed -- a real failing assertion, or a runner that never
-    # started -- is the end of its output.
+    # Polyglot and R2E only: the only evidence of *why* a run failed -- a
+    # real failing assertion, or a runner that never started -- is the end
+    # of its output (for polyglot the verdict is an exit status; for R2E a
+    # verdict map that may legitimately contain FAILED and ERROR entries).
     test_output_tail: str = ""
 
 
@@ -485,6 +514,119 @@ async def _restore_polyglot(runtime: vf.Runtime, data: SweData) -> bool:
     return ok
 
 
+async def _restore_r2e(runtime: vf.Runtime, data: SweData) -> bool:
+    """The R2E strategy: put the image's own hidden tests back where R2E's
+    runner expects them, whatever the agent's patch did.
+
+    `grade()` moved `/r2e_tests` and `run_tests.sh` into `_R2E_STASH` of
+    this fresh box before the patch was applied, so they are the pristine
+    image's -- the `_restore_from_pristine_image` idea, with the image's
+    file system as the source instead of a git commit, because neither is
+    tracked by git (measured: `run_tests.sh` is untracked, `/r2e_tests` is
+    outside the repository). Then, as R2E's own runtime does
+    (`DockerRuntime.setup_env`): `r2e_tests` reachable as a symlink at
+    `$WORKDIR/r2e_tests`, and `run_tests.sh` at `$WORKDIR/run_tests.sh` --
+    replacing anything the patch put at either path.
+
+    The repository root is where the patch can steer the run itself, since
+    `run_tests.sh` is `python -m pytest ... r2e_tests` started there: `-m`
+    puts the working directory first on `sys.path`, and pytest loads a root
+    `conftest.py`. Both measured on the coveragepy golden, without the fix:
+    a root `conftest.py` forcing every outcome to "passed" made all 7
+    expected tests report PASSED (that task's exact expected map, so a
+    paid 1.0), and a root `pytest.py` replaced pytest outright and printed
+    whatever summary it liked. So every root entry that was not there before
+    the patch (`_R2E_STASH/root-entries`, listed by `grade()`) is deleted --
+    shadowing `pytest`, `_pytest`, `pluggy` or any other module pytest
+    imports after start-up takes a new root entry -- and `conftest.py` and
+    pytest's five config files (`_TEST_CONFIG_FILES`) that the image does
+    track are put back to the base. The cost: a patch's new root-level
+    files never reach the test run; an agent's `reproduce_issue.py` is
+    collateral, a fix that needs a new top-level module is not graded as
+    one (none of the three goldens' does). Nothing below `r2e_tests` needs
+    any of this: that whole tree is the image's.
+    """
+    script = " && ".join(
+        [
+            f"test -s {_R2E_STASH}/root-entries",
+            f'ls -A "$WORKDIR" | grep -vxF -f {_R2E_STASH}/root-entries'
+            ' | while IFS= read -r p; do rm -rf -- "$WORKDIR/$p"; done',
+            'rm -rf "$WORKDIR"/r2e_tests "$WORKDIR"/run_tests.sh',
+            f'cp {_R2E_STASH}/run_tests.sh "$WORKDIR"/run_tests.sh',
+            f'ln -s {_R2E_STASH}/r2e_tests "$WORKDIR"/r2e_tests',
+        ]
+    )
+    placed = await runtime.run(["sh", "-c", script], {"WORKDIR": data.workdir})
+    ok = placed.exit_code == 0
+    if not await _restore_all_if_present(
+        runtime, data.base_commit, ["conftest.py", *_TEST_CONFIG_FILES]
+    ):
+        ok = False
+    return ok
+
+
+def parse_log_pytest(log: str) -> dict[str, str]:
+    """A port of R2E-Gym's `execution_log_parser.parse_log_pytest`, the parser
+    R2E uses for every repository in this corpus (its `parse_log_fn` maps
+    all ten to it) -- tornado included, whose own `tornado_unittest_runner.py`
+    prints the same summary format (checked on the golden image).
+
+    Only lines after "short test summary info" count. A line naming PASSED,
+    FAILED or ERROR (checked in that order, anywhere in the line) records
+    the `::`-separated parts after the file, joined with "."; FAILED and
+    ERROR names are cut at " - " (the message pytest appends). A line
+    without `::` -- a collection error, `ERROR r2e_tests/test_1.py - ...` --
+    records the empty name, as upstream does; `r2e_reward` decides what that
+    is worth.
+    """
+    if "short test summary info" not in log:
+        return {}
+    statuses: dict[str, str] = {}
+    for line in log.split("short test summary info")[1].strip().split("\n"):
+        if "PASSED" in line:
+            statuses[".".join(line.split("::")[1:])] = "PASSED"
+        elif "FAILED" in line:
+            statuses[".".join(line.split("::")[1:]).split(" - ")[0]] = "FAILED"
+        elif "ERROR" in line:
+            statuses[".".join(line.split("::")[1:]).split(" - ")[0]] = "ERROR"
+    return statuses
+
+
+def _r2e_normalised(statuses: dict[str, str]) -> dict[str, str]:
+    """R2E's key normalisation, applied to both sides before comparing:
+    ANSI codes stripped, then each name cut at its first " - "."""
+    decolored = {_ANSI_KEY.sub("", name): status for name, status in statuses.items()}
+    return {name.split(" - ")[0]: decolored[name] for name in sorted(decolored)}
+
+
+def r2e_reward(parsed: dict[str, str], expected_output_json: str) -> float:
+    """1.0 iff the parsed verdict map is exactly the expected one, after
+    R2E's own normalisation (`_r2e_normalised`); 0.0 otherwise.
+
+    R2E's `_calculate_reward_r2e` asks for the same size and every parsed
+    name to carry its expected status. Two deliberate departures, both
+    strictly harder to pay:
+
+    - An empty parse is 0.0, never a vacuous pass -- a runner that never
+      reached its summary must not read as success, whatever the expected
+      map holds.
+    - The empty name is compared like any other. Upstream skips it, which
+      lets a collection error stand in for a missing test: on a task with
+      one expected test (46 rows in the pinned revision), a patch that
+      breaks the test module's import parses as `{"": "ERROR"}` -- same
+      size, nothing compared, paid 1.0. The one row whose expected map
+      itself holds `""` (orange3 f813020a9c0a) still pays when it is
+      reproduced.
+
+    Equal maps are equal sizes with every name matching, so for every input
+    without those two shapes this is R2E's own verdict.
+    """
+    if not parsed:
+        return 0.0
+    expected = _r2e_normalised(json.loads(expected_output_json))
+    return 1.0 if _r2e_normalised(parsed) == expected else 0.0
+
+
 def _restore_strategy_for(data: SweData) -> RestoreTests:
     """Choose how to make the tests be what they should be -- from the data
     itself, never a step `grade()` hardcodes.
@@ -498,6 +640,8 @@ def _restore_strategy_for(data: SweData) -> RestoreTests:
     """
     if data.split == "polyglot":
         return _restore_polyglot
+    if data.split == "r2e":
+        return _restore_r2e
     if data.test_patch.strip():
         return _restore_from_test_patch
     return _restore_from_pristine_image
@@ -583,7 +727,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
                 f"{(resolved.stderr or resolved.stdout).strip()[-500:]}"
             )
         data = data.model_copy(update={"base_commit": resolved.stdout.strip()})
-    elif data.split == "polyglot":
+    elif data.split in ("polyglot", "r2e"):
         # A shape-one polyglot image parks the complete upstream --
         # implementation included -- under `origin/<branch>` (see
         # `SweTask.setup`). The agent's patched source executes during the
@@ -592,8 +736,19 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
         # box. `base_commit` is `HEAD`, which means something else once
         # the agent's patch is committed or applied, so it is pinned to the
         # resolved SHA for every restoration checkout below.
+        #
+        # An R2E image carries the complete upstream history, all branches,
+        # the fix commit included (measured: `git cat-file -t <fix>` answers
+        # "commit" on every image probed). Same cleanup, same reason --
+        # after committing the image's own working tree as the base, exactly
+        # as `setup()` did in the agent's box (see `taskset._R2E_CHECKOUT`):
+        # the agent's patch is a diff against that state, and restoration
+        # must put back the image's `setup.cfg`, not HEAD's.
+        prefix = "set -e ; "
+        if data.split == "r2e":
+            prefix += _R2E_CHECKOUT + " ; "
         strip = await runtime.run(
-            ["sh", "-c", "set -e ; " + _STRIP_AND_GC], {"WORKDIR": data.workdir}
+            ["sh", "-c", prefix + _STRIP_AND_GC], {"WORKDIR": data.workdir}
         )
         if strip.exit_code != 0:
             raise RuntimeError(
@@ -607,6 +762,26 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
                 f"{(resolved.stderr or resolved.stdout).strip()[-500:]}"
             )
         data = data.model_copy(update={"base_commit": resolved.stdout.strip()})
+        if data.split == "r2e":
+            # Out of the patch's reach before it is applied -- see
+            # `_R2E_STASH`. Missing hidden tests mean the image is not what
+            # the corpus says it is: an error about us, never a 0.
+            stash = await runtime.run(
+                [
+                    "sh",
+                    "-c",
+                    f"set -e ; mkdir -p {_R2E_STASH} ; "
+                    f"mv /r2e_tests {_R2E_STASH}/r2e_tests ; "
+                    f'mv "$WORKDIR"/run_tests.sh {_R2E_STASH}/run_tests.sh ; '
+                    f'ls -A "$WORKDIR" > {_R2E_STASH}/root-entries',
+                ],
+                {"WORKDIR": data.workdir},
+            )
+            if stash.exit_code != 0:
+                raise RuntimeError(
+                    f"could not set aside the hidden tests for {data.instance_id}: "
+                    f"{(stash.stderr or stash.stdout).strip()[-500:]}"
+                )
     else:
         # SWE-bench Verified's own leak, closed the same way `setup()`
         # already closes it for the agent's box: the fix for this
@@ -668,6 +843,34 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             results_parsed=0,
             test_command_exit_code=run.exit_code,
             test_output_tail=((run.stdout or "") + (run.stderr or ""))[-2000:],
+        )
+
+    if data.split == "r2e":
+        # R2E's own procedure (`_calculate_reward_r2e`): run the image's
+        # script from the repository root, parse, compare to the expected
+        # map. Only stdout is parsed: both runners print their summary
+        # there, and tornado's logs `ERROR:tornado...` lines to stderr that
+        # would parse as spurious entries if appended after it.
+        run = await runtime.run(
+            [
+                "sh",
+                "-c",
+                f'cd "$WORKDIR" && timeout -k 10 {_R2E_TEST_TIMEOUT_SECONDS} bash run_tests.sh',
+            ],
+            {"WORKDIR": data.workdir},
+        )
+        output = _ANSI_OUTPUT.sub("", run.stdout or "")
+        results = parse_log_pytest(output)
+        return Report(
+            r2e_reward(results, data.expected_output_json),
+            applied,
+            restored,
+            0,
+            0,
+            results,
+            results_parsed=len(results),
+            test_command_exit_code=run.exit_code,
+            test_output_tail=(output + (run.stderr or ""))[-2000:],
         )
 
     row = _row_for(data)
