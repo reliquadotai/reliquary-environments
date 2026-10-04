@@ -32,13 +32,24 @@ _MULTI_ANSWER = re.compile(
     re.IGNORECASE,
 )
 
+_TIE_BREAK = re.compile(
+    r"\b(smallest|largest|lexicographically|minimum|maximum|minimal|maximal|first|last|earliest|latest|shortest|longest)\b",
+    re.IGNORECASE,
+)
+
 
 def is_after_cutoff(row: SourceRow) -> bool:
     return row.contest_date is not None and row.contest_date[:10] >= HELD_OUT_FROM
 
 
 def is_multi_answer(row: SourceRow) -> bool:
-    return _MULTI_ANSWER.search(row.statement) is not None
+    # Split on sentence boundaries
+    sentences = re.split(r"[.!?\n]+", row.statement)
+    for sentence in sentences:
+        # A sentence counts if it matches _MULTI_ANSWER and does NOT match _TIE_BREAK
+        if _MULTI_ANSWER.search(sentence) and not _TIE_BREAK.search(sentence):
+            return True
+    return False
 
 
 def _ngrams(statement: str) -> set[tuple[str, ...]]:

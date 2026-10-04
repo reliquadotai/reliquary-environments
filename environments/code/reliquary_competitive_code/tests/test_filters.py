@@ -46,3 +46,21 @@ def test_lcb_loader_keeps_only_held_out_dates(tmp_path) -> None:
     ]
     (tmp_path / "test5.jsonl").write_text("".join(json.dumps(line) + "\n" for line in lines))
     assert load_lcb_statements(tmp_path) == ["new problem"]
+
+
+def test_tie_break_patterns_are_not_multi_answer() -> None:
+    # Tie-break patterns should NOT be marked as multi-answer
+    assert not is_multi_answer(_row("If there are several such numbers, print the smallest one."))
+    assert not is_multi_answer(_row("If there are multiple such strings, find the lexicographically smallest one among them."))
+    assert not is_multi_answer(_row("If there are several solutions, Vasya wants to find the smallest possible x."))
+    assert not is_multi_answer(_row("find the smallest of them"))
+
+
+def test_multi_answer_without_tie_break_still_counts() -> None:
+    # Original positive case must still pass
+    assert is_multi_answer(_row("If there are several answers, print any of them."))
+
+
+def test_multi_answer_in_second_sentence_after_tie_break() -> None:
+    # Multi-answer in second sentence after a tie-break sentence
+    assert is_multi_answer(_row("If there are several such numbers, print the smallest one. Otherwise, print any valid arrangement."))
