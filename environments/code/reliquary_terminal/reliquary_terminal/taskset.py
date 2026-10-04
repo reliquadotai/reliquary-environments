@@ -25,12 +25,13 @@ from verifiers.v1.taskset import Taskset
 from verifiers.v1.tasksets.harbor.taskset import (
     HarborConfig,
     HarborData,
-    HarborTask,
     VerifierConfig,
     dataset_dir,
     parse_task,
 )
 from verifiers.v1.utils.artifacts import Artifact
+
+from reliquary_terminal.grading import TerminalTask
 
 # Pinned by content digest: `@latest` is revision 6 today and can move.
 EVAL_DATASET = (
@@ -159,8 +160,8 @@ def train_data(row: dict, idx: int, config: TerminalConfig) -> HarborData:
 # Parameterized directly rather than subclassing `HarborTaskset`: verifiers
 # resolves a taskset's config type from its generic parameters, so a plain
 # subclass would still hand the CLI `HarborConfig`, without `split`.
-class TerminalTaskset(Taskset[HarborTask, TerminalConfig]):
-    def load(self) -> Iterator[HarborTask]:
+class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
+    def load(self) -> Iterator[TerminalTask]:
         if self.config.split is None:
             raise ValueError(
                 'reliquary-terminal: --taskset.split is required ("eval" for '
@@ -171,7 +172,7 @@ class TerminalTaskset(Taskset[HarborTask, TerminalConfig]):
         if self.config.split == "train":
             for idx, row in enumerate(load_train_rows()):
                 if self.config.tasks is None or row["instance_id"] in self.config.tasks:
-                    yield HarborTask(train_data(row, idx, self.config), self.config.task)
+                    yield TerminalTask(train_data(row, idx, self.config), self.config.task)
             return
         root = dataset_dir(self.config)
         task_dirs = [
@@ -186,7 +187,7 @@ class TerminalTaskset(Taskset[HarborTask, TerminalConfig]):
             data = parse_task(task_dir, idx, self.config)
             if data.workdir is None:
                 data = data.model_copy(update={"workdir": image_workdir(task_dir)})
-            yield HarborTask(data, self.config.task)
+            yield TerminalTask(data, self.config.task)
 
 
 __all__ = ["EVAL_DATASET", "TerminalConfig", "TerminalTaskset", "image_workdir"]

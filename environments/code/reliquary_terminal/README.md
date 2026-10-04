@@ -31,6 +31,16 @@ longest of the 2,120 terminal commands in that run's traces (10 s;
 `environment.toml`, `command_timeout_seconds`). `--env.agent.harness.id bash`
 still selects the upstream harness, without the timeout.
 
+## Grading detail
+
+Every task of both splits runs pytest with `--ctrf /logs/verifier/ctrf.json`
+before writing 1 or 0 to `reward.txt`. The reward is still `reward.txt`; the
+trace that carries it also gets `info["grading"]` -- `test.sh`'s exit code,
+the tail of its output (where `anti_hack_guard.py` explains a rejection),
+and each test's name, status and failure message -- and the metrics
+`tests_total`, `tests_passed`, `tests_failed`. A report already in the box
+is deleted before `test.sh` runs, so a missing one reads as missing.
+
 ## `eval`: Terminal-Bench 2.1
 
 `terminal-bench/terminal-bench-2-1@sha256:7d7bdc1c…` — revision 6 on the

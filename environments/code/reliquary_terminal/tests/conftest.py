@@ -14,6 +14,10 @@ from verifiers.v1.runtimes import provision_runtime
 from verifiers.v1.tasksets.harbor.taskset import HarborTask, make_tar
 
 
+BOX_CPU = 2.0
+BOX_MEMORY = 4.0  # GB
+
+
 def _docker_available() -> bool:
     if shutil.which("docker") is None:
         return False
@@ -44,8 +48,15 @@ def task(split: str, name: str) -> HarborTask:
 async def provisioned(task: HarborTask) -> AsyncIterator[vf.Runtime]:
     """The box the rollout pipeline builds for `task`'s agent: same image,
     workdir and network policy, already past trusted setup."""
+    resources = task.data.resources
     config = vf.DockerConfig(
-        image=task.data.image, workdir=task.data.workdir, allow=task.data.network_allow
+        image=task.data.image,
+        workdir=task.data.workdir,
+        allow=task.data.network_allow,
+        # The task's own request, never more than BOX_CPU / BOX_MEMORY: the
+        # container hosts these tests share are capped per container.
+        cpu=min(resources.cpu or BOX_CPU, BOX_CPU),
+        memory=min(resources.memory or BOX_MEMORY, BOX_MEMORY),
     )
     async with provision_runtime(config, env=task.runtime_env()) as box:
         await box.prepare_setup()
@@ -70,3 +81,4 @@ def trace(task: HarborTask) -> vf.Trace:
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type=type(task).__name__, data=task.data, key=task.key, hash=task.hash),
     )
+

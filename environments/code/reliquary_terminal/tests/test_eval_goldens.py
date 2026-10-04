@@ -19,13 +19,18 @@ async def test_the_reference_solution_scores_one_in_the_images_own_workdir():
     assert t.data.workdir == "/app/personal-site"
     async with provisioned(t) as box:
         await run_reference_solution(t, box)
-        score = await t.solved(box, trace(t))
+        solver = trace(t)
+        score = await t.solved(box, solver)
     assert score == 1.0
+    counts = solver.info["grading"]["ctrf"]["counts"]
+    assert counts.get("passed", 0) > 0 and counts.get("failed", 0) == 0
 
 
 @docker
 async def test_an_untouched_box_scores_zero():
     t = task("eval", WORKDIR_GOLDEN)
     async with provisioned(t) as box:
-        score = await t.solved(box, trace(t))
+        solver = trace(t)
+        score = await t.solved(box, solver)
     assert score == 0.0
+    assert solver.info["grading"]["ctrf"]["counts"].get("failed", 0) > 0
