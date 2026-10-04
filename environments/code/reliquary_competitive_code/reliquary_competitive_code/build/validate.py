@@ -17,6 +17,7 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from reliquary_competitive_code.layout import SPLITS  # noqa: F401  (re-exported)
 from reliquary_competitive_code.judge import TestCase, output_cap, outputs_match, run_test
 from reliquary_competitive_code.sources.common import SourceRow, problem_id
 
@@ -29,7 +30,6 @@ REFERENCE_CPU_BUDGET_S = 8.0
 TEST_BYTES_BUDGET = 1 << 20
 MIN_TESTS = 5
 MAX_REFERENCES_TRIED = 3
-SPLITS = ("train", "eval", "qualification")
 _SPLIT_SALT = "reliquary_competitive_code_v1"
 
 

@@ -79,3 +79,45 @@ def test_an_empty_split_loads(tmp_path) -> None:
     loaded = Corpus(tmp_path)
     assert loaded.problems("eval") == [] and loaded.problems("qualification") == []
     assert len(loaded.problems("train")) == len(pids)
+    with pytest.raises(ValueError, match="eval split is empty"):
+        CompetitiveCodeEnvironment("eval", corpus=loaded).task(0)
+    with pytest.raises(ValueError, match="eval split is empty"):
+        CompetitiveCodeEnvironment("eval", corpus=loaded).grade(0, "")
+
+
+def test_a_problem_without_tests_is_an_error_not_a_reward(corpus, monkeypatch) -> None:
+    environment = CompetitiveCodeEnvironment("train", corpus=corpus)
+    monkeypatch.setattr(corpus, "tests", lambda split, index: ())
+    with pytest.raises(RuntimeError, match="has no tests"):
+        environment.grade(0, environment.reference_completion(0))
+
+
+def test_row_groups_are_cached_and_bounded(corpus) -> None:
+    corpus._cache.clear()
+    for index in range(0, 300, 64):
+        corpus.tests("train", index % len(corpus.problems("train")))
+    first = corpus._row_group("train", 0)
+    assert corpus._row_group("train", 0) is first
+    assert len(corpus._cache) <= 4
+
+
+def test_a_pin_that_misses_a_file_is_refused_before_any_download(monkeypatch) -> None:
+    from reliquary_competitive_code import corpus as module
+
+    pin = module.DatasetPin("o/r", "rev", {"references.parquet": "00"})
+    monkeypatch.setattr(module, "PINNED", pin)
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", None)  # any import would fail
+    with pytest.raises(RuntimeError, match="the pin must name exactly"):
+        Corpus.pinned()
+
+
+def test_serving_does_not_import_the_build() -> None:
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, reliquary_competitive_code.environment;"
+        "bad = [m for m in sys.modules if m.startswith('reliquary_competitive_code.build')];"
+        "assert not bad, bad"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)

@@ -10,15 +10,13 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from reliquary_competitive_code.build.validate import SPLITS, Curated
-
-ROW_GROUP_SIZE = 64
-REFERENCES_FILE = "references.parquet"
-
-
-def problems_file(split: str) -> str:
-    return f"problems-{split}.parquet"
-
+from reliquary_competitive_code.build.validate import Curated
+from reliquary_competitive_code.layout import (  # noqa: F401  (re-exported)
+    REFERENCES_FILE,
+    ROW_GROUP_SIZE,
+    SPLITS,
+    problems_file,
+)
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()

@@ -3,9 +3,8 @@
 Run from a directory that is not the package's own, so the imports resolve to
 what was installed rather than to the files beside them. The dataset is fetched
 on first use, so this also checks that a fresh install serves the pinned
-revision, and that its split sizes are the ones `environment.toml` declares.
-
-    python verify_wheel.py /path/to/environment.toml
+revision, and that its split sizes add up to the `[data].virtual_length` that
+`environment.toml` declares.
 """
 
 from __future__ import annotations
@@ -13,7 +12,6 @@ from __future__ import annotations
 import hashlib
 import importlib.resources
 import json
-import sys
 import tomllib
 from pathlib import Path
 
@@ -47,18 +45,17 @@ for golden in goldens:
         reward = environment.grade(golden["index"], golden[field])["reward"]
         assert reward == expected, f"{golden['split']}: {field} scored {reward}"
 
-# environment.toml is not shipped in the wheel, so its path is an argument. It
-# is pinned by `source_manifest_sha256`, and `[data]` declares the split sizes
-# as `train_size`, `eval_size` and `qualification_size`.
-declared = Path(sys.argv[1])
+# environment.toml sits beside the package in the source tree (the CI job runs
+# this script by absolute path from the checkout) and is pinned by
+# `source_manifest_sha256`; `[data].virtual_length` is the number of tasks served.
+declared = Path(__file__).resolve().parents[1] / "environment.toml"
 assert (
     hashlib.sha256(declared.read_bytes()).hexdigest()
     == artifact["source_manifest_sha256"]
 ), "environment.toml differs from the pinned manifest"
 data = tomllib.loads(declared.read_text())["data"]
-for split in SPLITS:
-    size = len(CompetitiveCodeEnvironment(split))
-    assert size == data[f"{split}_size"], f"{split}: {size} tasks, declared {data[f'{split}_size']}"
+served = sum(len(CompetitiveCodeEnvironment(split)) for split in SPLITS)
+assert served == data["virtual_length"], f"{served} tasks served, declared {data['virtual_length']}"
 
 prompts = {
     CompetitiveCodeEnvironment(split).task(index)["prompt"]

@@ -11,10 +11,10 @@ import hashlib
 import json
 from typing import Any
 
-from reliquary_competitive_code.build.validate import SPLITS
 from reliquary_competitive_code.corpus import Corpus, pinned_corpus
 from reliquary_competitive_code.extraction import extract_program
 from reliquary_competitive_code.judge import judge
+from reliquary_competitive_code.layout import SPLITS
 
 ENVIRONMENT = "reliquary_competitive_code_v1"
 TASK_FAMILY = "competitive_programming_stdio_v1"
@@ -47,6 +47,8 @@ class CompetitiveCodeEnvironment:
 
     def _problem(self, index: int):
         problems = self._corpus.problems(self.split)
+        if not problems:
+            raise ValueError(f"the {self.split} split is empty")
         return int(index) % len(problems), problems[int(index) % len(problems)]
 
     def _identity(self, problem_id: str) -> str:
@@ -68,9 +70,12 @@ class CompetitiveCodeEnvironment:
 
     def grade(self, index: int, completion: str) -> dict[str, Any]:
         position, problem = self._problem(index)
+        tests = self._corpus.tests(self.split, position)
+        if not tests:
+            raise RuntimeError(f"problem {problem.problem_id} has no tests")
         verdict = judge(
             extract_program(completion or ""),
-            self._corpus.tests(self.split, position),
+            tests,
             time_limit_s=problem.time_limit_s,
         )
         reward = 1.0 if verdict.passed else 0.0
