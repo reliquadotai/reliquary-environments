@@ -23,9 +23,11 @@ import json
 from collections import Counter
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import DockerRuntime, Runtime
 from verifiers.v1.tasksets.harbor.taskset import HarborTask
 from verifiers.v1.trace import Trace
+
+from reliquary_terminal import containers
 
 CTRF = "/logs/verifier/ctrf.json"
 VERIFIER = ["bash", "/tests/test.sh"]
@@ -70,8 +72,13 @@ class _Watched:
 
 
 class TerminalTask(HarborTask):
-    """A Harbor task that keeps its per-test results (see this module's
-    docstring)."""
+    """A Harbor task that records its containers (see `containers`) and keeps
+    its per-test results (see this module's docstring)."""
+
+    async def setup(self, runtime: Runtime) -> None:
+        if isinstance(runtime, DockerRuntime):
+            containers.record(runtime.name)
+        await super().setup(runtime)
 
     async def _graded(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         # A report left from before -- planted in the agent's own box, or in

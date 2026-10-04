@@ -82,3 +82,15 @@ def trace(task: HarborTask) -> vf.Trace:
         task=vf.TraceTask(type=type(task).__name__, data=task.data, key=task.key, hash=task.hash),
     )
 
+
+@pytest.fixture(autouse=True)
+def _ledger_dir(tmp_path, monkeypatch):
+    """Container ledgers of a test run go to a scratch directory, never the
+    user's own (`reliquary_terminal.containers`)."""
+    from reliquary_terminal import containers
+
+    root = tmp_path / "ledgers"
+    monkeypatch.setattr(containers, "LEDGER_DIR", root)
+    monkeypatch.setattr(containers, "_mine", {})
+    monkeypatch.setenv("RELIQUARY_TERMINAL_LEDGER_DIR", str(root))
+    return root

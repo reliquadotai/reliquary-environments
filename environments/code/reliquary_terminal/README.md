@@ -15,8 +15,10 @@ the evaluation set by omission.
 
 Like `reliquary-swe`, this package defines no tools of its own: the harness
 supplies the shell. It builds on `verifiers`' own Harbor integration
-(`HarborTask`, `HarborEnv`) rather than reimplementing it, and adds what a
-2026-10-02 qualification run showed was missing (below).
+(`HarborTask`, `HarborEnv`) rather than reimplementing it, and adds three
+things a 2026-10-02 qualification run showed were missing (below): a
+per-command timeout, per-test grading detail, and removal of the containers
+an interrupted run leaves behind.
 
 ## The shell: `bash` with a per-command timeout
 
@@ -40,6 +42,22 @@ the tail of its output (where `anti_hack_guard.py` explains a rejection),
 and each test's name, status and failure message -- and the metrics
 `tests_total`, `tests_passed`, `tests_failed`. A report already in the box
 is deleted before `test.sh` runs, so a missing one reads as missing.
+
+## Containers left behind
+
+`verifiers` removes a rollout's container on a clean exit and on a first
+Ctrl-C or SIGTERM, but not when the process is SIGKILLed -- which its own
+worker pool does to a worker still tearing down 10 s after an interrupt --
+and its containers (named after the rollout's trace id) carry no label. So every process that sets up
+a box for this package records the container's name in a ledger under
+`~/.cache/reliquary-terminal/containers/`, and a detached guardian removes
+them once that process is dead, however it died. Ledgers whose guardian died
+too are reaped when the environment next starts on the host, or by hand:
+
+```bash
+uv run python -m reliquary_terminal.containers list   # ledgers and their containers
+uv run python -m reliquary_terminal.containers reap   # remove those of dead processes
+```
 
 ## `eval`: Terminal-Bench 2.1
 
