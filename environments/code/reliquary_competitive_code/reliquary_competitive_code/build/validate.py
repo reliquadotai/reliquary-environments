@@ -62,6 +62,8 @@ def time_limit(slowest_cpu_s: float) -> float:
 
 
 def select_tests(tests: Sequence[TestCase], timings: Sequence[float]) -> tuple[int, ...]:
+    if not tests:
+        return ()
     by_size = sorted(range(len(tests)), key=lambda i: (len(tests[i].stdin), i))
     rest = sorted(
         by_size[1:-1],
@@ -89,13 +91,17 @@ def _timings(code: str, tests: Sequence[TestCase]) -> list[float] | str:
             return result.status
         if not outputs_match(test.stdout, result.stdout):
             return "wrong_answer"
+        if result.cpu_seconds > MAX_REFERENCE_TEST_S:
+            return "too_slow"
         timings.append(result.cpu_seconds)
     return timings
 
 
 def curate(row: SourceRow) -> Curated | Rejection:
     pid = problem_id(row.statement)
-    reference, timings, wrong = None, None, False
+    if len(row.tests) < MIN_TESTS:
+        return Rejection(pid, "too_few_tests")
+    reference, timings, wrong, slow = None, None, False, False
     for code in row.references[:MAX_REFERENCES_TRIED]:
         outcome = _timings(code, row.tests)
         if isinstance(outcome, list):
@@ -103,13 +109,15 @@ def curate(row: SourceRow) -> Curated | Rejection:
                 reference, timings = code, outcome
         elif outcome == "wrong_answer":
             wrong = True
+        elif outcome == "too_slow":
+            slow = True
     if reference is None:
+        if slow:
+            return Rejection(pid, "reference_too_slow")
         # Disagreement only means something beside a reference that passes.
         return Rejection(pid, "no_passing_reference")
     if wrong:
         return Rejection(pid, "references_disagree")
-    if max(timings) > MAX_REFERENCE_TEST_S:
-        return Rejection(pid, "reference_too_slow")
     kept = select_tests(row.tests, timings)
     if len(kept) < MIN_TESTS:
         return Rejection(pid, "too_few_tests")

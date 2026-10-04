@@ -46,6 +46,15 @@ def test_too_few_tests_rejects() -> None:
     assert curate(_row([SUM], TESTS[: MIN_TESTS - 1])).reason == "too_few_tests"
 
 
+def test_too_few_tests_rejects_before_any_reference_runs() -> None:
+    for tests in ((), TESTS[:4]):
+        assert curate(_row(["import os"], tests)).reason == "too_few_tests"
+
+
+def test_select_tests_of_nothing_is_empty() -> None:
+    assert select_tests([], []) == ()
+
+
 def test_slow_references_reject() -> None:
     slow = "s = 0\nfor i in range(60_000_000):\n    s += i\n" + SUM
     assert curate(_row([slow])).reason == "reference_too_slow"
