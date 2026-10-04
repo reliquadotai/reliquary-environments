@@ -541,10 +541,10 @@ async def _restore_r2e(runtime: vf.Runtime, data: SweData) -> bool:
     shadowing `pytest`, `_pytest`, `pluggy` or any other module pytest
     imports after start-up takes a new root entry -- and `conftest.py` and
     pytest's five config files (`_TEST_CONFIG_FILES`) that the image does
-    track are put back to the base, with the root `.gitignore`. The cost: a patch's new root-level
-    files never reach the test run; an agent's `reproduce_issue.py` is
-    collateral, a fix that needs a new top-level module is not graded as
-    one (none of the three goldens' does). Nothing below `r2e_tests` needs
+    track are put back to the base, with the root `.gitignore`. The cost: a
+    patch's new root-level files never reach the test run; an agent's
+    `reproduce_issue.py` is collateral, a fix that needs a new top-level
+    module is not graded as one (none of the five goldens' does). Nothing below `r2e_tests` needs
     any of this: that whole tree is the image's.
     """
     script = " && ".join(
@@ -648,12 +648,14 @@ async def _r2e_patch_violations(runtime: vf.Runtime, data: SweData) -> list[str]
     ignored = await runtime.run(
         ["sh", "-c", "git check-ignore -z --stdin < /tmp/agent-paths"], {}
     )
-    # 0: some path is ignored, 1: none is, anything else: git failed.
+    # 0: some path is ignored, 1: none is. Anything else is git refusing a
+    # path, and the patch is what named it -- a path past a tracked symlink
+    # exits 128 ("beyond a symbolic link"). Raising would read as an infra
+    # failure (provisioning retried, the episode dropped); every path is a
+    # violation instead, scored 0.
     if ignored.exit_code not in (0, 1):
-        raise RuntimeError(
-            f"could not check ignored paths for {data.instance_id}: "
-            f"{(ignored.stderr or ignored.stdout).strip()[-500:]}"
-        )
+        detail = (ignored.stderr or ignored.stdout).strip()[-200:]
+        return [f"{path} (git check-ignore exit {ignored.exit_code}: {detail})" for path in paths]
     return _r2e_forbidden_paths(
         paths,
         [entry for entry in (others.stdout or "").split("\0") if entry],
@@ -962,6 +964,19 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             test_output_tail=((run.stdout or "") + (run.stderr or ""))[-2000:],
         )
 
+    if data.split == "r2e" and not restored:
+        # Any restoration failure -- the hidden tests, the root entries, the
+        # root conftest/config files -- leaves a box whose verdict could be
+        # the patch's: score it 0 and run nothing.
+        return Report(
+            0.0,
+            applied,
+            False,
+            0,
+            0,
+            {},
+            test_output_tail="restoration failed; nothing was run",
+        )
     if data.split == "r2e":
         # Run nothing unless the hidden tests and their runner are exactly
         # where `_restore_r2e` put them: whatever else sits at run_tests.sh

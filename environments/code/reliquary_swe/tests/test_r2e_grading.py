@@ -175,3 +175,77 @@ def test_patch_paths_outside_the_tracked_tree_are_forbidden():
         "coverage/tracer.so",
         "build/ignored.py",
     ]
+
+
+class _FakeRuntime:
+    """Answers every command from `answers` (first matching substring of the
+    joined argv), else exit 0 with a SHA-shaped stdout; records each one."""
+
+    def __init__(self, answers=None):
+        self.answers = answers or {}
+        self.commands: list[str] = []
+
+    async def run(self, argv, env):
+        command = " ".join(argv)
+        self.commands.append(command)
+        for needle, result in self.answers.items():
+            if needle in command:
+                return result
+        return SimpleNamespace(exit_code=0, stdout="0" * 40 + "\n", stderr="")
+
+    async def write(self, path, data):
+        self.commands.append(f"write {path}")
+
+
+def _r2e_data():
+    from reliquary_swe.taskset import SweData
+
+    return SweData(
+        idx=0,
+        name="r2e__x__0",
+        prompt="p",
+        instance_id="r2e__x__0",
+        repo="x",
+        base_commit="HEAD",
+        version="",
+        fail_to_pass=(),
+        pass_to_pass=(),
+        gold_patch="",
+        test_patch="",
+        split="r2e",
+        expected_output_json=json.dumps({"T.test_a": "PASSED"}),
+    )
+
+
+async def test_a_failed_restoration_scores_zero_and_runs_nothing(monkeypatch):
+    async def restore_fails(runtime, data):
+        return False
+
+    monkeypatch.setattr(grading, "_restore_r2e", restore_fails)
+    runtime = _FakeRuntime()
+    report = await grading.grade(runtime, _r2e_data(), "")
+    assert report.reward == 0.0
+    assert report.restored is False
+    assert not any("run_tests.sh" in c and "bash" in c for c in runtime.commands)
+
+
+async def test_check_ignore_failing_is_a_violation_not_an_infra_error():
+    # A path past a tracked symlink makes `git check-ignore` exit 128
+    # ("beyond a symbolic link"). Raising would retry provisioning and drop
+    # the episode; the patch is the cause, so it scores 0 instead.
+    runtime = _FakeRuntime(
+        {
+            "--numstat": SimpleNamespace(exit_code=0, stdout="1\t0\tlink/x.py\0", stderr=""),
+            "ls-files": SimpleNamespace(exit_code=0, stdout="", stderr=""),
+            "check-ignore": SimpleNamespace(
+                exit_code=128, stdout="", stderr="fatal: pathspec is beyond a symbolic link"
+            ),
+        }
+    )
+    assert await grading._r2e_patch_violations(runtime, _r2e_data())
+    report = await grading.grade(
+        runtime, _r2e_data(), "diff --git a/link/x.py b/link/x.py\n"
+    )
+    assert report.reward == 0.0
+    assert report.applied is False
+    assert not any(c.startswith("git apply -v") for c in runtime.commands)
