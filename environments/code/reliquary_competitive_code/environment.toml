@@ -1,0 +1,47 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/competitive-code"
+version = "0.1.0a1"
+taskset = "reliquary-competitive-code"
+entrypoint = "reliquary_competitive_code:CompetitiveCodeTaskset"
+compatibility_entrypoint = "reliquary_competitive_code.environment:CompetitiveCodeEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["competitive_programming_stdio"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 1
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["passes_all_tests"]
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary-environments"
+upstream = "https://huggingface.co/datasets/agentica-org/DeepCoder-Preview-Dataset"
+upstream_license = "MIT"
+port = "curated-stdio-subset"
+
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """
+A competitive problem is an algorithm to find before it is a program to type,
+and only the last fenced Python block is run: the reasoning before it is never
+executed and never graded, so deliberation costs tokens and cannot cost reward.
+"""
+max_new_tokens = 16384
+max_new_tokens_rationale = """
+Not yet measured on a policy. Twice the sibling reliquary-code's measured 8,192,
+because these problems need an algorithm before the program; to be replaced by
+a value measured at 8k, 16k and 32k on Teutonic, as reliquary-dapo-math's was.
+"""
