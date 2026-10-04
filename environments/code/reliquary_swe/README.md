@@ -365,6 +365,75 @@ matches (`testing/test_runner.py`, `tests/test_requests.py`) are xdoctest
 and Starlette. Problem statements that *mention* those projects (Django
 plugins, geopandas, pygmt) are downstream code, not the projects.
 
+## R2E corpus
+
+**Training, third corpus**: `R2E-Gym/R2E-Gym-Subset`, pinned at revision
+`2e8108ff942f24fcb5686badfaf7f9a8808566d5` — 4,578 tasks, `--taskset.split
+r2e`, the set behind DeepSWE's SWE-bench Verified gains. Every task is a real
+commit of one of 10 Python repositories: pandas 1,444, numpy 781, pillow 620,
+orange3 482, aiohttp 299, tornado 261, scrapy 215, pyramid 189, datalad 179,
+coveragepy 108. None is one of SWE-bench Verified's 12
+(`tests/test_r2e_corpus.py` checks it against the `eval` split itself).
+Apache-2.0 per the dataset card.
+
+- **One image per task**, `namanjain12/<repo>_final:<fix commit>`, with the
+  repository at `/testbed`, HEAD detached at the pre-fix commit and its own
+  `.venv`. All 4,578 are pinned by registry digest in
+  `reliquary_swe/r2e_digests.json` (`scripts/pin_r2e_digests.py`, which
+  asks the registry and pulls nothing; it merges, so a re-run only adds).
+  `--taskset.num_tasks N` is the first N tasks of a fixed order — ascending
+  sha256 of the instance id — not the dataset's own, which is grouped by
+  repository (its first 482 rows are all orange3): the first 100 tasks span
+  9 repositories, the first 500 all 10.
+- **The image's working tree is the base, not its HEAD.** On the pandas
+  golden the image builder staged edits to three files, edited `setup.cfg`
+  and deleted `pyproject.toml`; restoring HEAD's `setup.cfg` brings back an
+  `addopts = --strict-data-files` the hidden tests cannot run under, and
+  every rollout, gold included, scores 0. Setup and grading therefore commit
+  the image's own state on top of HEAD and take that commit as the base
+  (`taskset._R2E_CHECKOUT`).
+- **The full upstream history is in every image** — all branches, the fix
+  commit included (`git cat-file -t <fix>` answers `commit` on all three
+  goldens' images). The shared ref strip and `gc` remove it from the agent's
+  box and from the grading box alike; `tests/test_r2e_goldens.py` asserts
+  the fix commit is unreachable after setup on all three.
+- **The hidden tests are in the image too** — `/r2e_tests` and
+  `/testbed/run_tests.sh` (`python -m pytest -rA r2e_tests`, or tornado's
+  own `r2e_tests/tornado_unittest_runner.py`, which prints the same summary
+  format). Setup deletes both from the agent's box. Grading, in a fresh box,
+  moves both out of the repository before the patch is applied, then puts
+  them back as R2E's own runtime does (`r2e_tests` as a symlink at
+  `/testbed/r2e_tests`, `run_tests.sh` at the root), deletes every root
+  entry the patch added and restores the root `conftest.py` and pytest
+  configs (`grading._restore_r2e`). Two of those vectors were measured on
+  the coveragepy golden before being closed: a root `conftest.py` forcing
+  "passed" and a root `pytest.py` shadowing pytest (`python -m` puts the
+  root first on `sys.path`) each make the hidden tests report whatever the
+  patch wants. The source-monkeypatch residual named under "Reward-hacking
+  mitigation" remains.
+- **Reward: the exact verdict map.** `run_tests.sh` runs under a 300 s
+  timeout (R2E's own default; 0-3 s measured), its stdout is parsed by a
+  port of R2E's `parse_log_pytest`, and the result must equal the row's
+  `expected_output_json` after R2E's own key normalisation — FAILED and
+  ERROR entries included (2,204 rows expect at least one). Two departures
+  from R2E's `_calculate_reward_r2e`, both stricter: an empty parse never
+  pays, and a collection error (parsed as the empty name, which upstream
+  skips) cannot stand in for a missing test — upstream pays that on any of
+  the 46 single-test tasks (`grading.r2e_reward`).
+- **The gold patch is rebuilt**, from each fixed file's full pre- and
+  post-fix contents, test files excluded (`corpus.is_r2e_test_file`: a
+  `tests`/`test`/`r2e_tests` directory, or `test_*.py`/`*_test.py`). It is
+  never shown to the agent or graded against; the goldens use it. Checked
+  with `git apply` against every row of the pinned revision.
+
+**Goldens** (`tests/test_r2e_goldens.py`, real images, run on a container
+host): coveragepy `c1bfa735`, tornado `b5ec807e` and pandas `fadb72cf` each
+score 0 with an empty patch and 1 with the gold patch through the whole
+loop, with the fix commit unreachable after setup; three tamper controls
+(a forged `run_tests.sh` and `r2e_tests/`, a root `conftest.py`, a root
+`pytest.py`) score 0 on coveragepy. Whether every task is solvable in this
+harness is unmeasured beyond those three.
+
 ## Test and load
 
 ```bash
@@ -373,7 +442,9 @@ uv run pytest
 ```
 
 Unit tests (`tests/test_corpus.py`, most of `tests/test_adapter.py`) need no
-Docker. Container tests are marked `@pytest.mark.docker` and need a real
+Docker. On a container host shared with production work,
+`RELIQUARY_SWE_TEST_CPUS` and `RELIQUARY_SWE_TEST_MEMORY_GB` cap every box
+the tests start (`--cpus`/`--memory`; unset, no cap). Container tests are marked `@pytest.mark.docker` and need a real
 Docker daemon with the instances' SWE-bench images reachable — `uv run
 pytest` stays runnable without one: `tests/conftest.py`'s own
 `pytest_collection_modifyitems` skips every `@docker` test (a real `docker
