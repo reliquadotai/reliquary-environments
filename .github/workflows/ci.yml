@@ -265,16 +265,24 @@ jobs:
       # job's own ~4.9 GB of measured headroom below -- so this is a cache,
       # not a disk-budget risk. Keyed on the pin itself: a revision bump
       # invalidates it automatically rather than serving a stale corpus.
+      #
+      # The R2E-Gym-Subset pin is part of the key too: tests/test_r2e_corpus.py
+      # (not slow) loads that dataset, measured at 0.9 GB of parquet plus
+      # 3.5 GB of extracted arrow cache -- worth caching rather than
+      # re-downloading on every push, and the reason the key must change
+      # when either revision does.
       - uses: actions/cache@v4
         with:
           path: ~/.cache/huggingface
-          key: swe-bench-verified-c104f840cc67f8b6eec6f759ebc8b2693d585d4a
+          key: swe-bench-verified-c104f840cc67f8b6eec6f759ebc8b2693d585d4a-r2e-2e8108ff942f24fcb5686badfaf7f9a8808566d5
       - run: uv sync --locked
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      # `-m "not slow"` deselects exactly four tests, all @docker, each a
-      # whole-repository-suite run: three run django's entire 12,311-test
+      # `-m "not slow"` deselects tests/test_r2e_goldens.py whole (five R2E
+      # images, 0.8-1.5 GB each on disk, run on the container host instead)
+      # and four further tests, all @docker, each a whole-repository-suite
+      # run: three run django's entire 12,311-test
       # suite (test_patch touches only .txt fixtures, so a genuine restored
       # run falls back to everything, ~226s each) and one runs xarray's
       # 1,818 tests (~300s) --
@@ -308,7 +316,10 @@ jobs:
       # (14.6 MB tracked tree + 17 MB .git + 555 MB venv + 100 KB dist,
       # measured locally). Total ~9.1 GB against 14 GB: ~4.9 GB of real
       # headroom. Re-measure if the images this job pulls change (a new
-      # golden instance, a corpus revision).
+      # golden instance, a corpus revision). Not counted in that budget, and
+      # not re-measured on a runner: the R2E dataset's ~4.4 GB in
+      # ~/.cache/huggingface (see the cache step above) -- the "Free disk
+      # space" step is what leaves room for it.
       - run: uv run --no-sync pytest -m "not slow"
       - run: uv run --no-sync validate reliquary-swe -n 3 --only-gold true --taskset.split eval --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
