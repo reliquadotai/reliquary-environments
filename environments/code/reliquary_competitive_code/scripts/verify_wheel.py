@@ -15,7 +15,7 @@ import json
 import tomllib
 from pathlib import Path
 
-from reliquary_competitive_code.build.validate import SPLITS
+from reliquary_competitive_code.layout import SPLITS
 from reliquary_competitive_code.environment import INSTRUCTION, CompetitiveCodeEnvironment
 
 root = importlib.resources.files("reliquary_competitive_code")

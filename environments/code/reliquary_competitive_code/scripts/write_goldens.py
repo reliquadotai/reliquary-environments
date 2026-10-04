@@ -14,7 +14,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from reliquary_competitive_code.build.validate import SPLITS
+from reliquary_competitive_code.layout import SPLITS
 from reliquary_competitive_code.environment import ENVIRONMENT, CompetitiveCodeEnvironment
 
 ROOT = Path(__file__).resolve().parents[1]

@@ -136,3 +136,27 @@ def test_the_instruction_lists_the_allowed_modules() -> None:
         assert f"{module}," in INSTRUCTION or f"{module}." in INSTRUCTION or f"{module};" in INSTRUCTION
     assert "__future__" not in INSTRUCTION
     assert "os" in INSTRUCTION and "file access" in INSTRUCTION
+
+
+def test_the_pinned_corpus_loads_once_under_concurrent_first_use(monkeypatch, corpus) -> None:
+    import threading
+    import time
+
+    from reliquary_competitive_code import corpus as module
+
+    calls = []
+
+    def slow_pinned():
+        calls.append(1)
+        time.sleep(0.2)
+        return corpus
+
+    monkeypatch.setattr(module, "_pinned", None)
+    monkeypatch.setattr(module.Corpus, "pinned", staticmethod(slow_pinned))
+    results = []
+    threads = [threading.Thread(target=lambda: results.append(module.pinned_corpus())) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(calls) == 1 and all(r is corpus for r in results) and len(results) == 8

@@ -13,7 +13,6 @@ import json
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -120,6 +119,16 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-@lru_cache(maxsize=1)
+_pinned: Corpus | None = None
+_pinned_lock = threading.Lock()
+
+
 def pinned_corpus() -> Corpus:
-    return Corpus.pinned()
+    """The pinned corpus, downloaded and verified once per process, even when
+    several threads ask for it first at the same time."""
+    global _pinned
+    if _pinned is None:
+        with _pinned_lock:
+            if _pinned is None:
+                _pinned = Corpus.pinned()
+    return _pinned

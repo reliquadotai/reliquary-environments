@@ -4,7 +4,9 @@ A test the reference fails is wrong or impossible under our limits; the
 problem is dropped rather than the test, because a problem kept with fewer
 tests is silently weaker. Two references that disagree (one passes, another
 gives a different answer) usually mean a problem with several valid outputs,
-which v1 cannot grade, so that drops it too.
+which v1 cannot grade, so that drops it too. A reference that imports a module
+the task forbids is skipped: it is neither a reference tried nor a dissent,
+since it tells nothing about the problem.
 
 The reference's own CPU time then sets the limit (x4, between 1 and 4 s) and
 the test budget (8 s of reference CPU, 1 MiB of test data). Only CPU time is
@@ -17,7 +19,6 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from reliquary_competitive_code.layout import SPLITS  # noqa: F401  (re-exported)
 from reliquary_competitive_code.judge import TestCase, output_cap, outputs_match, run_test
 from reliquary_competitive_code.sources.common import SourceRow, problem_id
 
@@ -70,7 +71,9 @@ def select_tests(tests: Sequence[TestCase], timings: Sequence[float]) -> tuple[i
         key=lambda i: hashlib.sha256(f"{i}:{tests[i].stdin}".encode()).hexdigest(),
     )
     keep, cpu, size = [], 0.0, 0
-    for i in dict.fromkeys([by_size[0], by_size[-1], *rest]):
+    # Largest first (the test most likely to catch a slow or wrong program),
+    # then smallest (the edge case), then the rest in a stable hashed order.
+    for i in dict.fromkeys([by_size[-1], by_size[0], *rest]):
         cost = len(tests[i].stdin.encode()) + len(tests[i].stdout.encode())
         if cpu + timings[i] > REFERENCE_CPU_BUDGET_S or size + cost > TEST_BYTES_BUDGET:
             continue
@@ -101,9 +104,14 @@ def curate(row: SourceRow) -> Curated | Rejection:
     pid = problem_id(row.statement)
     if len(row.tests) < MIN_TESTS:
         return Rejection(pid, "too_few_tests")
-    reference, timings, wrong, slow = None, None, False, False
-    for code in row.references[:MAX_REFERENCES_TRIED]:
+    reference, timings, wrong, slow, tried = None, None, False, False, 0
+    for code in row.references:
+        if tried == MAX_REFERENCES_TRIED:
+            break
         outcome = _timings(code, row.tests)
+        if outcome == "forbidden_import":
+            continue
+        tried += 1
         if isinstance(outcome, list):
             if reference is None:
                 reference, timings = code, outcome

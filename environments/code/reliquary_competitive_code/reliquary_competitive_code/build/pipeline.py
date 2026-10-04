@@ -13,7 +13,8 @@ from reliquary_competitive_code.build.filters import (
     is_after_cutoff,
     is_multi_answer,
 )
-from reliquary_competitive_code.build.validate import SPLITS, Curated, curate
+from reliquary_competitive_code.build.validate import Curated, curate
+from reliquary_competitive_code.layout import SPLITS
 from reliquary_competitive_code.sources.common import SourceRow
 
 
