@@ -13,10 +13,23 @@ section 4, option C):
 `--taskset.split` has no default, so a training source cannot fall back to
 the evaluation set by omission.
 
-Like `reliquary-swe`, this package defines no tools: the harness
-(`bash`, `mini_swe_agent`, ...) supplies the shell. It builds on
-`verifiers`' own Harbor integration (`HarborTask`, `HarborEnv`) rather than
-reimplementing it.
+Like `reliquary-swe`, this package defines no tools of its own: the harness
+supplies the shell. It builds on `verifiers`' own Harbor integration
+(`HarborTask`, `HarborEnv`) rather than reimplementing it, and adds what a
+2026-10-02 qualification run showed was missing (below).
+
+## The shell: `bash` with a per-command timeout
+
+The package's default harness, `reliquary-terminal`, is `verifiers`' `bash`
+harness with one function replaced. Upstream runs every command with a fixed
+3,600 s timeout that kills `bash` alone; in the qualification run one `grep`
+over a whole tree held its rollout for 1,489 s. Here a command that outlives
+`--env.agent.harness.command-timeout` (default 180 s) is killed with every
+process it started, and the agent gets its output so far followed by
+`[command timed out after 180 s and was killed, ...]`. 180 s is 18x the
+longest of the 2,120 terminal commands in that run's traces (10 s;
+`environment.toml`, `command_timeout_seconds`). `--env.agent.harness.id bash`
+still selects the upstream harness, without the timeout.
 
 ## `eval`: Terminal-Bench 2.1
 

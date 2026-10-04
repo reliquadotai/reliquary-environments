@@ -11,7 +11,9 @@ name = "reliquary-terminal-train"
 ratio = 1.0
 env.taskset.id = "reliquary-terminal"
 env.taskset.split = "train"
-env.agent.harness.id = "bash"
+# `bash` with a per-command timeout (environment.toml, `command_timeout_seconds`).
+env.agent.harness.id = "reliquary-terminal"
+env.agent.harness.command_timeout = 180
 env.agent.runtime.type = "docker"
 env.agent.runtime.allow = []
 env.agent.max_turns = 40
