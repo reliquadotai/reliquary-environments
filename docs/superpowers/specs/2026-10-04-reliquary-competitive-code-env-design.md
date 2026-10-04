@@ -99,8 +99,9 @@ reference      a Python solution known to pass every kept test (build only, not 
    fails is either wrong or impossible in our time limit, and keeping the problem
    with fewer tests silently weakens it.
 7. **Calibrate time limits**: `time_limit_s = clamp(4 x reference CPU time on the
-   slowest test, 1 s, 4 s)`. Problems whose reference needs more than 4 s on any
-   test are dropped (they would grade on hardware speed, not correctness).
+   slowest test, 1 s, 4 s)`. Problems whose reference needs more than 2 s on any
+   test are dropped, which keeps the margin at 2x or more (they would grade on
+   hardware speed, not correctness).
 8. **Cap tests by cost, not count**: keep all tests while the reference's total
    CPU time stays under 8 s; otherwise keep the boundary tests (smallest, largest)
    and a fixed hash-chosen sample up to that budget. Drop problems left with fewer
