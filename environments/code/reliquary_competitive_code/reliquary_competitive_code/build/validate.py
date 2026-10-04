@@ -10,7 +10,9 @@ since it tells nothing about the problem.
 
 The reference's own CPU time then sets the limit (x4, between 1 and 4 s) and
 the test budget (8 s of reference CPU, 1 MiB of test data). Only CPU time is
-measured, so the limit does not depend on how loaded the build box is.
+measured, so the limit does not depend on how loaded the build box is. A run
+the host starved (`harness_overload`) is retried once; a second one rejects
+the problem as `harness_overload`, so the dataset never depends on box load.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from reliquary_competitive_code.judge import TestCase, output_cap, outputs_match, run_test
+from reliquary_competitive_code.judge.runner import HARNESS_OVERLOAD
 from reliquary_competitive_code.sources.common import SourceRow, problem_id
 
 VALIDATION_TIME_LIMIT_S = 10.0
@@ -86,10 +89,13 @@ def select_tests(tests: Sequence[TestCase], timings: Sequence[float]) -> tuple[i
 def _timings(code: str, tests: Sequence[TestCase]) -> list[float] | str:
     timings = []
     for test in tests:
-        result = run_test(
-            code, test.stdin,
-            time_limit_s=VALIDATION_TIME_LIMIT_S, output_cap=output_cap(test.stdout),
-        )
+        for _ in range(2):  # one retry when the host starved the run
+            result = run_test(
+                code, test.stdin,
+                time_limit_s=VALIDATION_TIME_LIMIT_S, output_cap=output_cap(test.stdout),
+            )
+            if result.status != HARNESS_OVERLOAD:
+                break
         if result.status != "ok":
             return result.status
         if not outputs_match(test.stdout, result.stdout):
@@ -111,6 +117,8 @@ def curate(row: SourceRow) -> Curated | Rejection:
         outcome = _timings(code, row.tests)
         if outcome == "forbidden_import":
             continue
+        if outcome == HARNESS_OVERLOAD:
+            return Rejection(pid, HARNESS_OVERLOAD)
         tried += 1
         if isinstance(outcome, list):
             if reference is None:

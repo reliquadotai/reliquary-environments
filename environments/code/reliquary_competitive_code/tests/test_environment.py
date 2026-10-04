@@ -123,10 +123,20 @@ def test_serving_does_not_import_the_build() -> None:
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
-def test_a_harness_overload_is_never_a_reward(corpus) -> None:
+def test_a_harness_overload_is_never_a_reward(corpus, monkeypatch) -> None:
+    from reliquary_competitive_code.judge import runner
+
+    # Starved by the host: runnable far longer than the limit, never run.
+    monkeypatch.setattr(runner, "_run_queue_wait_s", lambda pid: 60.0)
     environment = CompetitiveCodeEnvironment("train", corpus=corpus)
     with pytest.raises(RuntimeError, match="harness_overload"):
         environment.grade(5, "```python\nimport time\ntime.sleep(5)\n```")
+
+
+def test_an_idle_program_scores_zero(corpus) -> None:
+    environment = CompetitiveCodeEnvironment("train", corpus=corpus)
+    graded = environment.grade(5, "```python\nimport time\ntime.sleep(5)\n```")
+    assert graded["reward"] == 0.0 and graded["status"] == "timeout"
 
 
 def test_the_instruction_lists_the_allowed_modules() -> None:
@@ -135,7 +145,7 @@ def test_the_instruction_lists_the_allowed_modules() -> None:
     for module in ALLOWED_IMPORT_ROOTS - {"__future__"}:
         assert f"{module}," in INSTRUCTION or f"{module}." in INSTRUCTION or f"{module};" in INSTRUCTION
     assert "__future__" not in INSTRUCTION
-    assert "os" in INSTRUCTION and "file access" in INSTRUCTION
+    assert "the os and io modules" in INSTRUCTION and "file access" in INSTRUCTION
 
 
 def test_the_pinned_corpus_loads_once_under_concurrent_first_use(monkeypatch, corpus) -> None:

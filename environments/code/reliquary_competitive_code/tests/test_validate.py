@@ -98,3 +98,35 @@ def test_splits_are_stable_and_roughly_95_25_25() -> None:
     assert splits == [split_of(f"{i:016x}") for i in range(4000)]
     assert 0.93 < splits.count("train") / 4000 < 0.97
     assert splits.count("eval") > 50 and splits.count("qualification") > 50
+
+
+def test_a_reference_overloaded_twice_rejects_the_problem(monkeypatch) -> None:
+    from reliquary_competitive_code.build import validate
+    from reliquary_competitive_code.judge.runner import RunResult
+
+    calls = []
+
+    def overloaded(code, stdin, **kwargs):
+        calls.append(stdin)
+        return RunResult("harness_overload", "", 0.1)
+
+    monkeypatch.setattr(validate, "run_test", overloaded)
+    assert curate(_row([SUM])) == Rejection(problem_id("Print a plus b."), "harness_overload")
+    assert len(calls) == 2  # retried once, on the same test
+
+
+def test_a_reference_overloaded_once_is_retried(monkeypatch) -> None:
+    from reliquary_competitive_code.build import validate
+    from reliquary_competitive_code.judge.runner import RunResult
+
+    real = validate.run_test
+    calls = []
+
+    def once(code, stdin, **kwargs):
+        calls.append(stdin)
+        if len(calls) == 1:
+            return RunResult("harness_overload", "", 0.1)
+        return real(code, stdin, **kwargs)
+
+    monkeypatch.setattr(validate, "run_test", once)
+    assert isinstance(curate(_row([SUM])), Curated)

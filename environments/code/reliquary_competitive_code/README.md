@@ -49,6 +49,9 @@ Drop counts: filled in with the published revision.
   `heapq`, `itertools`, `math`, `operator`, `queue`, `random`, `re`,
   `statistics`, `string`, `sys` (a reduced shim), `threading`, `time`,
   `typing` (and `__future__`). The prompt states the same list.
+- A program that sleeps, deadlocks or blocks scores 0 (`timeout`); only one
+  starved on the host's run queue past its limit is `harness_overload`, which
+  gives no verdict (grading raises).
 
 ## Known limits
 

@@ -152,9 +152,11 @@ records the real number.
 - **Stop at the first failing test.** It changes nothing to a binary reward and
   bounds the cost of wrong submissions, which are most of them.
 - Statuses kept for diagnostics: `ok`, `wrong_answer`, `timeout`, `runtime_error`,
-  `forbidden_import`, `output_limit`, `no_code`. `harness_overload` (the wall
-  clock fired before the program used its CPU limit) is not a verdict: grading
-  raises rather than return a reward.
+  `forbidden_import`, `output_limit`, `no_code`. `harness_overload` is not a verdict:
+  grading raises rather than return a reward. When the wall clock fires, an
+  idle program (sleeping, deadlocked, blocked) is a `timeout`, and only one
+  whose CPU plus run-queue wait (schedstat, every thread) exceeds the limit,
+  i.e. starved by the host, is `harness_overload`.
 
 ### Where it runs
 
@@ -176,6 +178,8 @@ records the real number.
   concurrent; module state (e.g. monkeypatched math, random seed, daemon
   threads) is not isolated between runs in one process. The core imports
   `extract_program` and `outputs_match` from this package.
+  The gVisor worker needs the equivalent idle-vs-starved rule (idle =
+  `timeout`, run-queue starvation = no verdict) and must pin `PYTHONHASHSEED=0`.
 - **Registry**: an `EnvironmentSpec` `reliquary_competitive_code_v1`,
   `admission_resource_class="sandbox"`, `final_answer_policy="fenced_python"`,
   `reward_lattice_policy="binary-v1"`, `attainable_rewards=(0.0, 1.0)`,

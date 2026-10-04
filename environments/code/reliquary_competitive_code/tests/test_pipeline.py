@@ -37,6 +37,7 @@ def test_build_applies_every_stage_and_reports_it() -> None:
     assert report["after_dedup"] == 2
     assert report["dropped_no_passing_reference"] == 1
     assert report["curated"] == 1
+    assert report["dropped_harness_overload"] == 0
     assert sum(report[f"split_{s}"] for s in ("train", "eval", "qualification")) == 1
 
 
@@ -52,3 +53,30 @@ def test_write_dataset_round_trips(tmp_path) -> None:
     assert json.loads(row["origin_json"]) == curated[0].origin
     refs = pq.read_table(tmp_path / io.REFERENCES_FILE).to_pylist()
     assert refs == [{"problem_id": curated[0].problem_id, "code": SUM}]
+
+
+def test_the_report_counts_overloaded_problems(monkeypatch) -> None:
+    from reliquary_competitive_code.build import pipeline
+    from reliquary_competitive_code.build.validate import Rejection
+
+    monkeypatch.setattr(pipeline, "curate", lambda row: Rejection("x", "harness_overload"))
+    curated, report = build(_rows(), HeldOutIndex([HELD]), workers=1)
+    assert curated == [] and report["dropped_harness_overload"] == 2
+
+
+def test_the_build_cli_refuses_an_overloaded_build(monkeypatch, tmp_path, capsys) -> None:
+    import sys
+
+    import pytest
+
+    from reliquary_competitive_code.build import __main__ as cli
+
+    monkeypatch.setattr(cli.deepcoder, "rows", lambda path: [])
+    monkeypatch.setattr(cli, "load_lcb_statements", lambda path: [])
+    monkeypatch.setattr(cli, "build", lambda rows, held, workers: ([], {"dropped_harness_overload": 3}))
+    monkeypatch.setattr(sys, "argv", ["build", "--deepcoder", "d", "--lcb", "l", "--out", str(tmp_path / "out")])
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+    assert exited.value.code not in (0, None)
+    assert "harness_overload" in str(exited.value.code) + capsys.readouterr().err
+    assert not (tmp_path / "out" / "problems-train.parquet").exists()

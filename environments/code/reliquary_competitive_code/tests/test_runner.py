@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from reliquary_competitive_code.judge import TestCase, judge, output_cap, run_test
+from reliquary_competitive_code.judge import TestCase, judge, output_cap, run_test, runner
 
 ADD = TestCase("2 3\n", "5\n")
 
@@ -179,12 +179,60 @@ def test_a_grandchild_escaping_the_group_cannot_hang_the_runner() -> None:
     assert killed == 1
 
 
-def test_a_program_that_only_waits_is_a_harness_overload_not_a_timeout() -> None:
-    # The wall clock fired while the kernel counted almost no CPU: the verdict
-    # would depend on the host, so the runner refuses to give one.
-    result = run_test("import time\ntime.sleep(5)\nprint(5)\n", "2 3\n", time_limit_s=1.0, output_cap=output_cap("5\n"))
-    assert result.status == "harness_overload" and result.cpu_seconds < 1.0
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import time\ntime.sleep(5)\nprint(5)\n",
+        "import threading\nlock = threading.Lock()\nlock.acquire()\nlock.acquire()\n",
+        "import queue\nqueue.Queue().get()\n",
+    ],
+    ids=["sleep", "deadlock", "blocked_get"],
+)
+def test_a_program_that_only_waits_is_a_timeout(code) -> None:
+    # Idle (sleeping, deadlocked, blocked) is the program's failure, like on
+    # every real judge: it was never runnable long enough to be starved.
+    start = time.monotonic()
+    result = run_test(code, "2 3\n", time_limit_s=1.0, output_cap=output_cap("5\n"))
+    assert time.monotonic() - start < 2 * 1.0 + 1.0 + 3.0
+    assert result.status == "timeout" and result.cpu_seconds < 1.0
+    assert _status(code, limit=1.0) == "timeout"
+
+
+def test_a_program_starved_by_the_host_is_a_harness_overload(monkeypatch) -> None:
+    # Runnable but not run: run-queue wait plus CPU above the limit.
+    monkeypatch.setattr(runner, "_run_queue_wait_s", lambda pid: 60.0)
+    result = run_test("import time\ntime.sleep(5)\n", "2 3\n", time_limit_s=1.0, output_cap=output_cap("5\n"))
+    assert result.status == "harness_overload"
+
+
+def test_an_unreadable_run_queue_fails_closed(monkeypatch) -> None:
+    monkeypatch.setattr(runner, "_run_queue_wait_s", lambda pid: None)
     assert _status("import time\ntime.sleep(5)\n", limit=1.0) == "harness_overload"
+
+
+def test_the_run_queue_wait_sums_every_thread() -> None:
+    # A solution in a worker thread shows ~0 on the main thread: the reader
+    # must cover all of them. Read on ourselves: at least the main thread.
+    if not runner.SCHEDSTAT_READABLE:
+        pytest.skip("schedstat not readable on this kernel")
+    import os
+
+    assert runner._run_queue_wait_s(os.getpid()) >= 0.0
+    assert runner._run_queue_wait_s(2**22 + 12345) is None
+
+
+def test_the_child_interpreter_is_isolated_but_keeps_the_hash_seed(monkeypatch) -> None:
+    seen = {}
+    real = runner.subprocess.Popen
+
+    def spy(args, **kwargs):
+        seen["args"], seen["env"] = args, kwargs["env"]
+        return real(args, **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, "Popen", spy)
+    assert _status("a, b = map(int, input().split())\nprint(a + b)\n") == "ok"
+    assert seen["args"][1:4] == ["-P", "-s", "-S"]
+    assert seen["env"]["PYTHONHASHSEED"] == "0"
 
 
 def test_future_imports_and_harmless_modules_are_allowed() -> None:

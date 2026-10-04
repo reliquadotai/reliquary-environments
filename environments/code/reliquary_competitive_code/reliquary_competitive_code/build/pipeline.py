@@ -21,7 +21,7 @@ from reliquary_competitive_code.sources.common import SourceRow
 def build(
     rows: Iterable[SourceRow], held_out: HeldOutIndex, *, workers: int
 ) -> tuple[list[Curated], dict[str, int]]:
-    report: Counter[str] = Counter()
+    report: Counter[str] = Counter({"dropped_harness_overload": 0})
     kept = []
     for row in rows:
         report["loaded"] += 1

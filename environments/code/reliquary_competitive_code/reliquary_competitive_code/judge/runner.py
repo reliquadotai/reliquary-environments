@@ -6,13 +6,17 @@ address-space and file-size limits as its first statements (never a
 runs the submission through `guest.run`, and prints one JSON line. A wall
 clock above the CPU limit and a process-group kill cover what sleeps or forks.
 
-The verdict depends on CPU time only, never on how loaded the host is: when
-the wall clock fires before the kernel counted more CPU than the limit, the
-run is `harness_overload` (no verdict), not a timeout, and at most
-`os.cpu_count()` children run at once per process. The child runs with
-`-s -S` and a scrubbed environment pinning `PYTHONHASHSEED=0`, so set and dict
-orders of strings, hence the output, are the same on every replay (`-I` would
-ignore the seed).
+The verdict depends on CPU time, never on how loaded the host is. When the
+wall clock fires, the runner first reads how long the child's threads waited
+runnable on the run queue (schedstat), then kills it. A program that was idle
+(sleeping, deadlocked, blocked) is a `timeout`, as on any judge; one whose CPU
+plus run-queue wait exceeds the limit was starved by the host, and is
+`harness_overload` (no verdict). An unreadable schedstat also gives
+`harness_overload`: no verdict rather than a guess. At most `os.cpu_count()`
+children run at once per process. The child runs with `-P -s -S` and a
+scrubbed environment pinning `PYTHONHASHSEED=0`, so set and dict orders of
+strings, hence the output, are the same on every replay (`-I` would ignore the
+seed).
 
 Not a sandbox: no network isolation, no filesystem isolation. Production runs
 the same `guest.run` inside gVisor; this runner serves development, the build
@@ -21,6 +25,7 @@ and qualification.
 
 from __future__ import annotations
 
+import glob
 import json
 import math
 import os
@@ -42,6 +47,40 @@ READ_SLACK = 1 << 20
 HARNESS_OVERLOAD = "harness_overload"
 _CHILD_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "PYTHONHASHSEED": "0"}
 _CHILDREN = threading.BoundedSemaphore(os.cpu_count() or 1)
+
+
+
+def _schedstat_readable() -> bool:
+    try:
+        for path in glob.glob("/proc/self/task/*/schedstat"):
+            with open(path, "rb") as handle:
+                int(handle.read().split()[1])
+            return True
+    except (OSError, ValueError, IndexError):
+        pass
+    return False
+
+
+SCHEDSTAT_READABLE = _schedstat_readable()
+
+
+def _run_queue_wait_s(pid: int) -> float | None:
+    """Seconds every thread of `pid` spent runnable but not running (field 2 of
+    each /proc/<pid>/task/*/schedstat). Every thread, not the main one: a
+    solution running in a worker thread shows ~0 there. None when nothing
+    could be read."""
+    if not SCHEDSTAT_READABLE:
+        return None
+    total, read = 0, 0
+    for path in glob.glob(f"/proc/{pid}/task/*/schedstat"):
+        try:
+            with open(path, "rb") as handle:
+                total += int(handle.read().split()[1])
+            read += 1
+        except (OSError, ValueError, IndexError):
+            continue  # a thread that exited meanwhile
+    return total / 1e9 if read else None
+
 
 _GUEST_SOURCE = Path(__file__).with_name("guest.py").read_text(encoding="utf-8")
 _DRIVER = """
@@ -109,12 +148,13 @@ def _killpg(proc: subprocess.Popen) -> None:
 
 def _spawn_and_reap(
     request: bytes, *, time_limit_s: float, output_cap: int
-) -> tuple[int, float, bool, list[bytes]] | None:
+) -> tuple[int, float, bool, float | None, list[bytes]] | None:
     """Run one child to completion: exit code, kernel CPU, whether the wall
-    clock killed it, and its stdout chunks. None when it could not start."""
+    clock killed it, its run-queue wait when it did (None if unreadable), and
+    its stdout chunks. None when it could not start."""
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-s", "-S", "-c", _program(math.ceil(time_limit_s) + 1)],
+            [sys.executable, "-P", "-s", "-S", "-c", _program(math.ceil(time_limit_s) + 1)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -164,11 +204,15 @@ def _spawn_and_reap(
     state = threading.Lock()
     reaped = False
     wall_fired = False
+    run_queue_wait: float | None = None
 
     def on_wall_clock() -> None:
-        nonlocal wall_fired
+        nonlocal wall_fired, run_queue_wait
         with state:
             if not reaped:
+                # Read while the child is still ours to read: not reaped, so
+                # its pid and /proc entries cannot be reused.
+                run_queue_wait = _run_queue_wait_s(proc.pid)
                 wall_fired = True
                 _killpg(proc)
 
@@ -187,7 +231,7 @@ def _spawn_and_reap(
         proc.stdout.close()
     except OSError:
         pass
-    return exit_code, cpu, wall_fired, chunks
+    return exit_code, cpu, wall_fired, run_queue_wait, chunks
 
 
 def run_test(code: str, stdin: str, *, time_limit_s: float, output_cap: int) -> RunResult:
@@ -198,12 +242,17 @@ def run_test(code: str, stdin: str, *, time_limit_s: float, output_cap: int) -> 
         outcome = _spawn_and_reap(request, time_limit_s=time_limit_s, output_cap=output_cap)
     if outcome is None:
         return RunResult("runtime_error", "", 0.0)
-    exit_code, cpu, wall_fired, chunks = outcome
-    if wall_fired and exit_code != 0 and cpu <= time_limit_s:
-        # Killed by the wall clock without having used its CPU: it waited (on
-        # the scheduler, a sleep or a blocked read). No verdict either way.
-        return RunResult(HARNESS_OVERLOAD, "", cpu)
-    if exit_code in (-signal.SIGXCPU, -signal.SIGKILL) or cpu > time_limit_s:
+    exit_code, cpu, wall_fired, run_queue_wait, chunks = outcome
+    if exit_code == -signal.SIGXCPU or cpu > time_limit_s:
+        return RunResult("timeout", "", cpu)
+    if wall_fired and exit_code != 0:
+        # Killed by the wall clock before using its CPU. Runnable longer than
+        # its limit but not run: the host starved it, no verdict. Otherwise it
+        # was idle (sleep, deadlock, blocked read): the program's failure.
+        if run_queue_wait is None or cpu + run_queue_wait > time_limit_s:
+            return RunResult(HARNESS_OVERLOAD, "", cpu)
+        return RunResult("timeout", "", cpu)
+    if exit_code == -signal.SIGKILL:
         return RunResult("timeout", "", cpu)
     if exit_code != 0:
         return RunResult("runtime_error", "", cpu)
