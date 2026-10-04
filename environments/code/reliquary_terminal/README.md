@@ -26,9 +26,10 @@ The package's default harness, `reliquary-terminal`, is `verifiers`' `bash`
 harness with one function replaced. Upstream runs every command with a fixed
 3,600 s timeout that kills `bash` alone; in the qualification run one `grep`
 over a whole tree held its rollout for 1,489 s. Here a command that outlives
-`--env.agent.harness.command-timeout` (default 180 s) is killed with every
-process it started, and the agent gets its output so far followed by
-`[command timed out after 180 s and was killed, ...]`. 180 s is 18x the
+`--env.agent.harness.command-timeout` (default 180 s) has its process group
+killed, and the agent gets its output so far followed by
+`[command timed out after 180 s; its process group was killed. ...]`; only the
+last MiB of each output stream is kept. 180 s is 18x the
 longest of the 2,120 terminal commands in that run's traces (10 s;
 `environment.toml`, `command_timeout_seconds`). `--env.agent.harness.id bash`
 still selects the upstream harness, without the timeout.
@@ -58,6 +59,12 @@ too are reaped when the environment next starts on the host, or by hand:
 uv run python -m reliquary_terminal.containers list   # ledgers and their containers
 uv run python -m reliquary_terminal.containers reap   # remove those of dead processes
 ```
+
+Only names shaped like verifiers' boxes (32 hex, or `vf-` + 12 hex), from
+ledgers this user wrote on this host and in this pid namespace, are ever
+removed. A process that cannot read its own start time or pid namespace
+(no `/proc`) records nothing and starts no guardian: "cannot tell" always
+reads as alive.
 
 ## `eval`: Terminal-Bench 2.1
 
@@ -125,8 +132,8 @@ uv sync --locked
 uv run pytest
 ```
 
-Container tests are marked `@pytest.mark.docker` and skip without a
-reachable Docker daemon. They pull two images: `alexgshaw/fix-git` and
+Container tests are marked `@pytest.mark.docker` and run only with
+`RELIQUARY_DOCKER_TESTS=1` and a reachable Docker daemon. They pull two images: `alexgshaw/fix-git` and
 `general-agent-env-1`.
 
 ## Train

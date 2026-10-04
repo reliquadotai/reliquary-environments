@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from collections.abc import AsyncIterator
@@ -28,9 +29,14 @@ def _docker_available() -> bool:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
-    if _docker_available():
+    # Opt-in: a machine that merely has Docker (a laptop, a shared host) must
+    # not start pulling images and running task containers by accident.
+    if os.environ.get("RELIQUARY_DOCKER_TESTS") != "1":
+        skip = pytest.mark.skip(reason="container tests run only with RELIQUARY_DOCKER_TESTS=1")
+    elif _docker_available():
         return
-    skip = pytest.mark.skip(reason="no reachable Docker daemon")
+    else:
+        skip = pytest.mark.skip(reason="no reachable Docker daemon")
     for item in items:
         if "docker" in item.keywords:
             item.add_marker(skip)

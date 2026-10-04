@@ -155,3 +155,42 @@ async def test_the_separate_grading_box_is_graded_as_a_terminal_task(monkeypatch
     assert len(seen) == 1 and type(seen[0]) is TerminalTask
     assert seen[0].data.workdir == "/"
     assert solver.rewards["solved"].value == 1.0
+
+
+async def test_a_deeply_nested_report_cannot_change_the_outcome():
+    # json.loads raises RecursionError (not ValueError) on this.
+    task = _task()
+    trace = _trace(task)
+    box = FakeBox(reward="1\n", ctrf=b"[" * 100000, exit_code=0)
+    assert await task._graded(box, trace) == 1.0
+    assert trace.info["grading"]["ctrf"] is None
+    assert trace.info["grading"]["ctrf_error"].startswith("RecursionError")
+
+
+async def test_the_stored_tests_are_capped_but_counted_in_full():
+    task = _task()
+    trace = _trace(task)
+    many = grading.MAX_TESTS + 500
+    tests = [{"name": "t" * 10_000, "status": "failed", "message": "m"} for _ in range(many)]
+    box = FakeBox(reward="0\n", ctrf=json.dumps({"results": {"tests": tests}}).encode())
+    assert await task._graded(box, trace) == 0.0
+    report = trace.info["grading"]["ctrf"]
+    assert len(report["tests"]) == grading.MAX_TESTS
+    assert report["omitted"] == 500
+    assert report["counts"] == {"failed": many}
+    assert all(len(t["name"]) == grading.MAX_NAME_CHARS for t in report["tests"])
+    assert trace.metrics["tests_total"] == float(many)
+
+
+async def test_a_failing_ledger_never_fails_the_rollout(monkeypatch, caplog):
+    from verifiers.v1.runtimes import DockerRuntime
+
+    from reliquary_terminal import containers
+
+    def broken(name, *args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(containers, "record", broken)
+    box = DockerRuntime(vf.DockerConfig())
+    await _task().setup(box)  # nothing else to set up for this task
+    assert any("could not record container" in r.message for r in caplog.records)

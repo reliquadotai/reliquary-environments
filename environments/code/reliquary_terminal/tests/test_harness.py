@@ -59,14 +59,15 @@ def test_a_backgrounded_job_with_its_output_redirected_returns_at_once():
     assert time.monotonic() - started < 2
 
 
-def test_a_descendant_that_left_the_group_cannot_hang_the_call():
+def test_a_descendant_that_left_the_group_cannot_hang_the_call(tmp_path):
     # setsid puts it beyond the group kill, still holding the output pipe.
+    pidfile = tmp_path / "pid"
     run_bash = _program(1)["run_bash"]
     started = time.monotonic()
-    out = run_bash("setsid sleep 7620; true")
+    out = run_bash(f"setsid sh -c 'echo $$ > {pidfile}; exec sleep 7620'; true")
     assert time.monotonic() - started < 10
     assert "timed out" in out
-    subprocess.run(["pkill", "-f", "^sleep 7620$"], check=False)
+    os.kill(int(pidfile.read_text()), 9)
 
 
 def test_the_program_is_upstreams_with_only_run_bash_replaced():
@@ -114,3 +115,35 @@ async def test_setup_and_launch_both_run_the_patched_program():
     assert len(runtime.scripts) == 2
     assert all("COMMAND_TIMEOUT = 42.0" in s for s in runtime.scripts)
     assert runtime.argv is not None and "--prompt=hello" in runtime.argv
+
+
+def test_endless_output_is_bounded_and_says_so():
+    run_bash = _program(2)["run_bash"]
+    out = run_bash("yes")
+    assert "timed out after 2 s" in out
+    assert out.startswith("[... ") and "earlier bytes dropped" in out
+    assert len(out.encode()) < harness.MAX_OUTPUT_BYTES + 1000
+
+
+def test_a_job_holding_the_output_open_counts_against_the_deadline():
+    # bash exits at once, but `sleep` inherited stdout: upstream would wait
+    # for it (up to an hour); here the same deadline applies.
+    run_bash = _program(1)["run_bash"]
+    started = time.monotonic()
+    out = run_bash("echo hi; sleep 7630 &")
+    assert time.monotonic() - started < 5
+    assert out.startswith("hi\n") and "timed out" in out
+    leftover = subprocess.run(["pgrep", "-f", "^sleep 7630$"], capture_output=True, text=True)
+    assert leftover.stdout.strip() == ""
+
+
+def test_another_upstream_program_is_refused(monkeypatch):
+    monkeypatch.setattr(harness, "UPSTREAM_PROGRAM", UPSTREAM_PROGRAM + "# changed\n")
+    with pytest.raises(RuntimeError, match="re-check"):
+        harness.program_source(180)
+
+
+async def test_the_swap_refuses_a_script_it_does_not_know():
+    swap = harness._ProgramSwap(_RecordingRuntime(), "ours")
+    with pytest.raises(RuntimeError, match="other than the pinned program"):
+        await swap.prepare_uv_script("print('something else')")

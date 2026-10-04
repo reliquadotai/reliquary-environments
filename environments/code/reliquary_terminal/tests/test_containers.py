@@ -54,11 +54,11 @@ def _dead_pid() -> int:
 
 
 def test_record_writes_one_ledger_per_process(_ledger_dir):
-    first = containers.record("vf-aaa", guard=False)
-    second = containers.record("vf-bbb", guard=False)
+    first = containers.record("vf-00000000000a", guard=False)
+    second = containers.record("vf-00000000000b", guard=False)
     assert first == second and first.parent == _ledger_dir
     ledger = containers.Ledger.read(first)
-    assert ledger.names == ("vf-aaa", "vf-bbb")
+    assert ledger.names == ("vf-00000000000a", "vf-00000000000b")
     assert ledger.owner.pid == os.getpid()
     assert ledger.owner.alive()
 
@@ -84,13 +84,13 @@ def _ledger_of(owner: containers.Owner, root: Path, names: list[str]) -> Path:
 
 def test_reap_removes_only_what_dead_owners_recorded(_ledger_dir, docker):
     state, _ = docker
-    state.write_text("vf-dead1\nvf-dead2\nvf-live\nsomeone-elses\n")
+    state.write_text("vf-0000000dead1\nvf-0000000dead2\nvf-0000000000ee\ncccccccccccccccccccccccccccccccc\n")
     me = containers.Owner.current()
-    dead = _ledger_of(containers.Owner(**{**me.__dict__, "pid": _dead_pid(), "start": "7"}), _ledger_dir, ["vf-dead1", "vf-gone", "vf-dead2"])
-    live = _ledger_of(me, _ledger_dir, ["vf-live"])
-    elsewhere = _ledger_of(containers.Owner(**{**me.__dict__, "host": "other-host", "pid": 1, "start": "1"}), _ledger_dir, ["someone-elses"])
-    assert sorted(containers.reap()) == ["vf-dead1", "vf-dead2"]
-    assert state.read_text().split() == ["vf-live", "someone-elses"]
+    dead = _ledger_of(containers.Owner(**{**me.__dict__, "pid": _dead_pid(), "start": "7"}), _ledger_dir, ["vf-0000000dead1", "vf-00000000ffff", "vf-0000000dead2"])
+    live = _ledger_of(me, _ledger_dir, ["vf-0000000000ee"])
+    elsewhere = _ledger_of(containers.Owner(**{**me.__dict__, "host": "other-host", "pid": 1, "start": "1"}), _ledger_dir, ["cccccccccccccccccccccccccccccccc"])
+    assert sorted(containers.reap()) == ["vf-0000000dead1", "vf-0000000dead2"]
+    assert state.read_text().split() == ["vf-0000000000ee", "cccccccccccccccccccccccccccccccc"]
     assert not dead.exists()
     assert live.exists() and elsewhere.exists()
 
@@ -102,7 +102,7 @@ def test_a_ledger_is_kept_when_docker_cannot_be_asked(_ledger_dir, tmp_path, mon
     (bin_dir / "docker").chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     me = containers.Owner.current()
-    dead = _ledger_of(containers.Owner(**{**me.__dict__, "pid": _dead_pid(), "start": "7"}), _ledger_dir, ["vf-x"])
+    dead = _ledger_of(containers.Owner(**{**me.__dict__, "pid": _dead_pid(), "start": "7"}), _ledger_dir, ["vf-000000000001"])
     assert containers.reap() == []
     assert dead.exists()
 
@@ -111,7 +111,7 @@ def test_the_guardian_removes_a_killed_owners_containers(_ledger_dir, docker):
     # The owner records two containers, starting its guardian, then dies by
     # SIGKILL -- which runs no finally, no atexit, nothing of Python's.
     state, log = docker
-    state.write_text("vf-one\nvf-two\nunrelated\n")
+    state.write_text("11111111111111111111111111111111\n22222222222222222222222222222222\nunrelated\n")
     owner = subprocess.Popen(
         [
             sys.executable,
@@ -121,8 +121,8 @@ def test_the_guardian_removes_a_killed_owners_containers(_ledger_dir, docker):
                 import sys, time
                 from pathlib import Path
                 from reliquary_terminal import containers
-                containers.record("vf-one", Path({str(_ledger_dir)!r}))
-                containers.record("vf-two", Path({str(_ledger_dir)!r}))
+                containers.record("11111111111111111111111111111111", Path({str(_ledger_dir)!r}))
+                containers.record("22222222222222222222222222222222", Path({str(_ledger_dir)!r}))
                 print("ready", flush=True)
                 time.sleep(600)
                 """
@@ -132,14 +132,14 @@ def test_the_guardian_removes_a_killed_owners_containers(_ledger_dir, docker):
         text=True,
     )
     assert owner.stdout.readline().strip() == "ready"
-    assert state.read_text().split() == ["vf-one", "vf-two", "unrelated"]
+    assert state.read_text().split() == ["11111111111111111111111111111111", "22222222222222222222222222222222", "unrelated"]
     owner.send_signal(signal.SIGKILL)
     owner.wait()
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline and state.read_text().split() != ["unrelated"]:
         time.sleep(0.2)
     assert state.read_text().split() == ["unrelated"]
-    assert "rm --force vf-one vf-two" in log.read_text()
+    assert "rm --force 11111111111111111111111111111111 22222222222222222222222222222222" in log.read_text()
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline and list(_ledger_dir.iterdir()):
         time.sleep(0.1)
@@ -158,3 +158,71 @@ def test_the_guardian_imports_nothing_but_the_standard_library():
     )
     imported = out.stderr
     assert "verifiers" not in imported and "reliquary_terminal" not in imported
+
+
+def _me(**changes) -> containers.Owner:
+    return containers.Owner(**{**containers.Owner.current().__dict__, **changes})
+
+
+def test_names_not_shaped_like_verifiers_boxes_are_never_removed(_ledger_dir, docker):
+    state, log = docker
+    state.write_text("postgres\nreliquary-gradebox-1\n" + "a" * 32 + "\n")
+    _ledger_of(_me(pid=_dead_pid(), start="7"), _ledger_dir, ["postgres", "reliquary-gradebox-1", "a" * 32, "vf-XYZ"])
+    assert containers.reap() == ["a" * 32]
+    assert state.read_text().split() == ["postgres", "reliquary-gradebox-1"]
+
+
+def test_ledgers_of_another_pid_namespace_are_never_touched(_ledger_dir, docker):
+    # Same host, same boot: a container sharing ~/.cache and the docker
+    # socket. Its pids mean nothing here, so its owner must not be judged.
+    state, log = docker
+    name = "d" * 32
+    state.write_text(name + "\n")
+    other = _ledger_of(_me(pidns="pid:[1]", pid=_dead_pid(), start="7"), _ledger_dir, [name])
+    assert containers.ledgers() == []
+    assert containers.reap() == []
+    assert other.exists() and state.read_text().split() == [name]
+    assert not log.exists()  # docker never even asked
+    # Judged from here, such an owner can only read as alive.
+    assert containers.Ledger.read(other).owner.alive()
+
+
+def test_ledgers_of_another_user_are_never_touched(_ledger_dir, docker, monkeypatch):
+    state, _ = docker
+    name = "e" * 32
+    state.write_text(name + "\n")
+    _ledger_of(_me(pid=_dead_pid(), start="7"), _ledger_dir, [name])
+    monkeypatch.setattr(containers.os, "geteuid", lambda: os.geteuid() + 1)
+    assert containers.reap() == []
+    assert state.read_text().split() == [name]
+
+
+def test_without_proc_nothing_is_recorded_and_no_guardian_starts(_ledger_dir, monkeypatch, caplog):
+    # Off Linux every owner would read as dead, and a guardian would remove
+    # the box ~100 ms after setup. Cannot tell means: do nothing.
+    monkeypatch.setattr(containers, "_start_time", lambda pid: None)
+    started = []
+    monkeypatch.setattr(containers, "start_guardian", lambda path: started.append(path))
+    assert containers.Owner.current() is None
+    assert containers.record("f" * 32) is None
+    assert containers.record("0" * 32) is None
+    assert started == [] and not _ledger_dir.exists()
+    assert sum("not guarded" in r.message for r in caplog.records) == 1
+
+
+def test_an_owner_that_cannot_be_checked_reads_as_alive(monkeypatch):
+    me = containers.Owner.current()
+    dead = _me(pid=_dead_pid())
+    monkeypatch.setattr(containers, "_start_time", lambda pid: None)
+    assert dead.alive() is True
+    monkeypatch.setattr(containers, "_pid_namespace", lambda: None)
+    assert me.alive() is True
+
+
+def test_the_owners_docker_selection_replaces_ours(monkeypatch):
+    monkeypatch.setenv("DOCKER_HOST", "tcp://elsewhere:2375")
+    monkeypatch.setenv("DOCKER_CONTEXT", "other")
+    env = containers._docker_env(_me(docker_env={"DOCKER_HOST": "unix:///owner.sock"}))
+    assert env["DOCKER_HOST"] == "unix:///owner.sock"
+    assert "DOCKER_CONTEXT" not in env
+    assert containers._docker_env(_me(docker_env={})).get("DOCKER_HOST") is None
