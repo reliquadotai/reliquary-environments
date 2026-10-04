@@ -113,6 +113,9 @@ def test_test_files_are_recognised(path):
         "contest.py",
         "testfixtures.py",
         "latest_test.txt",
+        # Case-sensitive: pillow's suite directory is `Tests/` (its
+        # `test_*.py` files still match by name).
+        "Tests/helper.py",
     ],
 )
 def test_source_files_are_not_test_files(path):

@@ -396,7 +396,10 @@ Apache-2.0 per the dataset card.
   commit included (`git cat-file -t <fix>` answers `commit` on all three
   goldens' images). The shared ref strip and `gc` remove it from the agent's
   box and from the grading box alike; `tests/test_r2e_goldens.py` asserts
-  the fix commit is unreachable after setup on all three.
+  the fix commit is unreachable after setup on all five golden images.
+  Setup and grading also refuse a repository with object alternates, linked
+  worktrees, a shallow file or grafts (`taskset._R2E_LEAK_GUARD`), which
+  the strip-and-gc reasoning does not cover; none of the five has any.
 - **The hidden tests are in the image too** — `/r2e_tests` and
   `/testbed/run_tests.sh` (`python -m pytest -rA r2e_tests`, or tornado's
   own `r2e_tests/tornado_unittest_runner.py`, which prints the same summary
@@ -409,11 +412,22 @@ Apache-2.0 per the dataset card.
   the coveragepy golden before being closed: a root `conftest.py` forcing
   "passed" and a root `pytest.py` shadowing pytest (`python -m` puts the
   root first on `sys.path`) each make the hidden tests report whatever the
-  patch wants. The source-monkeypatch residual named under "Reward-hacking
-  mitigation" remains.
+  patch wants. Before the patch is applied, grading also refuses (0.0, not
+  applied) any patch touching `.venv/`, a path present but untracked at the
+  base (a `<project>.egg-info`, build output), or a path git ignores at the
+  base: those already exist in the image, so deleting new root entries never
+  reaches them, and a `.venv/lib/python3.X/site-packages/*.pth` runs at
+  interpreter start-up -- measured on coveragepy, one printed a forged
+  summary and exited 0. The agent's own capture never produces such a path
+  unless it un-ignored one on purpose. The source-monkeypatch residual
+  named under "Reward-hacking mitigation" remains.
 - **Reward: the exact verdict map.** `run_tests.sh` runs under a 300 s
-  timeout (R2E's own default; 0-3 s measured), its stdout is parsed by a
-  port of R2E's `parse_log_pytest`, and the result must equal the row's
+  timeout (R2E's own default; 0-3 s measured), only once the hidden tests
+  and runner are confirmed in place (otherwise 0.0, nothing run). Its
+  stdout is parsed by a port of R2E's `parse_log_pytest` that reads a
+  status only from a line's first token -- upstream's `"PASSED" in line`
+  lets `FAILED ...::test_fix - RuntimeError: PASSED` count as a pass --
+  and the result must equal the row's
   `expected_output_json` after R2E's own key normalisation — FAILED and
   ERROR entries included (2,204 rows expect at least one). Two departures
   from R2E's `_calculate_reward_r2e`, both stricter: an empty parse never
@@ -422,17 +436,22 @@ Apache-2.0 per the dataset card.
   the 46 single-test tasks (`grading.r2e_reward`).
 - **The gold patch is rebuilt**, from each fixed file's full pre- and
   post-fix contents, test files excluded (`corpus.is_r2e_test_file`: a
-  `tests`/`test`/`r2e_tests` directory, or `test_*.py`/`*_test.py`). It is
+  `tests`/`test`/`r2e_tests` directory, case-sensitive, so pillow's
+  `Tests/` helpers count as source; or `test_*.py`/`*_test.py`). It is
   never shown to the agent or graded against; the goldens use it. Checked
   with `git apply` against every row of the pinned revision.
 
-**Goldens** (`tests/test_r2e_goldens.py`, real images, run on a container
-host): coveragepy `c1bfa735`, tornado `b5ec807e` and pandas `fadb72cf` each
-score 0 with an empty patch and 1 with the gold patch through the whole
-loop, with the fix commit unreachable after setup; three tamper controls
-(a forged `run_tests.sh` and `r2e_tests/`, a root `conftest.py`, a root
-`pytest.py`) score 0 on coveragepy. Whether every task is solvable in this
-harness is unmeasured beyond those three.
+**Goldens** (`tests/test_r2e_goldens.py`, real images, all marked `slow`:
+CI's every-push job deselects them, run them on a container host):
+coveragepy `c1bfa735`, tornado `b5ec807e`, pandas `fadb72cf`, numpy
+`ebe2cfb6` and orange3 `c0174f90` each score 0 with an empty patch and 1
+with the gold patch through the whole loop -- numpy's and orange3's expected
+maps hold FAILED and ERROR entries, so their gold run also checks the
+first-token parser against R2E's own maps -- with the fix commit
+unreachable after setup; four tamper controls (a forged `run_tests.sh` and
+`r2e_tests/`, a root `conftest.py`, a root `pytest.py`, a `.pth` shipped
+into `.venv`) score 0 on coveragepy. Whether every task is solvable in this
+harness is unmeasured beyond those five.
 
 ## Test and load
 

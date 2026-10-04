@@ -1,8 +1,14 @@
 """Goldens for the R2E corpus, against real images.
 
-Three tasks from three repositories, chosen to cover both test runners R2E
-ships: coveragepy and pandas run pytest; tornado runs its own
-`r2e_tests/tornado_unittest_runner.py`, which prints a pytest-shaped summary.
+Five tasks from five repositories, chosen to cover both test runners R2E
+ships: coveragepy, pandas, numpy and orange3 run pytest; tornado runs its
+own `r2e_tests/tornado_unittest_runner.py`, which prints a pytest-shaped
+summary. The numpy and orange3 tasks expect FAILED and ERROR entries, so
+their gold run checks that no expected map relied on upstream's
+anywhere-in-the-line status match (see `grading.parse_log_pytest`).
+
+All `slow`: each pulls a 0.8-1.5 GB image and CI's every-push job
+deselects them (see .github/workflows/ci.yml); run them on a container host.
 For each: the fix commit is unreachable once setup has run (every R2E image
 carries the full upstream history, fix included), an empty patch scores 0,
 and the gold patch scores 1 through the whole loop.
@@ -19,11 +25,16 @@ from reliquary_swe import corpus, grading
 from reliquary_swe.taskset import SweTask, task_for
 
 docker = pytest.mark.docker
+pytestmark = pytest.mark.slow
 
 COVERAGEPY = "c1bfa7352368b63f3a9b30c02f242408d07a7ab2"
 TORNADO = "b5ec807edc83c8e7d1d12553d635ebe765e5c614"
 PANDAS = "fadb72cf5ef8489e409d4d33625bd16a76fa7a42"
-GOLDENS = [COVERAGEPY, TORNADO, PANDAS]
+# Expects 3 FAILED among 16.
+NUMPY = "ebe2cfb68586208bb096a575a603d00da5ee3887"
+# Expects 6 FAILED and 1 ERROR among 24.
+ORANGE3 = "c0174f909e8fbde9564c462383137a72365ab3c1"
+GOLDENS = [COVERAGEPY, TORNADO, PANDAS, NUMPY, ORANGE3]
 
 
 def _r2e_task(fix_commit: str) -> SweTask:
@@ -41,6 +52,17 @@ async def test_setup_makes_the_fix_commit_unreachable_and_hides_the_tests(fix_co
     task = _r2e_task(fix_commit)
     async with provisioned_runtime(task) as box:
         assert await _fix_is_reachable(box, fix_commit), "the image no longer carries the fix"
+        # Nothing the strip cannot vouch for (see taskset._R2E_LEAK_GUARD).
+        borrowed = await box.run(
+            [
+                "sh",
+                "-c",
+                "test ! -s .git/objects/info/alternates && test ! -e .git/worktrees "
+                "&& test ! -e .git/shallow && test ! -e .git/info/grafts",
+            ],
+            {},
+        )
+        assert borrowed.exit_code == 0
         # The content of every tracked file that exists on disk.
         tree = ["sh", "-c", "git ls-files -z | xargs -0 md5sum 2>/dev/null"]
         before = (await box.run(tree, {})).stdout
@@ -169,3 +191,37 @@ async def test_a_root_module_shadowing_pytest_does_not_survive_into_grading():
     assert report.restored is True
     assert left.exit_code != 0
     assert report.reward == 0.0
+
+
+@docker
+async def test_a_pth_file_shipped_into_the_venv_does_not_run():
+    # `.venv` is ignored (uv writes `.venv/.gitignore` = `*`) and already in
+    # the image, so deleting new root entries never reaches it, and
+    # `run_tests.sh` runs `.venv/bin/python`: a `.pth` there executes at
+    # interpreter start-up. An agent that un-ignores it can ship one. This
+    # one prints a passing summary for every expected name and exits --
+    # measured by hand on this image: written into site-packages, the same
+    # line makes `bash run_tests.sh` print exactly that and exit 0.
+    task = _r2e_task(COVERAGEPY)
+    async with provisioned_runtime(task) as box:
+        site = (
+            await box.run(["sh", "-c", "ls -d .venv/lib/python*/site-packages"], {})
+        ).stdout.strip()
+    assert site.startswith(".venv/lib/python")
+    names = json.loads(task.data.expected_output_json)
+    lines = ["=== short test summary info ==="] + [
+        f"PASSED r2e_tests/test_1.py::{name.replace('.', '::')}" for name in names
+    ]
+    pth = (
+        "import os, sys; sys.stdout.write("
+        + repr("\n".join(lines) + "\n")
+        + "); sys.stdout.flush(); os._exit(0)\n"
+    )
+    forged = _new_file(f"{site}/zz.pth", pth)
+    async with provisioned_runtime(task) as box:
+        report = await grading.grade(box, task.data, forged)
+        left = await box.run(["test", "-e", f"{site}/zz.pth"], {})
+    assert report.applied is False
+    assert report.reward == 0.0
+    assert ".venv/" in report.test_output_tail
+    assert left.exit_code != 0

@@ -56,6 +56,7 @@ from reliquary_swe import swe_adapter, swesmith_adapter
 from reliquary_swe.corpus import SweRow
 from reliquary_swe.taskset import (
     _R2E_CHECKOUT,
+    _R2E_LEAK_GUARD,
     _STRIP_AND_GC,
     _TRAIN_GUARD_AND_REROOT,
     SweData,
@@ -540,7 +541,7 @@ async def _restore_r2e(runtime: vf.Runtime, data: SweData) -> bool:
     shadowing `pytest`, `_pytest`, `pluggy` or any other module pytest
     imports after start-up takes a new root entry -- and `conftest.py` and
     pytest's five config files (`_TEST_CONFIG_FILES`) that the image does
-    track are put back to the base. The cost: a patch's new root-level
+    track are put back to the base, with the root `.gitignore`. The cost: a patch's new root-level
     files never reach the test run; an agent's `reproduce_issue.py` is
     collateral, a fix that needs a new top-level module is not graded as
     one (none of the three goldens' does). Nothing below `r2e_tests` needs
@@ -559,10 +560,105 @@ async def _restore_r2e(runtime: vf.Runtime, data: SweData) -> bool:
     placed = await runtime.run(["sh", "-c", script], {"WORKDIR": data.workdir})
     ok = placed.exit_code == 0
     if not await _restore_all_if_present(
-        runtime, data.base_commit, ["conftest.py", *_TEST_CONFIG_FILES]
+        runtime, data.base_commit, ["conftest.py", ".gitignore", *_TEST_CONFIG_FILES]
     ):
         ok = False
     return ok
+
+
+def _numstat_paths(numstat_z: str) -> list[str]:
+    """Every path a patch touches, read from `git apply --numstat -z` --
+    git's own parse, so a quoted or escaped path in the diff text cannot
+    slip past a regex. Each record is `added\tdeleted\tpath`, or for a
+    rename `added\tdeleted\t` followed by the old and the new path as two
+    further NUL-separated fields."""
+    fields = numstat_z.split("\0")
+    paths: list[str] = []
+    i = 0
+    while i < len(fields):
+        parts = fields[i].split("\t", 2)
+        if len(parts) == 3 and parts[2]:
+            paths.append(parts[2])
+            i += 1
+        elif len(parts) == 3:
+            paths.extend(fields[i + 1 : i + 3])
+            i += 3
+        else:
+            i += 1
+    return paths
+
+
+def _r2e_forbidden_paths(
+    paths: list[str], untracked: list[str], ignored: list[str]
+) -> list[str]:
+    """The patch paths R2E grading refuses outright: any under `.venv/`,
+    any that is -- or lies inside -- a path present but untracked at the
+    base (`git ls-files --others --directory`, which lists ignored paths
+    too and collapses a wholly untracked directory to `dir/`), and any git
+    ignores at the base.
+
+    Why: deleting new root entries (`_restore_r2e`) does not reach paths
+    the image already has outside the tracked tree, and those are exactly
+    where a patch can steer the run without touching a test: `run_tests.sh`
+    runs `.venv/bin/python`, so a `.venv/lib/python3.X/site-packages/zz.pth`
+    executes at interpreter start-up, and `python -m pytest` reads plugin
+    entry points from the `<project>.egg-info` the root holds. The agent's
+    own capture (`git add -A`, ignoring what was untracked at setup) never
+    produces such a path; one only appears if the agent un-ignored it on
+    purpose (a `!` rule in `.gitignore`, `.git/info/exclude`). The ignore
+    check runs against the base before the patch is applied, so a
+    `.gitignore` the patch edits has no say in it.
+
+    `ignored` comes from `git check-ignore` WITH the index, not
+    `--no-index`: a tracked file that happens to match an ignore pattern is
+    the repository's own source, and a fix may need to edit it.
+    """
+    untracked_dirs = tuple(entry for entry in untracked if entry.endswith("/"))
+    untracked_files = {entry for entry in untracked if not entry.endswith("/")}
+    ignored_set = set(ignored)
+    return [
+        path
+        for path in paths
+        if path == ".venv"
+        or path.startswith(".venv/")
+        or path in untracked_files
+        or path.startswith(untracked_dirs)
+        or path + "/" in untracked_dirs
+        or path in ignored_set
+    ]
+
+
+async def _r2e_patch_violations(runtime: vf.Runtime, data: SweData) -> list[str]:
+    """`_r2e_forbidden_paths` for the patch at /tmp/agent.diff, asked of
+    this box before the patch is applied. A patch git cannot parse yields
+    no paths here and fails to apply right after, scoring 0 there."""
+    numstat = await runtime.run(["git", "apply", "--numstat", "-z", "/tmp/agent.diff"], {})
+    if numstat.exit_code != 0:
+        return []
+    paths = _numstat_paths(numstat.stdout or "")
+    if not paths:
+        return []
+    others = await runtime.run(["git", "ls-files", "-z", "--others", "--directory"], {})
+    if others.exit_code != 0:
+        raise RuntimeError(
+            f"could not list untracked paths for {data.instance_id}: "
+            f"{(others.stderr or others.stdout).strip()[-500:]}"
+        )
+    await runtime.write("/tmp/agent-paths", ("\0".join(paths) + "\0").encode())
+    ignored = await runtime.run(
+        ["sh", "-c", "git check-ignore -z --stdin < /tmp/agent-paths"], {}
+    )
+    # 0: some path is ignored, 1: none is, anything else: git failed.
+    if ignored.exit_code not in (0, 1):
+        raise RuntimeError(
+            f"could not check ignored paths for {data.instance_id}: "
+            f"{(ignored.stderr or ignored.stdout).strip()[-500:]}"
+        )
+    return _r2e_forbidden_paths(
+        paths,
+        [entry for entry in (others.stdout or "").split("\0") if entry],
+        [entry for entry in (ignored.stdout or "").split("\0") if entry],
+    )
 
 
 def parse_log_pytest(log: str) -> dict[str, str]:
@@ -571,24 +667,31 @@ def parse_log_pytest(log: str) -> dict[str, str]:
     all ten to it) -- tornado included, whose own `tornado_unittest_runner.py`
     prints the same summary format (checked on the golden image).
 
-    Only lines after "short test summary info" count. A line naming PASSED,
-    FAILED or ERROR (checked in that order, anywhere in the line) records
-    the `::`-separated parts after the file, joined with "."; FAILED and
-    ERROR names are cut at " - " (the message pytest appends). A line
-    without `::` -- a collection error, `ERROR r2e_tests/test_1.py - ...` --
-    records the empty name, as upstream does; `r2e_reward` decides what that
-    is worth.
+    Only lines after "short test summary info" count, and of those only lines
+    whose FIRST token is PASSED, FAILED or ERROR -- the one departure from
+    upstream, which tests `"PASSED" in line` anywhere in the line, in that
+    order. Upstream's check is an exploit: `FAILED r2e_tests/...::test_fix -
+    RuntimeError: PASSED` parses as PASSED, so one `raise
+    RuntimeError("PASSED")` on the buggy path turns a failing test into a
+    pass. Both runners in this corpus start every status line with the
+    status (pytest's `-rA` summary; tornado's runner prints
+    `f"{outcome.upper()} {test}"`), checked on the goldens' images.
+
+    A status line records the `::`-separated parts after the file, joined
+    with "."; FAILED and ERROR names are cut at " - " (the message pytest
+    appends). A line without `::` -- a collection error,
+    `ERROR r2e_tests/test_1.py - ...` -- records the empty name, as upstream
+    does; `r2e_reward` decides what that is worth.
     """
     if "short test summary info" not in log:
         return {}
     statuses: dict[str, str] = {}
     for line in log.split("short test summary info")[1].strip().split("\n"):
-        if "PASSED" in line:
+        status = line.split(" ", 1)[0]
+        if status == "PASSED":
             statuses[".".join(line.split("::")[1:])] = "PASSED"
-        elif "FAILED" in line:
-            statuses[".".join(line.split("::")[1:]).split(" - ")[0]] = "FAILED"
-        elif "ERROR" in line:
-            statuses[".".join(line.split("::")[1:]).split(" - ")[0]] = "ERROR"
+        elif status in ("FAILED", "ERROR"):
+            statuses[".".join(line.split("::")[1:]).split(" - ")[0]] = status
     return statuses
 
 
@@ -746,7 +849,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
         # must put back the image's `setup.cfg`, not HEAD's.
         prefix = "set -e ; "
         if data.split == "r2e":
-            prefix += _R2E_CHECKOUT + " ; "
+            prefix += _R2E_CHECKOUT + " ; " + _R2E_LEAK_GUARD + " ; "
         strip = await runtime.run(
             ["sh", "-c", prefix + _STRIP_AND_GC], {"WORKDIR": data.workdir}
         )
@@ -809,6 +912,20 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     applied = True
     if patch.strip():
         await runtime.write("/tmp/agent.diff", patch.encode())
+        if data.split == "r2e":
+            violations = await _r2e_patch_violations(runtime, data)
+            if violations:
+                # Not applied, on purpose: see `_r2e_forbidden_paths`.
+                return Report(
+                    0.0,
+                    False,
+                    True,
+                    0,
+                    0,
+                    {},
+                    test_output_tail="patch touches paths outside the tracked tree: "
+                    + ", ".join(violations)[:1900],
+                )
         result = await runtime.run(["git", "apply", "-v", "/tmp/agent.diff"], {})
         applied = result.exit_code == 0
         if not applied:
@@ -846,6 +963,29 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
         )
 
     if data.split == "r2e":
+        # Run nothing unless the hidden tests and their runner are exactly
+        # where `_restore_r2e` put them: whatever else sits at run_tests.sh
+        # is the patch's, and its verdict is worth nothing.
+        placed = await runtime.run(
+            [
+                "sh",
+                "-c",
+                f'test -L "$WORKDIR"/r2e_tests && '
+                f'test "$(readlink "$WORKDIR"/r2e_tests)" = {_R2E_STASH}/r2e_tests && '
+                f'cmp -s {_R2E_STASH}/run_tests.sh "$WORKDIR"/run_tests.sh',
+            ],
+            {"WORKDIR": data.workdir},
+        )
+        if placed.exit_code != 0:
+            return Report(
+                0.0,
+                applied,
+                False,
+                0,
+                0,
+                {},
+                test_output_tail="hidden tests not in place; nothing was run",
+            )
         # R2E's own procedure (`_calculate_reward_r2e`): run the image's
         # script from the repository root, parse, compare to the expected
         # map. Only stdout is parsed: both runners print their summary

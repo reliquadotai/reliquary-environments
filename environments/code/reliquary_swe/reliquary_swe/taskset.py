@@ -145,6 +145,24 @@ _R2E_CHECKOUT = " ; ".join(
     ]
 )
 
+# R2E only, run before `_STRIP_AND_GC`: refuse a repository whose objects
+# the strip cannot vouch for. `gc` prunes what no ref reaches in THIS object
+# store; objects borrowed through `objects/info/alternates`, a linked
+# worktree's own HEAD (`.git/worktrees`), and the history rewrites of a
+# shallow file or grafts all sit outside what the strip-and-gc reasoning
+# covers -- a fix commit could survive behind any of them. None was present
+# on the images checked (the three goldens and the numpy and orange3 tasks
+# re-run on 2026-10-04); this makes a future image that has one fail setup
+# loudly instead of leaking quietly.
+_R2E_LEAK_GUARD = " ; ".join(
+    [
+        'test ! -s "$WORKDIR"/.git/objects/info/alternates',
+        'test ! -e "$WORKDIR"/.git/worktrees',
+        'test ! -e "$WORKDIR"/.git/shallow',
+        'test ! -e "$WORKDIR"/.git/info/grafts',
+    ]
+)
+
 # R2E only, run after `_STRIP_AND_GC`. Every R2E image carries its hidden
 # tests inside the very box the agent works in -- `/r2e_tests` (the test
 # files) and `/testbed/run_tests.sh` (the command that runs them), measured
@@ -217,6 +235,8 @@ class SweTask(vf.Task[SweData]):
         steps = [_R2E_CHECKOUT if self.data.split == "r2e" else _CHECKOUT]
         if self.data.split == "train":
             steps.append(_TRAIN_GUARD_AND_REROOT)
+        if self.data.split == "r2e":
+            steps.append(_R2E_LEAK_GUARD)
         steps.append(_STRIP_AND_GC)
         # "r2e" needs no re-root either: HEAD is detached at the pre-fix
         # commit, and the fix commit is a *descendant* reachable only through

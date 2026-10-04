@@ -597,7 +597,11 @@ def is_r2e_test_file(path: str) -> bool:
     The rule, decided rather than inherited (R2E publishes a per-row
     `num_non_test_files` count but not the rule behind it): a path with a
     `tests`, `test` or `r2e_tests` directory component, or a file named
-    `test_*.py` or `*_test.py`. Deliberately not "contains the word test":
+    `test_*.py` or `*_test.py`. Case-sensitive: pillow's own suite lives
+    under `Tests/`, so its helpers and fixtures there count as source (its
+    `test_*.py` files still match by name) and may appear in a pillow gold
+    patch -- harmless, since a gold patch is never graded against. Deliberately not
+    "contains the word test":
     `numpy/testing/` and `pandas/_testing.py` are library code the fix may
     legitimately need to change, and `pandas/util/testing/__init__.py` is
     deleted by one row's fix (row 4550).
@@ -721,6 +725,10 @@ def _r2e_row(raw: dict) -> SweRow:
     )
 
 
+# The `num_tasks` order hashes the instance id, so it depends on the id's
+# exact format (`_r2e_instance_id`): changing that format reshuffles which
+# tasks every `num_tasks` prefix holds -- a different task set under the
+# same configuration.
 def _r2e_order_key(instance_id: str) -> str:
     return hashlib.sha256(instance_id.encode()).hexdigest()
 

@@ -106,3 +106,72 @@ def test_reward_normalises_names_as_r2e_does():
 def test_restore_strategy_is_the_r2e_strategy_for_an_r2e_row():
     data = SimpleNamespace(split="r2e", test_patch="")
     assert grading._restore_strategy_for(data) is grading._restore_r2e
+
+
+def test_a_status_word_inside_a_failure_message_does_not_pass():
+    # The exploit upstream's `"PASSED" in line` allows: one
+    # `raise RuntimeError("PASSED")` on the buggy path turns a failing test
+    # into a pass. Only the line's first token is the status.
+    log = (
+        "=== short test summary info ===\n"
+        "FAILED r2e_tests/test_1.py::TestX::test_fix - RuntimeError: PASSED\n"
+        "ERROR r2e_tests/test_1.py::TestX::test_other - PASSED\n"
+        "FAILED r2e_tests/test_1.py::TestX::test_third - ERROR\n"
+    )
+    parsed = grading.parse_log_pytest(log)
+    assert parsed == {
+        "TestX.test_fix": "FAILED",
+        "TestX.test_other": "ERROR",
+        "TestX.test_third": "FAILED",
+    }
+    expected = _expected(
+        {"TestX.test_fix": "PASSED", "TestX.test_other": "PASSED", "TestX.test_third": "PASSED"}
+    )
+    assert grading.r2e_reward(parsed, expected) == 0.0
+
+
+def test_lines_not_starting_with_a_status_are_ignored():
+    log = (
+        "=== short test summary info ===\n"
+        "  PASSED r2e_tests/test_1.py::TestX::test_indented\n"
+        "something PASSED r2e_tests/test_1.py::TestX::test_buried\n"
+        "PASSED: r2e_tests/test_1.py::TestX::test_colon\n"
+        "PASSED r2e_tests/test_1.py::TestX::test_real\n"
+        "=== 1 passed in 0.1s ===\n"
+    )
+    assert grading.parse_log_pytest(log) == {"TestX.test_real": "PASSED"}
+
+
+def test_numstat_paths_reads_git_s_own_parse_of_the_patch():
+    # `git apply --numstat -z`: "added\tdeleted\tpath\0", and for a rename
+    # "added\tdeleted\t\0old\0new\0". Paths arrive unquoted, whatever
+    # characters they hold.
+    out = "1\t0\ta.py\x002\t1\t\x00old/b.py\x00new/b.py\x00-\t-\tweird\tname.pth\x00"
+    assert grading._numstat_paths(out) == ["a.py", "old/b.py", "new/b.py", "weird\tname.pth"]
+
+
+def test_patch_paths_outside_the_tracked_tree_are_forbidden():
+    untracked = [".venv/", "coverage.egg-info/", "install.sh", "coverage/tracer.so"]
+    forbidden = grading._r2e_forbidden_paths(
+        [
+            "coverage/debug.py",  # tracked source: fine
+            "reproduce_issue.py",  # new root file: fine (deleted later)
+            "coverage/new_module.py",  # new file in a tracked dir: fine
+            ".venv/lib/python3.9/site-packages/zz.pth",
+            ".venv",
+            "coverage.egg-info/entry_points.txt",
+            "install.sh",
+            "coverage/tracer.so",
+            "build/ignored.py",
+        ],
+        untracked,
+        ignored=["build/ignored.py"],
+    )
+    assert forbidden == [
+        ".venv/lib/python3.9/site-packages/zz.pth",
+        ".venv",
+        "coverage.egg-info/entry_points.txt",
+        "install.sh",
+        "coverage/tracer.so",
+        "build/ignored.py",
+    ]
