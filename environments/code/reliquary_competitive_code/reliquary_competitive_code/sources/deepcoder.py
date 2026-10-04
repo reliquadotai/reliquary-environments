@@ -26,8 +26,9 @@ CONFIGS = ("taco", "primeintellect")
 
 _PI_PREFIX = re.compile(r"^\s*Solve the following coding problem using the programming language python:\s*")
 _PI_SUFFIX = re.compile(
-    r"\s*The input will be stdin and you should print your solution to stdout\s*"
-    r"Now solve the problem and return the code\.\s*$"
+    r"\s*(?:The input will be stdin and you should print your solution to stdout"
+    r"|The input will be given via stdin and the output should be printed to stdout by your code\.)?"
+    r"\s*Now solve the problem (?:and return|by providing) the code\.\s*$"
 )
 
 

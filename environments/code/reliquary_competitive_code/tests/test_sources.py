@@ -70,3 +70,18 @@ def test_rows_reads_both_configs(tmp_path) -> None:
     rows = list(deepcoder.rows(tmp_path))
     assert [row.source for row in rows] == ["deepcoder/taco", "deepcoder/primeintellect"]
     assert rows[0].upstream_id == "taco/train-00000-of-00001.parquet#0"
+
+
+def test_primeintellect_strips_every_real_suffix_variant() -> None:
+    stdin_new = (
+        "The input will be given via stdin and the output should be printed to stdout by your code.\n\n"
+        "Now solve the problem by providing the code."
+    )
+    bare = "Now solve the problem and return the code."
+    for suffix in (stdin_new, bare):
+        record = {
+            "problem": "Solve the following coding problem using the programming language python:\n\nAdd $a$ and $b$.\n\n" + suffix,
+            "tests": json.dumps([{"type": "stdin_stdout", "input": "1 2\n", "output": "3\n"}]),
+            "solutions": [],
+        }
+        assert deepcoder.convert("primeintellect", "pi#0", record).statement == "Add $a$ and $b$."

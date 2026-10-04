@@ -1,15 +1,18 @@
 """One row per problem, across sources.
 
 taco, primeintellect and CodeContests+ are largely the same Codeforces problems
-formatted differently (measured: 21,707 DeepCoder stdin rows are 11,287
+formatted differently (measured: 21,294 DeepCoder stdin rows are 10,781
 distinct statements). Exact duplicates share a normalised hash; near
 duplicates share most 5-word shingles and are found by MinHash with LSH
-banding, then confirmed at an estimated Jaccard of 0.8.
+banding, then confirmed at an estimated Jaccard of 0.8. MinHash cannot see
+that "n <= 10" and "n <= 3000" differ, so a confirmed edge must also agree on
+its number tokens and must not pair an easy version with a hard one.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 from collections import defaultdict
 from collections.abc import Sequence
 
@@ -21,6 +24,9 @@ SHINGLE = 5
 PERMUTATIONS = 64
 BANDS = 16
 THRESHOLD = 0.8
+_NUMBER = re.compile(r"\d+")
+_EASY = frozenset({"easy", "easier"})
+_HARD = frozenset({"hard", "harder"})
 _PRIME = (1 << 31) - 1
 _RNG = np.random.default_rng(20261004)
 _A = _RNG.integers(1, _PRIME, PERMUTATIONS, dtype=np.uint64)
@@ -37,9 +43,28 @@ def _signature(statement: str) -> np.ndarray:
     return ((_A[:, None] * hashes[None, :] + _B[:, None]) % _PRIME).min(axis=1)
 
 
+def _version_words(text: str) -> frozenset[str]:
+    return frozenset(word for word in text.split() if word in _EASY or word in _HARD)
+
+
+def _compatible(left: str, right: str) -> bool:
+    """Guards a MinHash edge: same numbers, and not two versions of one problem."""
+    if set(_NUMBER.findall(left)) != set(_NUMBER.findall(right)):
+        return False
+    a, b = _version_words(left), _version_words(right)
+    if (a & _EASY and b & _HARD) or (a & _HARD and b & _EASY):
+        return False
+    return not (a and b and a != b)
+
+
 def _merge(members: list[SourceRow]) -> SourceRow:
+    """References come lead-first: its own exact group, then the other members'."""
     lead = max(members, key=lambda row: (len(row.tests), row.source, row.upstream_id))
-    references = tuple(dict.fromkeys(ref for row in members for ref in row.references))
+    lead_id = problem_id(lead.statement)
+    ordered = [r for r in members if problem_id(r.statement) == lead_id] + [
+        r for r in members if problem_id(r.statement) != lead_id
+    ]
+    references = tuple(dict.fromkeys(ref for row in ordered for ref in row.references))
     dates = sorted(row.contest_date for row in members if row.contest_date)
     return SourceRow(lead.source, lead.upstream_id, lead.statement, lead.tests, references, dates[0] if dates else None)
 
@@ -49,6 +74,7 @@ def deduplicate(rows: Sequence[SourceRow]) -> list[SourceRow]:
     for row in rows:
         exact[problem_id(row.statement)].append(row)
     keys = sorted(exact)
+    texts = [normalise(exact[key][0].statement) for key in keys]
     signatures = [_signature(exact[key][0].statement) for key in keys]
 
     parent = list(range(len(keys)))
@@ -65,9 +91,13 @@ def deduplicate(rows: Sequence[SourceRow]) -> list[SourceRow]:
         for i, signature in enumerate(signatures):
             buckets[signature[band * width : (band + 1) * width].tobytes()].append(i)
         for members in buckets.values():
-            for j in members[1:]:
-                if float(np.mean(signatures[members[0]] == signatures[j])) >= THRESHOLD:
-                    parent[find(j)] = find(members[0])
+            for x in range(len(members)):
+                for y in range(x + 1, len(members)):
+                    i, j = members[x], members[y]
+                    if find(i) == find(j):
+                        continue
+                    if float(np.mean(signatures[i] == signatures[j])) >= THRESHOLD and _compatible(texts[i], texts[j]):
+                        parent[find(j)] = find(i)
 
     clusters: dict[int, list[SourceRow]] = defaultdict(list)
     for i, key in enumerate(keys):

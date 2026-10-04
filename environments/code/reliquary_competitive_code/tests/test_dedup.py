@@ -35,5 +35,33 @@ def test_different_problems_stay_apart() -> None:
 
 
 def test_output_order_is_deterministic() -> None:
-    rows = [_row(LONG, 3, ("a",)), _row("Print one integer the sum of a and b for every test case given in the input lines", 2, ("b",))]
+    near = LONG.replace("print the answer", "output the answer")
+    rows = [_row(LONG, 3, ("a",)), _row(near, 2, ("b",))]
+    assert len(deduplicate(rows)) == 1
     assert deduplicate(rows) == deduplicate(list(reversed(rows)))
+
+
+def test_references_come_lead_first() -> None:
+    near = LONG.replace("print the answer", "output the answer")
+    merged = deduplicate([_row(LONG, 9, ("L",)), _row(near, 2, ("X", "Y", "Z"))])
+    assert len(merged) == 1 and merged[0].references[0] == "L"
+    assert merged[0].references == ("L", "X", "Y", "Z")
+
+
+def test_easy_and_hard_versions_stay_apart() -> None:
+    easy = "This is the easy version of the problem. " + LONG
+    hard = "This is the hard version of the problem. " + LONG
+    assert len(deduplicate([_row(easy, 3, ("a",)), _row(hard, 3, ("b",))])) == 2
+
+
+def test_different_constraint_numbers_stay_apart() -> None:
+    small = LONG + " where 1 <= n <= 10"
+    large = LONG + " where 1 <= n <= 3000"
+    assert len(deduplicate([_row(small, 3, ("a",)), _row(large, 3, ("b",))])) == 2
+
+
+def test_chain_of_near_duplicates_is_one_cluster() -> None:
+    base = LONG + " " + LONG.replace("Vasya", "Misha").replace("segments", "pieces") + " " + LONG.replace("array", "sequence")
+    b = base.replace("print the answer", "output the answer", 1)
+    c = b.replace("minimum", "smallest", 1)
+    assert len(deduplicate([_row(base, 3, ("a",)), _row(b, 4, ("b",)), _row(c, 5, ("c",))])) == 1
