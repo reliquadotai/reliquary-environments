@@ -82,18 +82,6 @@ def _program(cpu_seconds: int) -> str:
     )
 
 
-def _kill_group(proc: subprocess.Popen) -> tuple[bytes, bytes]:
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    try:
-        return proc.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        return proc.communicate()
-
-
 def _reap(proc: subprocess.Popen) -> tuple[int, float]:
     """Wait for the child ourselves: its exit code and CPU as the kernel counted them."""
     _, status, usage = os.wait4(proc.pid, 0)
@@ -126,16 +114,29 @@ def run_test(code: str, stdin: str, *, time_limit_s: float, output_cap: int) -> 
         return RunResult("runtime_error", "", 0.0)
     chunks: list[bytes] = []
     keep = output_cap + READ_SLACK
+    # The reader owns a dup of the pipe's read end and uses raw os.read, so a
+    # grandchild that escaped the process group and holds the pipe open can
+    # strand the reader thread but never block this function: the buffered
+    # `proc.stdout` is never read, hence never locked, and can always be closed.
+    read_fd = os.dup(proc.stdout.fileno())
 
     def read_out() -> None:
         kept = 0
-        while True:
-            block = proc.stdout.read(65536)
-            if not block:
-                return
-            if kept < keep:
-                chunks.append(block)
-                kept += len(block)
+        try:
+            while True:
+                block = os.read(read_fd, 65536)
+                if not block:
+                    return
+                if kept < keep:
+                    chunks.append(block)
+                    kept += len(block)
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                os.close(read_fd)
+            except OSError:
+                pass
 
     def write_in() -> None:
         try:
@@ -144,26 +145,39 @@ def run_test(code: str, stdin: str, *, time_limit_s: float, output_cap: int) -> 
         except (OSError, ValueError):
             pass
 
-    readers = [threading.Thread(target=read_out, daemon=True), threading.Thread(target=write_in, daemon=True)]
-    for thread in readers:
-        thread.start()
-    wall_fired = threading.Event()
+    reader = threading.Thread(target=read_out, daemon=True)
+    writer = threading.Thread(target=write_in, daemon=True)
+    reader.start()
+    writer.start()
+    state = threading.Lock()
+    reaped = False
+    wall_fired = False
 
     def on_wall_clock() -> None:
-        wall_fired.set()
-        _killpg(proc)
+        nonlocal wall_fired
+        with state:
+            if not reaped:
+                wall_fired = True
+                _killpg(proc)
 
     timer = threading.Timer(WALL_FACTOR * time_limit_s + WALL_SLACK_S, on_wall_clock)
     timer.start()
     try:
         exit_code, cpu = _reap(proc)
     finally:
+        with state:
+            reaped = True
         timer.cancel()
-        _killpg(proc)  # anything the submission left behind
-    for thread in readers:
-        thread.join(timeout=5)
-    proc.stdout.close()
-    if wall_fired.is_set() or exit_code in (-signal.SIGXCPU, -signal.SIGKILL) or cpu > time_limit_s:
+    _killpg(proc)  # whatever the submission left in the group
+    reader.join(timeout=2)  # a stranded reader is abandoned, never waited for
+    writer.join(timeout=0.1)
+    try:
+        proc.stdout.close()
+    except OSError:
+        pass
+    if exit_code in (-signal.SIGXCPU, -signal.SIGKILL) or cpu > time_limit_s:
+        return RunResult("timeout", "", cpu)
+    if wall_fired and exit_code != 0:
         return RunResult("timeout", "", cpu)
     if exit_code != 0:
         return RunResult("runtime_error", "", cpu)

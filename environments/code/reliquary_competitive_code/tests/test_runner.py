@@ -129,3 +129,44 @@ def test_a_thread_flooding_output_hits_the_output_limit() -> None:
         "threading.Thread(target=flood).start()\n"
     )
     assert _status(code) == "output_limit"
+
+
+def _guest_pids() -> set[int]:
+    import os
+
+    pids = set()
+    for name in os.listdir("/proc"):
+        if name.isdigit():
+            try:
+                with open(f"/proc/{name}/cmdline", "rb") as handle:
+                    if b"RLIMIT_AS" in handle.read():
+                        pids.add(int(name))
+            except OSError:
+                pass
+    return pids
+
+
+def test_a_grandchild_escaping_the_group_cannot_hang_the_runner() -> None:
+    import os
+    import signal
+
+    before = _guest_pids()
+    code = (
+        "import random\n"
+        "r, w = random._os.pipe()\n"
+        "if random._os.fork() == 0:\n"
+        "    random._os.setsid()\n"
+        "    random._os.read(r, 1)\n"
+        "print(5)\n"
+    )
+    start = time.monotonic()
+    try:
+        verdict = judge(code, [ADD], time_limit_s=1.0)
+    finally:
+        for pid in _guest_pids() - before:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    assert time.monotonic() - start < 2 * 3.0 + 5.0
+    assert verdict.status in {"ok", "timeout"}
