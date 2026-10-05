@@ -280,6 +280,26 @@ updated once tasks are kept), add a `tmax` source to
 leaves `<id>.error` rather than a verdict. Rerunning the same command retries
 it.
 
+## Pilot (2026-10-05, 50 tasks, 2 vCPU box)
+
+- **Base image:** built in 662 s, 10.3 GB on disk, with no apt or pip conflicts.
+- **Kept:** 39/50.
+  - no-op = 0: 44/44.
+  - reference = 1 offline in a separate box: 39/44.
+  - stable ×3: 39/39.
+  - both mutants = 0: 39/39, with the unmutated control = 1 in 39/39.
+- **Excluded:**
+  - reference needs the network in the agent phase: 3 (cargo crates, a
+    pip venv);
+  - live service: 1;
+  - unexplained (seccomp program): 1;
+  - setup writes random inputs: 4;
+  - service started from `.bashrc`: 1;
+  - setup output over 32 MB: 1.
+- **The mutation check rejected nothing.** It is not yet a working proxy for
+  River's weak tests.
+- **Throughput:** 29 s of wall time per task at 2 workers.
+
 ## Open questions
 
 - **apt conflicts through dependencies**, and pip's resolver over about 200
