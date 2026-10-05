@@ -19,7 +19,9 @@ a simplification here, it is the only correct option.
 
 from __future__ import annotations
 
+import difflib
 import functools
+import hashlib
 import json
 import logging
 import re
@@ -146,9 +148,17 @@ class SweRow:
     # `swesmith_adapter.test_command`). Polyglot only; empty elsewhere.
     test_command: str = ""
     # Where the repository lives inside the image. `/testbed` for SWE-bench
-    # Verified and SWE-smith; the polyglot corpus ships images of both
+    # Verified, SWE-smith and R2E; the polyglot corpus ships images of both
     # `/testbed` and `/workspace/repo` shapes and says which per row.
     workdir: str = "/testbed"
+    # R2E only (empty elsewhere): the row's own `expected_output_json`, kept
+    # verbatim as JSON text -- `{test name: "PASSED"|"FAILED"|"ERROR"}`, the
+    # verdict map the hidden tests produce once the fix is in. Grading pays
+    # only for reproducing it exactly (see `grading.r2e_reward`). Not every
+    # entry is PASSED: measured on the pinned revision, 661,226 entries are
+    # PASSED, 13,908 FAILED and 64,168 ERROR, and 2,204 of 4,578 rows carry
+    # at least one non-PASSED entry.
+    expected_output_json: str = ""
 
 
 def _tests(raw: object) -> tuple[str, ...]:
@@ -564,3 +574,220 @@ def load_polyglot_rows(num_tasks: int | None = None) -> tuple[SweRow, ...]:
             )
         )
     return tuple(rows)
+
+
+# R2E-Gym-Subset: 4,578 tasks mined from the real commit history of 10 Python
+# repositories, one image per task. Apache-2.0 per the dataset card. Pinned
+# like every other source here.
+_R2E_SOURCE = (
+    "R2E-Gym/R2E-Gym-Subset",
+    "train",
+    "2e8108ff942f24fcb5686badfaf7f9a8808566d5",
+)
+
+# Path components that make a file a test file, for `is_r2e_test_file`.
+# `r2e_tests` is where R2E keeps its hidden tests; the other two are the
+# repositories' own test directories (pandas/tests, tornado/test, ...).
+_R2E_TEST_DIRS = frozenset({"tests", "test", "r2e_tests"})
+
+
+def is_r2e_test_file(path: str) -> bool:
+    """Whether `path` is a test file, and so left out of an R2E gold patch.
+
+    The rule, decided rather than inherited (R2E publishes a per-row
+    `num_non_test_files` count but not the rule behind it): a path with a
+    `tests`, `test` or `r2e_tests` directory component, or a file named
+    `test_*.py` or `*_test.py`. Case-sensitive: pillow's own suite lives
+    under `Tests/`, so its helpers and fixtures there count as source (its
+    `test_*.py` files still match by name) and may appear in a pillow gold
+    patch -- harmless, since a gold patch is never graded against. Deliberately not
+    "contains the word test":
+    `numpy/testing/` and `pandas/_testing.py` are library code the fix may
+    legitimately need to change, and `pandas/util/testing/__init__.py` is
+    deleted by one row's fix (row 4550).
+
+    Why test files are left out at all: grading never runs the repository's
+    own tests, only the hidden `r2e_tests`, and the gold patch must be the
+    kind of patch an agent is told to write ("do not edit the tests").
+    """
+    parts = path.split("/")
+    if any(part in _R2E_TEST_DIRS for part in parts[:-1]):
+        return True
+    name = parts[-1]
+    return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
+
+
+# R2E's own `DockerRuntime.get_task_instruction` regex: greedy, multi-line.
+_R2E_ISSUE = re.compile(r"\[ISSUE\](.*)\[/ISSUE\]", re.DOTALL)
+
+
+def _r2e_problem_statement(text: str) -> str:
+    """What R2E itself shows its agent: the text between the first `[ISSUE]`
+    and the last `[/ISSUE]`, or the whole statement when there is no such
+    pair. Measured on the pinned revision: 4,186 of 4,578 statements are
+    exactly one wrapped issue, 292 carry some other text around the tags,
+    100 carry no tag pair at all -- and none is empty either way."""
+    match = _R2E_ISSUE.search(text)
+    return match.group(1) if match else text
+
+
+def _diff_body(old: str, new: str, old_name: str, new_name: str) -> list[str]:
+    """`---`/`+++` headers and hunks for one file, or nothing when the two
+    contents are equal. A last line without a trailing newline is marked
+    the way git marks it, or `git apply` would add one."""
+    lines = []
+    for line in difflib.unified_diff(
+        old.splitlines(keepends=True), new.splitlines(keepends=True), old_name, new_name
+    ):
+        lines.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
+    return lines
+
+
+def r2e_gold_patch(file_diffs: list[dict]) -> str:
+    """The fix as a git-style unified diff of its NON-test files (see
+    `is_r2e_test_file`), rebuilt from each file's full pre- and post-fix
+    contents rather than from R2E's parsed hunks.
+
+    Every file shape the pinned revision contains is handled, each checked by
+    `git apply` in `tests/test_r2e_corpus.py`: content edits (12,044 files),
+    added files (289, two of them empty, which have no hunk at all), added
+    symlinks (8, mode 120000, the target written without a newline), mode
+    changes 100644 -> 100755 (3) and one deletion. The one binary file in
+    the corpus is a test fixture (`tests/sample_data/...`), so excluded
+    before its missing text content could matter.
+    """
+    out: list[str] = []
+    for fd in file_diffs:
+        path = fd["header"]["file"]["path"]
+        if is_r2e_test_file(path):
+            continue
+        if fd["is_binary_file"]:
+            raise ValueError(f"r2e_gold_patch: {path} is binary and not a test file")
+        misc = fd["header"]["misc_line"] or ""
+        old, new = fd["old_file_content"] or "", fd["new_file_content"] or ""
+        header = [f"diff --git a/{path} b/{path}\n", *(f"{line}\n" for line in misc.splitlines())]
+        if misc.startswith("new file mode"):
+            body = _diff_body("", new, "/dev/null", f"b/{path}")
+        elif misc.startswith("deleted file mode"):
+            body = _diff_body(old, "", f"a/{path}", "/dev/null")
+        else:
+            body = _diff_body(old, new, f"a/{path}", f"b/{path}")
+            if not body and not misc:
+                continue
+        out.extend(header)
+        out.extend(body)
+    return "".join(out)
+
+
+@functools.cache
+def _r2e_dataset():
+    name, hf_split, revision = _R2E_SOURCE
+    return load_dataset(name, split=hf_split, revision=revision)
+
+
+@functools.cache
+def _r2e_digests() -> dict[str, str]:
+    from importlib.resources import files
+
+    return json.loads(files("reliquary_swe").joinpath("r2e_digests.json").read_text())
+
+
+def _pinned_r2e_image(docker_image: str) -> str:
+    """The row's `docker_image` tag, resolved to the registry digest pinned in
+    `r2e_digests.json` -- the same convention as SWE-smith's images (see
+    `scripts/pin_swesmith_digests.py`): a tag can be re-pushed, a digest
+    cannot."""
+    try:
+        return _r2e_digests()[docker_image]
+    except KeyError:
+        raise KeyError(
+            f"R2E image {docker_image!r} has no pinned digest in r2e_digests.json; "
+            "run scripts/pin_r2e_digests.py"
+        ) from None
+
+
+def _r2e_instance_id(repo_name: str, commit_hash: str) -> str:
+    return f"r2e__{repo_name}__{commit_hash[:12]}"
+
+
+def _r2e_row(raw: dict) -> SweRow:
+    return SweRow(
+        instance_id=_r2e_instance_id(raw["repo_name"], raw["commit_hash"]),
+        repo=raw["repo_name"],
+        problem_statement=_r2e_problem_statement(raw["problem_statement"]),
+        fail_to_pass=(),
+        pass_to_pass=(),
+        gold_patch=r2e_gold_patch(json.loads(raw["parsed_commit_content"])["file_diffs"]),
+        base_commit="HEAD",
+        image=_pinned_r2e_image(raw["docker_image"]),
+        workdir="/testbed",
+        expected_output_json=raw["expected_output_json"],
+    )
+
+
+# The `num_tasks` order hashes the instance id, so it depends on the id's
+# exact format (`_r2e_instance_id`): changing that format reshuffles which
+# tasks every `num_tasks` prefix holds -- a different task set under the
+# same configuration.
+def _r2e_order_key(instance_id: str) -> str:
+    return hashlib.sha256(instance_id.encode()).hexdigest()
+
+
+def r2e_row(commit_hash: str) -> SweRow:
+    """A single R2E row by its fix commit (the dataset's `commit_hash`, which
+    is also the image's tag), built as `load_r2e_rows` builds it, without
+    building any other. Raises `KeyError` for a commit not in the pinned
+    revision."""
+    dataset = _r2e_dataset()
+    hashes = dataset["commit_hash"]
+    if commit_hash not in hashes:
+        raise KeyError(commit_hash)
+    return _r2e_row(dataset[hashes.index(commit_hash)])
+
+
+@functools.lru_cache(maxsize=None)
+def load_r2e_rows(num_tasks: int | None = None) -> tuple[SweRow, ...]:
+    """The first `num_tasks` R2E-Gym-Subset tasks (all 4,578 for `None`), in
+    a fixed order: ascending sha256 of the instance id.
+
+    A count for the reason polyglot has one: every task is its own image
+    (4,578 distinct `docker_image` tags in the pinned revision; the three
+    pulled for the goldens were 0.8, 1.0 and 1.5 GB on disk), so the task
+    count is the disk budget. Declared, never sized from local disk.
+
+    Why not the dataset's own order, as for polyglot: it is grouped by
+    repository -- measured, the first 482 rows are all orange3, the first
+    1,000 are orange3, numpy and coveragepy only -- so a prefix of it would
+    train on one or three repositories. Hash order is just as fixed by the
+    pinned revision (a second party recomputes it from the one number) and
+    mixes them: the first 100 span 9 of the 10 repositories, the first 500
+    all 10, roughly in corpus proportion (pandas 143, numpy 81, pillow 75).
+
+    The instance id is `r2e__<repo_name>__<first 12 hex of the fix commit>`,
+    unique across the pinned revision (checked against every row). What the
+    row sets, and why:
+
+    - `base_commit` is `"HEAD"`, resolved inside the box: each image ships
+      its repository at /testbed with HEAD detached at the pre-fix commit
+      (measured on three images).
+    - `gold_patch` is rebuilt from the fix commit's non-test files (see
+      `r2e_gold_patch`). It is never shown to the agent and never graded
+      against; the goldens use it.
+    - `fail_to_pass`/`pass_to_pass` stay empty: the verdict is the full map
+      in `expected_output_json`, compared exactly (see `grading.r2e_reward`).
+    - `test_patch`/`test_command` stay empty: the hidden tests and their
+      runner are inside the image (`/r2e_tests`, `/testbed/run_tests.sh`),
+      removed from the agent's box at setup and taken from a fresh box at
+      grading (see `taskset._R2E_HIDE_TESTS` and `grading._restore_r2e`).
+    """
+    if num_tasks is not None and num_tasks < 1:
+        raise ValueError(f"num_tasks must be >= 1 or None, got {num_tasks}")
+    dataset = _r2e_dataset()
+    ids = [
+        _r2e_instance_id(repo, commit)
+        for repo, commit in zip(dataset["repo_name"], dataset["commit_hash"], strict=True)
+    ]
+    order = sorted(range(len(ids)), key=lambda i: _r2e_order_key(ids[i]))
+    if num_tasks is not None:
+        order = order[:num_tasks]
+    return tuple(_r2e_row(dataset[i]) for i in order)

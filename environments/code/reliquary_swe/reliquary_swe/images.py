@@ -39,7 +39,7 @@ def images(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--split", required=True, choices=["eval", "train", "polyglot"])
+    parser.add_argument("--split", required=True, choices=["eval", "train", "polyglot", "r2e"])
     parser.add_argument("--num-images", type=int, default=corpus.DEFAULT_SWESMITH_IMAGES)
     parser.add_argument("--max-test-count", type=int, default=None)
     parser.add_argument("--num-tasks", type=int, default=None)
