@@ -16,6 +16,7 @@ because the policy is enforced, but because nothing ever enforced it.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from collections.abc import AsyncIterator
@@ -96,6 +97,19 @@ def _task_for(instance_id: str) -> SweTask:
     raise AssertionError(f"{instance_id} is not in the taskset")
 
 
+def _limits() -> dict[str, float]:
+    """Optional `--cpus`/`--memory` caps on every box these tests start, from
+    `RELIQUARY_SWE_TEST_CPUS` and `RELIQUARY_SWE_TEST_MEMORY_GB`. Unset (the
+    default) means no cap, as before. For a container host that also serves
+    production containers, where a test box must not compete unbounded."""
+    limits = {}
+    if cpus := os.environ.get("RELIQUARY_SWE_TEST_CPUS"):
+        limits["cpu"] = float(cpus)
+    if memory := os.environ.get("RELIQUARY_SWE_TEST_MEMORY_GB"):
+        limits["memory"] = float(memory)
+    return limits
+
+
 @asynccontextmanager
 async def provisioned_runtime(task: SweTask) -> AsyncIterator[vf.Runtime]:
     """Provision and tear down a real box for `task`, network-restricted and
@@ -108,6 +122,7 @@ async def provisioned_runtime(task: SweTask) -> AsyncIterator[vf.Runtime]:
         image=task.data.image,
         workdir=task.data.workdir,
         allow=task.data.network_allow,
+        **_limits(),
     )
     async with provision_runtime(docker_config) as box:
         # Marks the box as having been through one trusted-setup pass; a
@@ -194,7 +209,7 @@ async def run_gold_episode(task: SweTask) -> vf.Episode:
             # This box is Docker-only; the config's own default (Prime) has no
             # host here. The task's real image/workdir/network policy still
             # come from resolve_runtime_config, exactly as a real run would.
-            grading_runtime=vf.DockerConfig(),
+            grading_runtime=vf.DockerConfig(**_limits()),
         )
     )
     await env.finalize(task, episode)
