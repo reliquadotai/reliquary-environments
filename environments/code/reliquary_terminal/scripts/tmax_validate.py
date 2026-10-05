@@ -253,7 +253,16 @@ async def validate(task_id: str, args, source, config, env: TerminalEnv, base: V
         hidden = V.hidden_inputs(protected, probing.data.prompt)
         checks.hidden = hidden
         task = make_task(source, task_id, {"run": run_index, "protected": protected, "hidden": hidden}, config, args.image, root)
-        checks.noop_rewards = [(await episode(env, task, solve=False))[0]]
+        try:
+            checks.noop_rewards = [(await episode(env, task, solve=False))[0]]
+        except RuntimeError as e:
+            if "byte limit" not in str(e):
+                raise
+            # Setup alone already writes more than the cap under the roots:
+            # no rollout of this task could ever be collected.
+            checks.artifact_over_cap = True
+            details["cap_hit_by"] = "setup"
+            break
         if checks.noop_rewards[0] > 0:
             break
         rewards, first_artifacts = [], None
@@ -296,6 +305,9 @@ async def validate(task_id: str, args, source, config, env: TerminalEnv, base: V
                 details[f"mutated_{mode}"] = count
                 if count:
                     checks.mutation_rewards[mode] = (await episode(env, task, solve=False, artifacts=mutated))[0]
+            if checks.mutation_rewards:
+                control, _ = V.mutate_artifacts(first_artifacts, found["changed"], "control")
+                checks.mutation_control = (await episode(env, task, solve=False, artifacts=control))[0]
             if not checks.mutation_rewards:
                 details["mutation"] = "the reference changed nothing under /app or /home/user"
         chosen = run_index

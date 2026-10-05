@@ -57,6 +57,7 @@ BOX_REASONS = (
     "artifact_cap",
     "answer_needed_by_reference",
     "mutation_passes",
+    "mutation_inconclusive",
 )
 
 # Packages every box needs whatever the tasks ask for: the test runner and

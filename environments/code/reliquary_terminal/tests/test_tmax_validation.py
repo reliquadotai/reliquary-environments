@@ -68,6 +68,8 @@ def test_mutants():
     assert files["home/user/out.json"] == b'{"total": 43, "rows": [2, 3]}\n'
     assert files["home/user/bin"] == b"\x7fELF\0\1" and files["home/user/same.txt"] == b"keep 1\n"
     assert V.mutate_archive(None, changed, "zero") == (None, 0)
+    control, n = V.mutate_archive(archive, changed, "control")
+    assert n == 0 and _untar(control) == _untar(archive)
     both, total = V.mutate_artifacts({"/home/user": archive, "/app": None}, changed, "zero")
     assert total == 2 and both["/app"] is None
 
@@ -84,6 +86,8 @@ def test_mutants():
         (V.Checks(noop_rewards=[0.0], solution_rewards=[1, 0, 1]), ["solution_unstable"]),
         (V.Checks(noop_rewards=[0.0], solution_rewards=[1, 1, 1], mutation_rewards={"zero": 0.0, "perturb": 1.0}), ["mutation_passes"]),
         (V.Checks(noop_rewards=[0.0], solution_rewards=[1, 1, 1], mutation_rewards={"zero": 0.0, "perturb": 0.0}), []),
+        (V.Checks(noop_rewards=[0.0], solution_rewards=[1, 1, 1], mutation_rewards={"zero": 0.0}, mutation_control=0.0), ["mutation_inconclusive"]),
+        (V.Checks(noop_rewards=[0.0], solution_rewards=[1, 1, 1], mutation_rewards={"zero": 0.0}, mutation_control=1.0), []),
     ],
 )
 def test_verdicts(checks, expected):

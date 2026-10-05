@@ -161,7 +161,9 @@ def _perturb(content: bytes) -> bytes | None:
 def mutate_archive(archive: bytes | None, changed: list[str], mode: str) -> tuple[bytes | None, int]:
     """An artifact archive (one root, as verifiers collects it) with every
     changed file mutated: "zero" truncates it, "perturb" applies `_perturb`
-    to text files. Returns the archive and how many files were mutated."""
+    to text files, "control" rewrites the archive unchanged (the check that
+    this path itself grades the reference at 1). Returns the archive and how
+    many files were mutated."""
     if archive is None:
         return None, 0
     wanted = {p.lstrip("/") for p in changed}
@@ -171,7 +173,10 @@ def mutate_archive(archive: bytes | None, changed: list[str], mode: str) -> tupl
         for member in src.getmembers():
             data = src.extractfile(member).read() if member.isfile() else None
             if data is not None and member.name in wanted:
-                mutated = b"" if mode == "zero" else _perturb(data)
+                if mode == "control":
+                    mutated = None
+                else:
+                    mutated = b"" if mode == "zero" else _perturb(data)
                 if mutated is not None and mutated != data:
                     data = mutated
                     count += 1
@@ -211,6 +216,9 @@ class Checks:
     hidden_retry_rewards: list[float] = field(default_factory=list)
     artifact_over_cap: bool = False
     mutation_rewards: dict[str, float] = field(default_factory=dict)
+    # The unmutated archive, rewritten and graded the same way: must be 1,
+    # or a 0 from a mutant proves nothing.
+    mutation_control: float | None = None
     hidden: list[str] = field(default_factory=list)
 
 
@@ -244,6 +252,8 @@ def verdict(checks: Checks) -> tuple[list[str], list[str]]:
         return ["solution_fails"], []
     if any(r != 1 for r in rewards):
         return ["solution_unstable"], []
+    if checks.mutation_rewards and checks.mutation_control is not None and checks.mutation_control != 1:
+        return ["mutation_inconclusive"], []
     if any(r > 0 for r in checks.mutation_rewards.values()):
         return ["mutation_passes"], []
     return [], hidden
