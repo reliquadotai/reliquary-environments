@@ -1,7 +1,7 @@
 # reliquary-terminal
 
 Terminal tasks: a policy gets a container, an instruction and a shell, and
-is rewarded when the task's own tests pass. Two splits, graded differently
+is rewarded when the task's own tests pass. Three splits, graded differently
 on purpose (design spec `docs/superpowers/specs/2026-09-23-reliquary-terminal-env-design.md`,
 section 4, option C):
 
@@ -9,6 +9,7 @@ section 4, option C):
 | --- | --- | --- | --- |
 | `eval` | Terminal-Bench 2.1, 89 tasks, pinned by digest | in the agent's own box, as it ships | the number stays comparable to published results |
 | `train` | MiMo-V2.6-RL-oss's 64 Terminal-Bench-format tasks | in a fresh box that receives only the agent's `/app` | a training reward must not be reachable by editing the grader |
+| `tmax` | TMax-15K, converted; the kept tasks of `tmax_manifest.json` (none until the box phase has run) | in a fresh box that receives `/app` and `/home/user`, with the task's inputs put back | the same; TMax's work lives in `/home/user` |
 
 `--taskset.split` has no default, so a training source cannot fall back to
 the evaluation set by omission.
@@ -36,7 +37,7 @@ still selects the upstream harness, without the timeout.
 
 ## Grading detail
 
-Every task of both splits runs pytest with `--ctrf /logs/verifier/ctrf.json`
+Every task of every split runs pytest with `--ctrf /logs/verifier/ctrf.json`
 before writing 1 or 0 to `reward.txt`. The reward is still `reward.txt`; the
 trace that carries it also gets `info["grading"]` -- `test.sh`'s exit code,
 the tail of its output (where `anti_hack_guard.py` explains a rejection),
@@ -124,6 +125,27 @@ address `/app` and `/tests` by absolute path only.
 through the whole separate-box path. Whether the other 63 are solvable is
 unmeasured, and so are the turn and token budgets — as for `reliquary-swe`,
 that is what a first pilot measures.
+
+## `tmax`: TMax-15K, converted
+
+`allenai/TMax-15K` at `e3ded940…` ships Apptainer definitions, not images, and
+no reference solutions, only recorded Gemini runs. Its tasks are converted
+when loaded: each `%post` is split into an install half, which goes into one
+shared base image (`reliquary_terminal/tmax_base/`), and a data half. The data
+half runs in every box at setup, with no network. The grading box regenerates
+the task's inputs the same way, and puts back any input the agent edited
+before the tests run. Inputs the instruction never names, such as answers and
+oracles, are deleted from the agent's box. All of this, with the reasons each
+task is kept or left out, is in [docs/tmax.md](docs/tmax.md).
+
+- `scripts/tmax_manifest.py` recomputes the selection manifest and the base
+  image files from pinned inputs. This is the static stage, with no
+  container. Of 14,601 tasks, 6,061 pass it.
+- `scripts/tmax_validate.py` is the box phase. It builds the base image, then
+  checks each pending task in containers: no-op 0, reference 1 in a separate
+  box ×3, mutants 0, deterministic setup. **It has not run yet**, so the
+  split has no kept task and refuses to load:
+  `--taskset.split tmax [--taskset.num-tasks N]`.
 
 ## Test
 

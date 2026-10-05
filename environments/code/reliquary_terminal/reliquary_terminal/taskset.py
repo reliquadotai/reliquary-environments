@@ -1,4 +1,4 @@
-"""Terminal tasks as one Verifiers taskset, in two splits.
+"""Terminal tasks as one Verifiers taskset, in three splits.
 
 `eval` is Terminal-Bench 2.1 exactly as it ships: graded in the box the agent
 worked in, so the number is comparable to every published result. `train` is
@@ -6,7 +6,10 @@ MiMo-V2.6-RL-oss's 64 Terminal-Bench-format tasks, graded in a fresh box that
 receives only the agent's `/app` -- the discipline those tasks were written
 for, and the one a training reward needs. See the design spec
 (docs/superpowers/specs/2026-09-23-reliquary-terminal-env-design.md,
-section 4, option C) for why the two splits grade differently.
+section 4, option C) for why the two splits grade differently. `tmax` is a
+second training corpus, TMax-15K's Apptainer tasks converted to run on one
+shared base image and graded in a fresh box that receives `/app` and
+`/home/user` (docs/tmax.md).
 """
 
 from __future__ import annotations
@@ -36,6 +39,7 @@ from verifiers.v1.tasksets.harbor.taskset import (
 )
 from verifiers.v1.utils.artifacts import Artifact
 
+from reliquary_terminal import tmax, tmax_select
 from reliquary_terminal.grading import TerminalTask
 
 # Pinned by content digest: `@latest` is revision 6 today and can move.
@@ -64,8 +68,19 @@ class TerminalConfig(HarborConfig):
     # No default, for the reason `reliquary-swe`'s own `split` has none: a
     # training source that forgets to say which split must not fall back to
     # the evaluation set.
-    split: Literal["eval", "train"] | None = None
+    #
+    # "tmax" is a second training corpus: TMax-15K's tasks that passed the
+    # selection manifest (`tmax_select`, docs/tmax.md).
+    split: Literal["eval", "train", "tmax"] | None = None
     dataset: str = EVAL_DATASET
+    # Only read when split="tmax": the first N kept tasks in the manifest's
+    # fixed order (ascending sha256 of the task id, as reliquary-swe's
+    # `r2e`), `None` for all of them.
+    num_tasks: int | None = None
+    # Only read when split="tmax": a local `tasks.zip` (or its unpacked tree)
+    # to convert from instead of the pinned download. It must be the pinned
+    # revision; a zip is checked against its sha256.
+    tmax_source: Path | None = None
 
 
 def image_workdir(task_dir: Path) -> str | None:
@@ -238,6 +253,88 @@ def train_data(row: dict, idx: int, config: TerminalConfig) -> HarborData:
     )
 
 
+# The spike validated TMax's reference solutions under these caps (2 CPU,
+# 4 GB per container); TMax itself declares none.
+TMAX_CPUS = 2.0
+TMAX_MEMORY_GB = 4.0
+
+
+def tmax_tasks(
+    num_tasks: int | None = None,
+    manifest_path: Path | None = None,
+) -> tuple[str, list[tuple[str, dict]]]:
+    """The base image and the kept tasks of the manifest, in its fixed order,
+    the first `num_tasks` of them."""
+    manifest_path = manifest_path or tmax_select.MANIFEST
+    if num_tasks is not None and num_tasks < 1:
+        raise ValueError(f"num_tasks must be >= 1 or None, got {num_tasks}")
+    manifest = tmax_select.load_manifest(manifest_path)
+    kept = tmax_select.kept_tasks(manifest)
+    if not kept or not manifest.get("base_image"):
+        raise ValueError(
+            "reliquary-terminal: the tmax split has no validated tasks yet -- "
+            f"{manifest['counts']['status']} in {manifest_path.name}. The box phase "
+            "(scripts/tmax_validate.py, docs/tmax.md) builds the base image and "
+            "decides which pending tasks are kept."
+        )
+    return manifest["base_image"], (kept[:num_tasks] if num_tasks is not None else kept)
+
+
+def _tmax_source(path: Path | None) -> tmax.Source:
+    if path is None:
+        return tmax.Source(tmax.download_source())
+    if Path(path).is_file():
+        tmax.check_source(Path(path))
+    return tmax.Source(Path(path))
+
+
+def tmax_data(
+    source: tmax.Source,
+    task_id: str,
+    entry: dict,
+    idx: int,
+    config: TerminalConfig,
+    base_image: str,
+    root: Path | None = None,
+) -> HarborData:
+    converted = tmax.convert(
+        source, task_id, protected=entry["protected"], hidden=entry["hidden"], run=entry["run"]
+    )
+    resources = TaskResources(
+        cpu=TMAX_CPUS * config.resource_multiplier,
+        memory=TMAX_MEMORY_GB * config.resource_multiplier,
+    )
+    return HarborData(
+        idx=idx,
+        name=task_id,
+        prompt=converted.instruction,
+        image=base_image,
+        workdir=tmax.WORKDIR,
+        env=converted.env,
+        network_allow=[],
+        # No agent timeout: TMax declares none. The scoring deadline covers
+        # provisioning the grading box and running its setup, as for `train`.
+        timeout=TaskTimeout(agent=None, scoring=_TRAIN_SCORING_TIMEOUT_SECONDS),
+        resources=resources,
+        category=converted.domain,
+        tags=[converted.skill_type] if converted.skill_type else [],
+        task_dir=str(tmax.materialize(converted, root or tmax.CACHE)),
+        # The agent's work is under /home/user, and some tasks write /app
+        # too: the spike graded the oracle state 0/160 with /app alone and
+        # 151/160 with both. Optional, so a root the agent removed is removed
+        # in the grading box too rather than failing the rollout.
+        artifacts=[Artifact(source=r, required=False) for r in tmax.ARTIFACT_ROOTS],
+        # `/` for the reason `train_data` gives; the same image, regenerated
+        # by the same setup bundle, with the task's environment.
+        verifier=VerifierConfig(
+            workdir="/",
+            resources=resources,
+            network_allow=[],
+            env=dict(converted.env),
+        ),
+    )
+
+
 # Parameterized directly rather than subclassing `HarborTaskset`: verifiers
 # resolves a taskset's config type from its generic parameters, so a plain
 # subclass would still hand the CLI `HarborConfig`, without `split`.
@@ -246,7 +343,8 @@ class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
         if self.config.split is None:
             raise ValueError(
                 'reliquary-terminal: --taskset.split is required ("eval" for '
-                'Terminal-Bench 2.1, "train" for MiMo-V2.6\'s terminal tasks) -- '
+                'Terminal-Bench 2.1, "train" for MiMo-V2.6\'s terminal tasks, '
+                '"tmax" for TMax-15K\'s) -- '
                 "it has no default so a training source cannot silently fall "
                 "back to the evaluation set"
             )
@@ -254,6 +352,14 @@ class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
             for idx, row in enumerate(load_train_rows()):
                 if self.config.tasks is None or row["instance_id"] in self.config.tasks:
                     yield TerminalTask(train_data(row, idx, self.config), self.config.task)
+            return
+        if self.config.split == "tmax":
+            base_image, kept = tmax_tasks(self.config.num_tasks)
+            source = _tmax_source(self.config.tmax_source)
+            for idx, (task_id, entry) in enumerate(kept):
+                if self.config.tasks is None or task_id in self.config.tasks:
+                    data = tmax_data(source, task_id, entry, idx, self.config, base_image)
+                    yield TerminalTask(data, self.config.task)
             return
         root = dataset_dir(self.config)
         task_dirs = [
@@ -271,4 +377,4 @@ class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
             yield TerminalTask(data, self.config.task)
 
 
-__all__ = ["EVAL_DATASET", "TerminalConfig", "TerminalTaskset", "image_workdir"]
+__all__ = ["EVAL_DATASET", "TerminalConfig", "TerminalTaskset", "image_workdir", "tmax_data", "tmax_tasks"]
