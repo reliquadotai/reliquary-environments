@@ -10,7 +10,9 @@ from pathlib import Path
 import pytest
 import verifiers.v1 as vf
 from conftest import provisioned, task, trace
-from verifiers.v1.tasksets.harbor.env import HarborEnv, HarborEnvConfig
+from verifiers.v1.tasksets.harbor.env import HarborEnvConfig
+
+from reliquary_terminal import TerminalEnv
 
 docker = pytest.mark.docker
 
@@ -37,7 +39,7 @@ async def _episode(extra: str = "", solve: bool = True) -> vf.Episode:
         task=vf.TraceTask(type=type(t).__name__, data=t.data, key=t.key, hash=t.hash),
         traces=[solver],
     )
-    env = HarborEnv(
+    env = TerminalEnv(
         HarborEnvConfig(
             taskset=vf.taskset_config_type("reliquary-terminal")(
                 id="reliquary-terminal", split="train"
@@ -53,12 +55,22 @@ async def _episode(extra: str = "", solve: bool = True) -> vf.Episode:
 async def test_the_reference_fix_scores_one_in_a_fresh_box():
     episode = await _episode()
     assert episode.traces[0].reward == 1.0
+    # Graded in the separate box, with every test named next to the reward.
+    grading = episode.traces[0].info["grading"]
+    assert grading["exit_code"] == 0
+    counts = grading["ctrf"]["counts"]
+    assert counts.get("passed", 0) > 0 and counts.get("failed", 0) == 0
+    assert episode.traces[0].metrics["tests_failed"] == 0.0
 
 
 @docker
 async def test_an_untouched_app_scores_zero():
     episode = await _episode(solve=False)
     assert episode.traces[0].reward == 0.0
+    # Which tests failed is now on the trace, not just the 0.
+    grading = episode.traces[0].info["grading"]
+    assert grading["ctrf"]["counts"].get("failed", 0) > 0
+    assert episode.traces[0].metrics["tests_failed"] > 0
 
 
 @docker
@@ -72,3 +84,7 @@ async def test_a_planted_pytest_hook_zeroes_even_a_correct_fix():
         names = tar.getnames()
     assert "app/conftest.py" in names
     assert episode.traces[0].reward == 0.0
+    # The guard stopped test.sh before pytest: no report, and its reason kept.
+    grading = episode.traces[0].info["grading"]
+    assert grading["ctrf"] is None
+    assert "anti_hack_guard" in grading["output_tail"]

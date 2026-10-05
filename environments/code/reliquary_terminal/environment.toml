@@ -28,6 +28,13 @@ resource_class = "container"
 # 40; to be re-derived from a pilot's observed trajectory lengths.
 max_turns = 40
 max_observation_bytes = 16384
+# Seconds one `bash` call may run before its process group is killed and the
+# agent told (`--env.agent.harness.command-timeout`, harness `reliquary-terminal`).
+# Measured on the 2026-10-02 qualification traces: 2,120 terminal commands
+# (Qwen3-4B, Qwen3.8-27B), longest 10 s, p99 2.9 s -- 180 is 18x that. The
+# upstream `bash` harness allows 3,600, and one `grep` over a whole tree used
+# 1,489 of them in the same run's reliquary-swe rollouts.
+command_timeout_seconds = 180
 
 [reward]
 minimum = 0.0

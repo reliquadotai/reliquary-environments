@@ -23,3 +23,17 @@ def test_train_sources_never_name_the_evaluation_split():
     sources = tomllib.loads((_EXAMPLES / "train-sources.toml").read_text())["source"]
     assert sources
     assert all(s["env"]["taskset"]["split"] == "train" for s in sources)
+
+
+def test_every_source_runs_the_harness_with_a_command_timeout():
+    from reliquary_terminal.harness import DEFAULT_COMMAND_TIMEOUT_SECONDS
+
+    descriptor = tomllib.loads((_EXAMPLES.parent.parent / "environment.toml").read_text())
+    assert descriptor["execution"]["command_timeout_seconds"] == DEFAULT_COMMAND_TIMEOUT_SECONDS
+    run = tomllib.loads((_EXAMPLES / "rl.toml").read_text())
+    sources = run["orchestrator"]["eval"]["source"]
+    sources += tomllib.loads((_EXAMPLES / "train-sources.toml").read_text())["source"]
+    for source in sources:
+        h = source["env"]["agent"]["harness"]
+        assert h["id"] == "reliquary-terminal"
+        assert h["command_timeout"] == DEFAULT_COMMAND_TIMEOUT_SECONDS
