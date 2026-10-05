@@ -79,17 +79,27 @@ def sh(*argv: str) -> str:
 # --------------------------------------------------------------------------
 
 
-def build(repository: str, tag: str) -> None:
+def build(repository: str, tag: str, push: bool) -> None:
+    """Build (and push) the base image. Without a push the image is pinned by
+    its local content id (`sha256:...`), which `docker run` accepts on the
+    host that built it."""
     ref = f"{repository}:{tag}"
+    started = time.monotonic()
     subprocess.run(["docker", "build", "-t", ref, str(PACKAGE / "reliquary_terminal" / "tmax_base")], check=True)
-    subprocess.run(["docker", "push", ref], check=True)
-    digest = sh("docker", "image", "inspect", "--format", "{{index .RepoDigests 0}}", ref).strip()
+    build_seconds = round(time.monotonic() - started, 1)
+    if push:
+        subprocess.run(["docker", "push", ref], check=True)
+        digest = sh("docker", "image", "inspect", "--format", "{{index .RepoDigests 0}}", ref).strip()
+    else:
+        digest = sh("docker", "image", "inspect", "--format", "{{.Id}}", ref).strip()
     record = PACKAGE / "reliquary_terminal" / "tmax_base" / "built"
     record.mkdir(exist_ok=True)
     for name in ("pip-freeze.txt", "dpkg.txt"):
         (record / name).write_text(sh("docker", "run", "--rm", "--network", "none", digest, "cat", f"/opt/reliquary-tmax/{name}"))
     size = sh("docker", "image", "inspect", "--format", "{{.Size}}", ref).strip()
-    (record / "image.json").write_text(json.dumps({"image": digest, "bytes": int(size)}, indent=1) + "\n")
+    (record / "image.json").write_text(
+        json.dumps({"image": digest, "tag": ref, "bytes": int(size), "build_seconds": build_seconds}, indent=1) + "\n"
+    )
     print(digest)
 
 
@@ -157,16 +167,17 @@ async def probe(task: TerminalTask, base: V.Snapshot, details: dict, checks: V.C
         details["setup_seconds"] = round(time.monotonic() - started, 2)
         # As a rollout runs it: the agent's phase starts after this.
         await box.prepare_execution([])
+        # Before anything else runs, so the snapshot holds only what setup made.
+        after_setup = await snapshot(box)
         initial = task_dir / "checks" / tmax.INITIAL_TEST
         await run(box, "mkdir -p /tmp/reliquary-tmax-checks /tmp/reliquary-tmax-probe", 60)
         if initial.is_file():
             await box.write(f"/tmp/reliquary-tmax-checks/{tmax.INITIAL_TEST}", initial.read_bytes())
-            result = await run(box, f"cd /tmp/reliquary-tmax-checks && python3 -m pytest -q -p no:cacheprovider {tmax.INITIAL_TEST}", TEST_TIMEOUT)
+            result = await run(box, f"cd /tmp/reliquary-tmax-checks && PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider {tmax.INITIAL_TEST}", TEST_TIMEOUT)
             checks.initial_ok = result.exit_code == 0
             if not checks.initial_ok:
                 details["initial_tail"] = (result.stdout + result.stderr)[-1500:]
                 return None
-        after_setup = await snapshot(box)
         solved = await replay(box, task_dir)
         details["replay_exit"] = solved.exit_code
         after_solution = await snapshot(box)
@@ -174,7 +185,7 @@ async def probe(task: TerminalTask, base: V.Snapshot, details: dict, checks: V.C
         await box.write(f"/tmp/reliquary-tmax-probe/{tmax.FINAL_TEST}", (task_dir / "tests" / tmax.FINAL_TEST).read_bytes())
         await run(
             box,
-            "cd /tmp/reliquary-tmax-probe && PYTHONPATH=/tmp/reliquary-tmax-probe python3 -m pytest -q "
+            "cd /tmp/reliquary-tmax-probe && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/tmp/reliquary-tmax-probe python3 -m pytest -q "
             f"-p reliquary_tmax_audit -p no:cacheprovider {tmax.FINAL_TEST} >/dev/null 2>&1; true",
             TEST_TIMEOUT,
         )
@@ -307,10 +318,13 @@ async def run_all(args) -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     todo = [t for t in pending if not (args.out / f"{t}.json").exists()]
     print(f"{len(pending)} pending selected, {len(todo)} to validate", flush=True)
-    config = vf.taskset_config_type("reliquary-terminal")(id="reliquary-terminal", split="tmax")
+    config = vf.taskset_config_type("reliquary-terminal")(
+        id="reliquary-terminal", split="tmax", resource_multiplier=args.resource_multiplier
+    )
     env = TerminalEnv(HarborEnvConfig(taskset=config, verifier_runtime=vf.DockerConfig(), verifier_retries=0))
     # The base image's own files, to tell them from what setup made.
-    async with provision_runtime(vf.DockerConfig(image=args.image, workdir="/", allow=[], cpu=2, memory=4)) as box:
+    cpu, memory = taskset.TMAX_CPUS * args.resource_multiplier, taskset.TMAX_MEMORY_GB * args.resource_multiplier
+    async with provision_runtime(vf.DockerConfig(image=args.image, workdir="/", allow=[], cpu=cpu, memory=memory)) as box:
         await box.prepare_setup()
         base = await snapshot(box)
     gate = asyncio.Semaphore(args.workers)
@@ -342,6 +356,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     b = sub.add_parser("build")
     b.add_argument("--repository", required=True)
+    b.add_argument("--no-push", action="store_true", help="pin by local image id; for a single-host pilot")
     b.add_argument("--tag", default=hashlib.sha256((PACKAGE / "reliquary_terminal" / "tmax_base" / "Dockerfile").read_bytes() + (PACKAGE / "reliquary_terminal" / "tmax_base" / "apt.txt").read_bytes() + (PACKAGE / "reliquary_terminal" / "tmax_base" / "requirements.txt").read_bytes()).hexdigest()[:12])
     r = sub.add_parser("run")
     r.add_argument("--image", required=True, help="the base image, pinned by digest")
@@ -350,6 +365,10 @@ def main() -> None:
     r.add_argument("--tasks", nargs="*")
     r.add_argument("--limit", type=int)
     r.add_argument("--workers", type=int, default=6)
+    r.add_argument(
+        "--resource-multiplier", type=float, default=1.0,
+        help="scale the 2 CPU / 4 GB boxes (0.5 on a small host)",
+    )
     args = parser.parse_args()
     if os.environ.get("RELIQUARY_TMAX_I_HAVE_A_BOX") != "1":
         sys.exit(
@@ -357,10 +376,10 @@ def main() -> None:
             "never on a production machine, with RELIQUARY_TMAX_I_HAVE_A_BOX=1."
         )
     if args.command == "build":
-        build(args.repository, args.tag)
+        build(args.repository, args.tag, push=not args.no_push)
     else:
-        if "@sha256:" not in args.image:
-            sys.exit("--image must be pinned by digest (REPOSITORY@sha256:...)")
+        if "@sha256:" not in args.image and not args.image.startswith("sha256:"):
+            sys.exit("--image must be pinned by digest (REPOSITORY@sha256:... or a local sha256:... id)")
         asyncio.run(run_all(args))
 
 

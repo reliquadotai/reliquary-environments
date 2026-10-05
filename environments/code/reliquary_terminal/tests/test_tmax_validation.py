@@ -37,7 +37,9 @@ def test_protected_inputs_are_setup_made_and_untouched():
     base = {"/usr/lib/python3.10/os.py": (1, "1"), "/etc/hosts": (5, "1")}
     after_setup = {**base, "/etc/hosts": (9, "2"), "/home/user/.truth.json": (2, "3"), "/home/user/in.csv": (4, "3"), "/app/oracle": (7, "3")}
     after_solution = {**after_setup, "/home/user/in.csv": (5, "4"), "/home/user/out.txt": (1, "4")}
-    candidates = {"/usr/lib/python3.10/os.py", "/etc/hosts", "/home/user/.truth.json", "/home/user/in.csv", "/home/user/out.txt", "/app/oracle", "/tests/test_final_state.py"}
+    pyc = "/usr/local/lib/python3.10/dist-packages/__pycache__/x.cpython-310-pytest-9.1.1.pyc"
+    after_setup[pyc] = after_solution[pyc] = (3, "3")
+    candidates = {pyc, "/usr/lib/python3.10/os.py", "/etc/hosts", "/home/user/.truth.json", "/home/user/in.csv", "/home/user/out.txt", "/app/oracle", "/tests/test_final_state.py"}
     assert V.protected_inputs(candidates, base, after_setup, after_solution) == ["/app/oracle", "/etc/hosts", "/home/user/.truth.json"]
     assert V.changed_paths(after_setup, after_solution) == ["/home/user/in.csv", "/home/user/out.txt"]
 

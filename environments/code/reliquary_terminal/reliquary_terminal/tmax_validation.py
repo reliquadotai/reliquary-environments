@@ -114,6 +114,8 @@ def protected_inputs(candidates: set[str], base: Snapshot, after_setup: Snapshot
             continue  # the reference changed it: an output, not an input
         if any(path == p or path.startswith(p + "/") for p in SNAPSHOT_EXCLUDES):
             continue
+        if "/__pycache__/" in path or path.endswith(".pyc"):
+            continue  # bytecode the interpreter wrote for the test run itself
         out.append(path)
     return sorted(out)
 
