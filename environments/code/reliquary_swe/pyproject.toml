@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reliquary-swe"
-version = "0.1.0a1"
+version = "0.2.0"
 description = "SWE-bench Verified repair tasks, graded by running the target repository's own tests"
 readme = "README.md"
 license = "MIT"

@@ -1,6 +1,6 @@
 schema = "reliquary/environment-source/v2"
 id = "reliquary/swe"
-version = "0.1.0a1"
+version = "0.2.0"
 taskset = "reliquary-swe"
 entrypoint = "reliquary_swe:SweTaskset"
 license = "MIT"
