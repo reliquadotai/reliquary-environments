@@ -495,3 +495,19 @@ uv run python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary
 
 The package exports `SweTaskset`, `SweEnv`, and `SweEnvConfig` for Verifiers.
 It imports no Reliquary code.
+
+## Signed sandboxes
+
+`reliquary_swe.sandbox:sandbox_task` serves this package's tasks on a signed-episode
+sandbox gateway (`episode_envs = {"reliquary-swe": "reliquary_swe.sandbox:sandbox_task"}`).
+
+- Served splits: `train` and `train:<n>` (SWE-smith), `r2e`, `polyglot`. `eval` (SWE-bench
+  Verified) is refused. Polyglot rows without a pinned digest are refused.
+- State handed to the grader: the diff against `refs/reliquary/base` (so a committed fix
+  counts), published to the miner as its `final_diff`. Grading runs in a pristine box and,
+  on every split, refuses a patch that touches an untracked or ignored path or `.venv/`.
+- Limits: 4 GiB, 10 GiB disk, 1024 pids, 3600 s, 600 s per call, grading 810 s. No network.
+- `reliquary-sandbox` is imported lazily and is not a dependency of this package.
+
+How hooks fail, what is refused and the measured parity table: `docs/sandbox-tasks.md`
+(repository root).
