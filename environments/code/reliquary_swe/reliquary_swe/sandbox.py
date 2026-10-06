@@ -6,20 +6,26 @@ Per task:
 * prepare (the agent's box): the exact cleanup `SweTask.setup` runs
   (`taskset.cleanup_script`), then `refs/reliquary/base` -> HEAD and the image's
   untracked files in `.git/reliquary-untracked`. verifiers keeps both in host memory;
-  a gateway keeps no env memory across a restart, so they live in the box. Tampering
-  with either only changes the agent's own diff, which grading judges in a pristine
-  box anyway;
+  a gateway keeps no env memory across a restart, so they live in the box, where the
+  agent can rewrite them -- and its git config (`diff.external`) too. The diff is
+  therefore agent-controlled: it may name any path, the image's untracked and ignored
+  files included. Grading is what makes that safe, not the capture: it runs in a
+  pristine box and refuses, for every split, a patch touching a path untracked or
+  ignored at the base or under `.venv` (`grading._forbidden_patch_paths`);
 * extract (the agent's box): the diff `vf.capture_patch` takes against that base,
   without the image's untracked files. Published to the miner as the episode's state
   (its `final_diff`);
-* grade (a pristine box of the same image): `grading.grade`, unchanged, with r2e's
+* grade (a pristine box of the same image): `grading.grade`, unchanged, with its
   untracked-path refusal and every anti-tamper restoration.
 
 Agent-attributable outcomes are values, not exceptions: a git refusal in the agent's
-box is an empty diff (graded like verifiers grades it), and an untracked list the agent
-deleted, replaced or inflated is an empty list. An exception from `grade` means the
-pristine image is not what the corpus says, which is ours: the gateway grades it 0.0
-`grading_failed` and counts it per env, so watch that counter.
+box, or a box whose git stopped answering because the agent wrecked it (`rm -rf` of its
+workdir), is an empty diff (graded like verifiers grades it), and an untracked list the
+agent deleted, replaced or inflated is an empty list. The step deadline and real box
+faults are never swallowed: they reach the sandbox, which records them itself. An
+exception from `grade` means the pristine image is not what the corpus says, which is
+ours: the gateway grades it 0.0 `grading_failed` and counts it per env, so watch that
+counter.
 
 reliquary-sandbox is imported only inside `sandbox_task` and `grade`: it is not a
 dependency of this public package, and a gateway always has it.
@@ -109,6 +115,7 @@ def row_for(split: str, index: int) -> tuple[SplitRef, corpus.SweRow]:
         if index >= len(rows):
             raise IndexError(index)
         row = rows[index]
+        image_of(row)  # a tag without a pinned digest is refused at resolve, by every entry
     return ref, row
 
 
@@ -150,8 +157,14 @@ async def prepare(runtime: Any, *, data: SweData) -> str:
         raise RuntimeError(
             f"environment preparation failed for {data.instance_id} (exit {result.exit_code}): "
             f"{(result.stderr or result.stdout).strip()[-500:]}")
-    untracked = await snapshot_untracked(runtime)
-    await runtime.write(f"{data.workdir}/{UNTRACKED_FILE}", "\0".join(untracked).encode())
+    listed = "\0".join(await snapshot_untracked(runtime)).encode()
+    if len(listed) > MAX_UNTRACKED_BYTES:
+        # extract reads at most this much back; a longer list would silently stop
+        # ignoring the image's files. An image this shape needs a closer look first.
+        raise RuntimeError(
+            f"environment preparation failed for {data.instance_id}: the image's untracked "
+            f"list is {len(listed)} bytes, over {MAX_UNTRACKED_BYTES}")
+    await runtime.write(f"{data.workdir}/{UNTRACKED_FILE}", listed)
     return (result.stdout or "") + (result.stderr or "")
 
 
@@ -164,13 +177,21 @@ async def extract(runtime: Any, *, data: SweData) -> bytes:
         listed = await runtime.read(f"{data.workdir}/{UNTRACKED_FILE}",
                                     max_bytes=MAX_UNTRACKED_BYTES)
         ignore = [path for path in listed.decode("utf-8", "replace").split("\0") if path]
+    except TimeoutError:
+        raise  # the step deadline (an OSError subclass): the sandbox's extract_timeout
     except OSError:
         # Missing (FileNotFoundError), not a regular file (StateUnreadable) or inflated
         # (FileTooLarge): the agent's doing, so its diff simply carries the image's
         # untracked files and fails to apply in the pristine box, like verifiers'.
         ignore = []
     trace = SimpleNamespace(info={})
-    await vf.capture_patch(trace, runtime, base_commit=base, ignore=ignore)
+    try:
+        await vf.capture_patch(trace, runtime, base_commit=base, ignore=ignore)
+    except vf.SandboxError:
+        # git failed and `true` failed too: the box answers but cannot run in its workdir
+        # (the agent removed it). A box fault proper raised from our runtime instead, and
+        # the sandbox recorded it before this point.
+        return b""
     return str(trace.info.get("patch", "")).encode("utf-8")
 
 

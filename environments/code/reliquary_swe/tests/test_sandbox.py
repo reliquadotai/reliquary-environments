@@ -75,6 +75,8 @@ def test_polyglot_tasks_index_one_cached_load(monkeypatch):
     calls = []
     monkeypatch.setattr(sandbox.corpus, "load_polyglot_rows",
                         lambda num_tasks: calls.append(num_tasks) or rows)
+    monkeypatch.setattr(sandbox, "_polyglot_digests",
+                        lambda: {row.image: "repo@sha256:" + "e" * 64 for row in rows})
     assert sandbox.row_for("polyglot", 2) == (sandbox.SplitRef("polyglot"), rows[2])
     with pytest.raises(IndexError):
         sandbox.row_for("polyglot", 3)
@@ -161,7 +163,7 @@ async def test_grade_runs_the_packages_grading_and_reports_its_facts(monkeypatch
     assert "results" not in result.facts
 
 
-async def test_a_pristine_image_that_cannot_be_prepared_raises(monkeypatch):
+async def test_grade_lets_an_image_bug_raise(monkeypatch):
     # grading.grade raises for a box that is not what the corpus says: an env/image bug,
     # graded 0.0 `grading_failed` and counted by the gateway, never swallowed here.
     pytest.importorskip("reliquary_sandbox.episode_task")
@@ -183,6 +185,75 @@ def test_sandbox_task_builds_the_gateways_contract(monkeypatch):
     assert task.publish_state and task.effective_grading_workdir == "/testbed"
 
 
+async def test_extract_lets_the_step_deadline_through(monkeypatch):
+    # TimeoutError is an OSError: the deadline must reach the sandbox (extract_timeout).
+    runtime = ScriptedRuntime()
+    runtime.files["/testbed/.git/reliquary-untracked"] = TimeoutError("the step deadline passed")
+    monkeypatch.setattr(sandbox.vf, "capture_patch", _capture({}))
+    with pytest.raises(TimeoutError):
+        await sandbox.extract(runtime, data=DATA)
+
+
+async def test_a_box_whose_git_stopped_answering_extracts_an_empty_diff(monkeypatch):
+    # capture_patch raises SandboxError when git fails and `true` fails too, e.g. the agent
+    # removed its workdir. A real box fault is still seen by the sandbox (its runtime records
+    # it), so this only ever turns the agent's own wreckage into an empty diff.
+    import verifiers.v1 as vf
+
+    async def gone(trace, runtime, base_commit="", env=None, write_path=None, ignore=None):
+        raise vf.SandboxError("patch capture failed and the box stopped answering")
+
+    monkeypatch.setattr(sandbox.vf, "capture_patch", gone)
+    assert await sandbox.extract(ScriptedRuntime(), data=DATA) == b""
+
+
+async def test_prepare_refuses_an_untracked_list_over_its_bound():
+    runtime = ScriptedRuntime()
+    huge = "\0".join(f"vendor/{i:07d}.bin" for i in range(sandbox.MAX_UNTRACKED_BYTES // 10))
+    runtime.on(lambda argv: argv[:2] == ["sh", "-c"] and "ls-files" in argv[2], stdout=huge)
+    with pytest.raises(RuntimeError, match="untracked"):
+        await sandbox.prepare(runtime, data=DATA)
+    assert "/testbed/.git/reliquary-untracked" not in runtime.files
+
+
+def _polyglot_rows(count):
+    return tuple(corpus.SweRow(instance_id=f"t{i}", repo="", problem_statement=f"do {i}",
+                               fail_to_pass=(), pass_to_pass=(), gold_patch="",
+                               base_commit="HEAD", image=f"mimo:t{i}", workdir="/workspace/repo")
+                 for i in range(count))
+
+
+def test_an_unpinned_polyglot_index_is_refused_at_resolve(monkeypatch):
+    monkeypatch.setattr(sandbox.corpus, "load_polyglot_rows", lambda num_tasks: _polyglot_rows(3))
+    monkeypatch.setattr(sandbox, "_polyglot_digests",
+                        lambda: {"mimo:t0": "mimo@sha256:" + "c" * 64})
+    assert sandbox.declaration("polyglot", 0).image == "mimo@sha256:" + "c" * 64
+    for entry in (sandbox.declaration, sandbox.sandbox_prompt, sandbox.row_for):
+        with pytest.raises(ValueError, match="no pinned digest"):
+            entry("polyglot", 1)
+
+
+def test_the_images_command_lists_the_whole_split_by_default(monkeypatch, capsys):
+    import json
+
+    monkeypatch.setattr(sandbox.corpus, "load_polyglot_rows",
+                        lambda num_tasks: _polyglot_rows(3)[:num_tasks])
+    monkeypatch.setattr(sandbox, "_polyglot_digests",
+                        lambda: {f"mimo:t{i}": f"mimo@sha256:{i}" + "d" * 63 for i in range(3)})
+    sandbox.main(["images", "--split", "polyglot"])
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest["num_tasks"] is None and len(manifest["images"]) == 3
+
+
+def test_every_polyglot_task_is_pinned():
+    # Downloads the pinned polyglot revision once, as tests/test_polyglot_corpus.py does.
+    rows = corpus.load_polyglot_rows(None)
+    assert len(rows) == 2698
+    assert all(sandbox.image_of(row).startswith("xiaomimimo/mimo-v2.6-rl-oss@sha256:")
+               for row in rows)
+    assert len(sandbox.sandbox_images("polyglot")) == len({row.image for row in rows})
+
+
 def test_r2e_row_at_follows_the_split_order():
     # Downloads the pinned R2E revision once, as tests/test_r2e_corpus.py does.
     assert [corpus.r2e_row_at(i) for i in range(3)] == list(corpus.load_r2e_rows(3))
@@ -191,7 +262,7 @@ def test_r2e_row_at_follows_the_split_order():
 
 @pytest.mark.parametrize("cleanup_tail, expected",
                          [("false && true", 1), ("true && false", 1), ("true && true", 0)])
-def test_the_base_ref_never_hides_a_failed_last_check(cleanup_tail, expected):
+def test_the_base_ref_never_hides_a_failed_cleanup_check(cleanup_tail, expected):
     # R2E's cleanup ends on `test ! -e A && test ! -e B`, a list `set -e` does not exit on:
     # the base ref must not run (and turn the exit into 0) after a failed check.
     import subprocess
@@ -203,7 +274,7 @@ def test_the_base_ref_never_hides_a_failed_last_check(cleanup_tail, expected):
     assert done.stdout == ("ran\n" if expected == 0 else "")
 
 
-def test_the_polyglot_pin_script_selects_a_prefix_and_named_instances():
+def _pin_script():
     import importlib.util
     from pathlib import Path
 
@@ -211,6 +282,70 @@ def test_the_polyglot_pin_script_selects_a_prefix_and_named_instances():
     spec = importlib.util.spec_from_file_location("pin_polyglot_digests", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def test_the_polyglot_pin_script_selects_a_prefix_and_named_instances():
+    module = _pin_script()
     rows = [corpus.SweRow(instance_id=f"t{i}", repo="", problem_statement="", fail_to_pass=(),
                           pass_to_pass=(), gold_patch="", image=f"repo:t{i}") for i in range(5)]
     assert module.images(rows, 2, ["t4", "t1"]) == ["repo:t0", "repo:t1", "repo:t4"]
+
+
+def test_the_pin_script_refuses_an_unknown_instance():
+    module = _pin_script()
+    rows = _polyglot_rows(3)
+    with pytest.raises(ValueError, match="t9"):
+        module.images(rows, 1, ["t2", "t9"])
+
+
+def _registry(documents):
+    """A fake registry fetch: url suffix -> (headers, JSON document)."""
+    import json
+
+    def fetch(url, token, method="GET"):
+        for suffix, (headers, document) in documents.items():
+            if suffix in url:
+                return headers, (b"" if method == "HEAD" else json.dumps(document).encode())
+        raise AssertionError(url)
+    return fetch
+
+
+INDEX = "application/vnd.oci.image.index.v1+json"
+MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+
+
+@pytest.mark.parametrize("platforms, ok", [
+    ([("linux", "arm64"), ("linux", "amd64")], True),
+    ([("linux", "arm64")], False),
+    ([("windows", "amd64")], False),
+])
+def test_an_index_must_carry_linux_amd64(platforms, ok):
+    module = _pin_script()
+    index = {"mediaType": INDEX,
+             "manifests": [{"platform": {"os": o, "architecture": a}} for o, a in platforms]}
+    fetch = _registry({"/manifests/": ({"Content-Type": INDEX,
+                                          "Docker-Content-Digest": "sha256:" + "1" * 64}, index)})
+    if ok:
+        assert module.pin("mimo:t0", "tok", check_single=False, fetch=fetch) == \
+            "mimo@sha256:" + "1" * 64
+    else:
+        with pytest.raises(RuntimeError, match="linux/amd64"):
+            module.pin("mimo:t0", "tok", check_single=False, fetch=fetch)
+
+
+@pytest.mark.parametrize("arch, ok", [("amd64", True), ("arm64", False)])
+def test_a_single_platform_image_is_checked_through_its_config(arch, ok):
+    module = _pin_script()
+    fetch = _registry({
+        "/manifests/": ({"Content-Type": MANIFEST, "Docker-Content-Digest": "sha256:" + "2" * 64},
+                          {"mediaType": MANIFEST, "config": {"digest": "sha256:cfg"}}),
+        "/blobs/sha256:cfg": ({}, {"os": "linux", "architecture": arch}),
+    })
+    # Unchecked (HEAD only, no rate-limited manifest GET), it is pinned as is.
+    assert module.pin("mimo:t0", "tok", check_single=False, fetch=fetch).endswith("2" * 64)
+    if ok:
+        assert module.pin("mimo:t0", "tok", check_single=True, fetch=fetch).endswith("2" * 64)
+    else:
+        with pytest.raises(RuntimeError, match="linux/amd64"):
+            module.pin("mimo:t0", "tok", check_single=True, fetch=fetch)
