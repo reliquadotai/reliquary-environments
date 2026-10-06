@@ -160,10 +160,12 @@ async def test_mimo_planted_conftest_zeroes_a_correct_fix(gateway, golden):
 async def test_a_deleted_app_scores_zero_not_aborted(gateway, golden):
     run = await episode(gateway, golden, [*solve(), bash("cd / && rm -rf /app"),
                                           bash("echo bash-still-runs")],
-                        case="deleted /app", expected=0.0)
-    # The runner cd's itself, so calls made after `rm -rf /app` still run.
-    assert run.records[-1]["output"].strip() == "bash-still-runs"
-    assert run.records[-1]["exit_code"] == 0
+                        case="deleted /app", expected=0.0, exits_zero=False)
+    # The runner cd's into the workdir itself: once /app is gone, a later bash call is the
+    # agent's own `cd` error (exit 1), reported back -- the session stays alive and keeps
+    # answering, so the episode is graded 0, never aborted.
+    last = run.records[-1]
+    assert last["exit_code"] == 1 and "No such file or directory" in last["output"], last
     assert "_grader" not in run.final["grading"]
 
 
@@ -211,14 +213,11 @@ def test_an_excluded_in_process_row_is_refused_at_resolve():
 # agent may edit that module (the guard allows mutable files), so code it writes runs in the
 # grading box's pytest subprocess -- the shape of every served subprocess row.
 
-_RESPAWNER = (
+_STRAY = (
     "import os\n"
     "if os.fork() == 0:\n"
     "    os.setsid()\n"
-    "    import subprocess, time\n"
-    "    while True:\n"  # one short-lived child at a time: each stop round finds one to kill
-    "        subprocess.Popen(['sleep', '300'])\n"
-    "        time.sleep(0.02)\n"
+    "    os.execvp('sleep', ['sleep', '300'])\n"  # a detached process left in the box
 )
 _BACKGROUND_FORGE = (
     "import os\n"
@@ -244,10 +243,17 @@ def _prepend_to_mutable(payload: str):
                         f"&& cp /tmp/inject.py /app/{MUTABLE_IMPORTED}")]
 
 
-async def test_a_respawning_process_in_the_grading_box_is_graded_box_failed(gateway):
-    index, calls = _prepend_to_mutable(_RESPAWNER)
-    run = await episode(gateway, index, calls, case="respawner in grading box", expected=0.0)
-    assert run.final["grading"]["_grader"]["agent_fault"] == "grading_box_failed", run.final
+async def test_a_stray_process_in_the_grading_box_is_stopped_and_graded_zero(gateway):
+    # A detached process left in the grading box is SIGKILLed before the reward is read
+    # (`stop_processes`, the moment test.sh returns): graded 0, never aborted, `stray_stopped`.
+    # The respawning branch -- a fork bomb the kill rounds cannot drain -> `grading_box_failed`
+    # -- is covered by reliquary-sandbox's own suite (test_runtime_stop_processes.py and
+    # test_episode_grader.py); it is not run live, to keep an exponential fork bomb off a box
+    # that shares a TMax validation.
+    index, calls = _prepend_to_mutable(_STRAY)
+    run = await episode(gateway, index, calls, case="stray stopped", expected=0.0)
+    assert run.final["grading"]["stray_stopped"] is True
+    assert "_grader" not in run.final["grading"]
 
 
 async def test_a_background_reward_rewrite_races_stop_processes(gateway):
