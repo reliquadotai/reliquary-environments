@@ -201,3 +201,16 @@ def test_the_base_ref_never_hides_a_failed_last_check(cleanup_tail, expected):
                           env={"WORKDIR": "/nonexistent", "PATH": "/usr/bin:/bin"})
     assert done.returncode == expected
     assert done.stdout == ("ran\n" if expected == 0 else "")
+
+
+def test_the_polyglot_pin_script_selects_a_prefix_and_named_instances():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "pin_polyglot_digests.py"
+    spec = importlib.util.spec_from_file_location("pin_polyglot_digests", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rows = [corpus.SweRow(instance_id=f"t{i}", repo="", problem_statement="", fail_to_pass=(),
+                          pass_to_pass=(), gold_patch="", image=f"repo:t{i}") for i in range(5)]
+    assert module.images(rows, 2, ["t4", "t1"]) == ["repo:t0", "repo:t1", "repo:t4"]
