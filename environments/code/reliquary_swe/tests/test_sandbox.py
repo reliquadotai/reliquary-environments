@@ -147,7 +147,6 @@ async def test_an_untracked_list_the_agent_broke_is_its_own_outcome(monkeypatch,
 
 
 async def test_grade_runs_the_packages_grading_and_reports_its_facts(monkeypatch):
-    pytest.importorskip("reliquary_sandbox.episode_task")
     received = {}
 
     async def fake_grade(runtime, data, patch):
@@ -166,7 +165,6 @@ async def test_grade_runs_the_packages_grading_and_reports_its_facts(monkeypatch
 async def test_grade_lets_an_image_bug_raise(monkeypatch):
     # grading.grade raises for a box that is not what the corpus says: an env/image bug,
     # graded 0.0 `grading_failed` and counted by the gateway, never swallowed here.
-    pytest.importorskip("reliquary_sandbox.episode_task")
 
     async def broken(runtime, data, patch):
         raise RuntimeError("could not check out")
@@ -177,7 +175,7 @@ async def test_grade_lets_an_image_bug_raise(monkeypatch):
 
 
 def test_sandbox_task_builds_the_gateways_contract(monkeypatch):
-    episode_task = pytest.importorskip("reliquary_sandbox.episode_task")
+    from reliquary_sandbox import episode_task
     monkeypatch.setattr(sandbox, "row_for", _train_row)
     task = sandbox.sandbox_task("train", 3)
     assert isinstance(task, episode_task.SandboxTask)

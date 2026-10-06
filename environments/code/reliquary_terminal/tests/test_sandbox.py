@@ -199,7 +199,6 @@ def graded(monkeypatch):
 
 
 async def test_grade_removes_an_absent_root_and_restores_the_rest(rows, graded):
-    pytest.importorskip("reliquary_sandbox.episode_task")
     calls, _ = graded
     data = sandbox.declaration("train", 0).data
     runtime = ScriptedRuntime(workdir="/")
@@ -215,7 +214,6 @@ async def test_grade_removes_an_absent_root_and_restores_the_rest(rows, graded):
 async def test_a_deleted_app_is_graded_zero_by_the_real_grading(rows):
     """No fake grading: the task's own setup, staging and `_graded` on a box without
     /app. test.sh fails, writes no reward: 0, with no state error."""
-    pytest.importorskip("reliquary_sandbox.episode_task")
     data = sandbox.declaration("train", 0).data
     runtime = ScriptedRuntime(workdir="/")
     runtime.on(lambda argv: argv == ["bash", "/tests/test.sh"], exit_code=1)
@@ -227,7 +225,6 @@ async def test_a_deleted_app_is_graded_zero_by_the_real_grading(rows):
 
 
 async def test_a_reward_outside_zero_one_is_graded_zero(rows, graded):
-    pytest.importorskip("reliquary_sandbox.episode_task")
     _, results = graded
     results[:] = [5.0]
     data = sandbox.declaration("train", 0).data
@@ -238,7 +235,6 @@ async def test_a_reward_outside_zero_one_is_graded_zero(rows, graded):
 
 async def test_a_malformed_state_is_our_bug_and_raises(rows):
     """extract wrote the state; a state it cannot have written is never the agent's."""
-    pytest.importorskip("reliquary_sandbox.episode_task")
     data = sandbox.declaration("train", 0).data
     with pytest.raises(ValueError):
         await sandbox.grade(ScriptedRuntime(workdir="/"), b"junk", data=data, roots=("/app",))
@@ -247,7 +243,6 @@ async def test_a_malformed_state_is_our_bug_and_raises(rows):
 async def test_a_restore_failure_is_left_to_the_sandbox(rows, graded):
     """The sandbox records what it refused (state_unreadable, graded 0) or what failed
     on its side (aborted); grade does not second-guess it."""
-    pytest.importorskip("reliquary_sandbox.episode_task")
 
     class Refusing(ScriptedRuntime):
         async def restore_archive(self, data, roots):
@@ -273,20 +268,23 @@ async def test_a_restore_failure_is_left_to_the_sandbox(rows, graded):
     ({"0": None, "0/s": ("link", "/sys/kernel")}, ["/app/s"]),
     ({"0": None, "0/q": ("link", "../proc/1/cwd")}, ["/app/q"]),
 ])
-async def test_a_link_into_the_graders_files_is_graded_zero(rows, graded, members, flagged):
-    pytest.importorskip("reliquary_sandbox.episode_task")
+def test_links_into_the_graders_files_are_flagged(members, flagged):
+    assert sandbox.links_into_grader(state_archive(["/app"], members), ["/app"]) == flagged
+
+
+async def test_a_link_into_the_graders_files_is_graded_zero(rows, graded):
     calls, _ = graded
     data = sandbox.declaration("train", 0).data
+    members = {"0": None, "0/t": ("link", "/tests/test.sh")}
     state = sandbox.encode_state(["/app"], state_archive(["/app"], members))
     result = await sandbox.grade(ScriptedRuntime(workdir="/"), state, data=data, roots=("/app",))
-    assert result.reward == 0.0 and result.facts == {"link_into_grader": flagged}
+    assert result.reward == 0.0 and result.facts == {"link_into_grader": ["/app/t"]}
     assert calls == [("setup", "grade")]  # tests never staged, never run
 
 
 async def test_other_absolute_links_are_kept(rows, graded):
     """venvs need them: `.venv/bin/python -> /usr/bin/python3`, and uv's or pyenv's
     interpreters live under /root."""
-    pytest.importorskip("reliquary_sandbox.episode_task")
     calls, _ = graded
     data = sandbox.declaration("train", 0).data
     members = {"0": None, "0/.venv": None, "0/.venv/bin": None,
@@ -342,7 +340,6 @@ def test_the_pinned_rows_left_after_the_in_process_exclusion():
 async def test_stray_processes_are_stopped_before_the_reward_is_read(rows):
     """After test.sh and before reward.txt or the report is read, every process left in
     the grading box is killed: none can rewrite either once test.sh is done."""
-    pytest.importorskip("reliquary_sandbox.episode_task")
     data = sandbox.declaration("train", 0).data
     runtime = ScriptedRuntime(workdir="/")
     runtime.on(lambda argv: argv == ["bash", "/tests/test.sh"], exit_code=1)
@@ -362,7 +359,7 @@ def test_a_sandbox_without_stop_processes_is_refused_at_import(monkeypatch):
     not on every episode."""
     import importlib
 
-    episode_task = pytest.importorskip("reliquary_sandbox.episode_task")
+    from reliquary_sandbox import episode_task
 
     class Old:
         async def run(self, argv, env): ...
@@ -395,7 +392,7 @@ def test_every_served_row_writes_the_report_its_reward_needs():
 
 
 def test_sandbox_task_builds_the_gateways_contract(rows):
-    episode_task = pytest.importorskip("reliquary_sandbox.episode_task")
+    from reliquary_sandbox import episode_task
     task = sandbox.sandbox_task("train", 0)
     assert isinstance(task, episode_task.SandboxTask)
     assert task.effective_grading_workdir == "/" and task.tools == ("bash",)
