@@ -9,7 +9,12 @@ Then, on the sandbox host (the gateway never pulls; spec §7):
 
     python scripts/sandbox_images.py pull r2e.json terminal.json --docker-host unix:///run/docker.sock
     python scripts/sandbox_images.py check r2e.json --runtime runsc --require git
+    python scripts/sandbox_images.py check terminal.json --runtime runsc
     python scripts/sandbox_images.py approve r2e.json terminal.json   # -> the gateway setting
+
+`check` records each image's last result in `--record` (default
+`sandbox-images.checked.json` in the current directory); `approve` refuses unless every
+image of its manifests has a recorded last check that passed.
 
 SWE-smith, R2E, polyglot and MiMo images are upstream images pinned by digest: once the
 harness runs on the miner, nothing installs at run time, so nothing needs baking. The one
@@ -29,7 +34,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -86,6 +91,31 @@ def check(images: Sequence[str], *, docker: list[str], runtime: str, require: Se
     return results
 
 
+DEFAULT_RECORD = Path("sandbox-images.checked.json")
+
+
+def load_record(path: Path) -> dict[str, dict[str, Any]]:
+    """image -> its last check result, or {} when nothing was recorded."""
+    try:
+        return dict(json.loads(Path(path).read_text())["images"])
+    except FileNotFoundError:
+        return {}
+
+
+def record_checks(path: Path, results: Sequence[dict[str, Any]], runtime: str,
+                  require: Sequence[str]) -> None:
+    """Replace each checked image's entry; other images keep theirs."""
+    images = load_record(path)
+    for result in results:
+        images[result["image"]] = {**result, "runtime": runtime, "require": list(require)}
+    Path(path).write_text(json.dumps({"images": images}, indent=1, sort_keys=True) + "\n")
+
+
+def unapproved(images: Sequence[str], record: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """The images whose last recorded check is missing or did not pass."""
+    return [image for image in images if not (record.get(image) or {}).get("ok")]
+
+
 def approve_line(images: Sequence[str]) -> str:
     return "RELIQUARY_SANDBOX_EPISODE_IMAGES=" + json.dumps(sorted(set(images)))
 
@@ -105,6 +135,9 @@ def main(argv: list[str] | None = None, run: Run = subprocess.run) -> int:
         sub.add_argument("manifests", nargs="+", type=Path)
         if name != "approve":
             sub.add_argument("--docker-host")
+        if name != "pull":
+            sub.add_argument("--record", type=Path, default=DEFAULT_RECORD,
+                             help="each image's last check result (check writes, approve reads)")
     commands.choices["pull"].add_argument("--jobs", type=int, default=3)
     commands.choices["check"].add_argument("--runtime", default="runsc")
     commands.choices["check"].add_argument("--require", action="append", default=[])
@@ -122,6 +155,13 @@ def main(argv: list[str] | None = None, run: Run = subprocess.run) -> int:
         return run(command).returncode
     images = load_images(args.manifests)
     if args.command == "approve":
+        refused = unapproved(images, load_record(args.record))
+        if refused:
+            print(f"not approved: no passing last check in {args.record} for "
+                  f"{len(refused)} image(s); run check first:", file=sys.stderr)
+            for image in refused:
+                print(f"  {image}", file=sys.stderr)
+            return 1
         print(approve_line(images))
         return 0
     docker = _docker(args.docker_host)
@@ -132,6 +172,7 @@ def main(argv: list[str] | None = None, run: Run = subprocess.run) -> int:
             print(f"FAILED {image}")
         return 1 if failed else 0
     results = check(images, docker=docker, runtime=args.runtime, require=args.require, run=run)
+    record_checks(args.record, results, args.runtime, args.require)
     for result in results:
         print(json.dumps(result))
     return 0 if all(r["ok"] for r in results) else 1

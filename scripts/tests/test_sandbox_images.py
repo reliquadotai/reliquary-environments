@@ -75,6 +75,41 @@ def test_approve_prints_the_gateway_setting():
     assert line == "RELIQUARY_SANDBOX_EPISODE_IMAGES=" + json.dumps([A, B])
 
 
+def test_check_records_each_images_last_result(tmp_path):
+    record = tmp_path / "checked.json"
+    m = manifest(tmp_path, [A, B])
+    code = si.main(["check", str(m), "--record", str(record)], run=FakeDocker(missing_tools={B}))
+    assert code == 1
+    first = json.loads(record.read_text())["images"]
+    assert first[A]["ok"] is True and first[B]["ok"] is False and first[A]["runtime"] == "runsc"
+    # a later check of one image replaces only its entry
+    assert si.main(["check", str(manifest(tmp_path, [B], "n.json")), "--record", str(record)],
+                   run=FakeDocker()) == 0
+    assert json.loads(record.read_text())["images"][B]["ok"] is True
+    assert json.loads(record.read_text())["images"][A] == first[A]
+
+
+def test_approve_needs_a_passing_last_check_for_every_image(tmp_path, capsys):
+    record = tmp_path / "checked.json"
+    m = manifest(tmp_path, [A, B])
+    assert si.main(["approve", str(m), "--record", str(record)]) == 1  # never checked
+    assert "check" in capsys.readouterr().err
+    si.main(["check", str(manifest(tmp_path, [A], "a.json")), "--record", str(record)],
+            run=FakeDocker())
+    assert si.main(["approve", str(m), "--record", str(record)]) == 1  # B never checked
+    assert B in capsys.readouterr().err
+    si.main(["check", str(m), "--record", str(record)], run=FakeDocker(missing_tools={B}))
+    assert si.main(["approve", str(m), "--record", str(record)]) == 1  # B's last check failed
+    out = capsys.readouterr()
+    assert B in out.err and "RELIQUARY_SANDBOX_EPISODE_IMAGES" not in out.out
+    si.main(["check", str(m), "--record", str(record)], run=FakeDocker())
+    capsys.readouterr()
+    assert si.main(["approve", str(m), "--record", str(record)]) == 0
+    assert capsys.readouterr().out.strip() == si.approve_line([A, B])
+    si.main(["check", str(m), "--record", str(record)], run=FakeDocker(missing_tools={A}))
+    assert si.main(["approve", str(m), "--record", str(record)]) == 1  # a newer failure wins
+
+
 def test_build_tmax_pushes_to_the_given_registry(tmp_path):
     command = si.build_tmax_command("registry.example:5000/team", tmp_path)
     assert command[-2:] == ["--repository", "registry.example:5000/team/reliquary-tmax-base"]
