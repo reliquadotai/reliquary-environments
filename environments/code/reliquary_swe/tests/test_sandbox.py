@@ -349,3 +349,77 @@ def test_a_single_platform_image_is_checked_through_its_config(arch, ok):
     else:
         with pytest.raises(RuntimeError, match="linux/amd64"):
             module.pin("mimo:t0", "tok", check_single=True, fetch=fetch)
+
+
+# -- SWE-smith rows on demand ------------------------------------------------------
+# The 20-image train split is 18,546 rows whose test lists alone weigh ~3.9 GB in memory
+# (measured: 4.1 GB RSS retained, 9.2 GB peak to build). A gateway resolves one task at a
+# time, so it keeps only each surviving row's dataset position and builds the row asked for.
+
+_PATCH = "diff --git a/m.py b/m.py\n--- a/m.py\n+++ b/m.py\n@@ -1 +1 @@\n-a\n+b\n"
+_NEW_FILE = ("diff --git a/n.py b/n.py\nnew file mode 100644\n--- /dev/null\n+++ b/n.py\n"
+             "@@ -0,0 +1 @@\n+x\n")
+
+
+class _FakeDataset:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return [row[key] for row in self.rows]
+        return self.rows[key]
+
+
+def _smith(i, image, *, statement="Fix it.", f2p='["t::a"]', patch=_PATCH):
+    return {"instance_id": f"repo__x.{i}", "repo": "o/repo", "problem_statement": statement,
+            "FAIL_TO_PASS": f2p, "PASS_TO_PASS": '["t::b"]', "patch": patch,
+            "image_name": image}
+
+
+@pytest.fixture
+def fake_swesmith(monkeypatch):
+    rows = [_smith(0, "img.a"), _smith(1, "img.b"), _smith(2, "img.a", statement=" "),
+            _smith(3, "img.c"), _smith(4, "img.a", f2p="[]"), _smith(5, "img.b"),
+            _smith(6, "img.a", patch=_NEW_FILE), _smith(7, "img.a"), _smith(8, "img.b")]
+    monkeypatch.setattr(corpus, "load_dataset", lambda *a, **k: _FakeDataset(rows))
+    monkeypatch.setattr(corpus, "_swesmith_digests", lambda: {
+        name: f"{name}@sha256:" + "e" * 64 for name in ("img.a", "img.b", "img.c")})
+    caches = (corpus.load_swesmith_rows, corpus.swesmith_order)
+    for cached in caches:
+        cached.cache_clear()
+    yield rows
+    for cached in caches:
+        cached.cache_clear()
+
+
+def test_swesmith_rows_on_demand_are_the_loaded_rows(fake_swesmith):
+    loaded = corpus.load_swesmith_rows(2)
+    assert [row.instance_id for row in loaded] == [f"repo__x.{i}" for i in (0, 1, 5, 7, 8)]
+    assert [iid for _, iid in corpus.swesmith_order(2)] == [row.instance_id for row in loaded]
+    assert [corpus.swesmith_row_at(2, i) for i in range(len(loaded))] == list(loaded)
+    with pytest.raises(IndexError):
+        corpus.swesmith_row_at(2, len(loaded))
+    with pytest.raises(IndexError):
+        corpus.swesmith_row_at(2, -1)
+
+
+def test_the_sandbox_resolves_train_without_loading_the_split(fake_swesmith, monkeypatch):
+    def loaded(*args, **kwargs):
+        raise AssertionError("the sandbox must not materialize the whole train split")
+
+    monkeypatch.setattr(sandbox.swesmith_adapter, "ensure_python_profile", lambda repo: None)
+    expected = [corpus.swesmith_row_at(2, i) for i in range(5)]
+    monkeypatch.setattr(corpus, "load_swesmith_rows", loaded)
+    assert sandbox.sandbox_index("train:2", "repo__x.5") == 2
+    assert sandbox.row_for("train:2", 2)[1] == expected[2]
+    assert sandbox.declaration("train:2", 4).data.instance_id == "repo__x.8"
+    assert sandbox.sandbox_images("train:2") == ["img.a@sha256:" + "e" * 64,
+                                                 "img.b@sha256:" + "e" * 64]
+    assert sandbox.sandbox_images("train:2", 1) == ["img.a@sha256:" + "e" * 64]

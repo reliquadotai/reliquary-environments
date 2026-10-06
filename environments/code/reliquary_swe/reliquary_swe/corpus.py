@@ -443,6 +443,12 @@ def load_swesmith_rows(
         raise ValueError(f"num_images must be >= 1, got {num_images}")
     if max_test_count is not None and max_test_count < 1:
         raise ValueError(f"max_test_count must be >= 1 or None, got {max_test_count}")
+    return _scan_swesmith(num_images, max_test_count, lambda position, row: row)
+
+
+def _scan_swesmith(num_images: int, max_test_count: int | None, keep) -> tuple:
+    """`load_swesmith_rows`'s selection, one pass over the pinned dataset in its native
+    order: `keep(dataset position, SweRow)` for every row that survives, logged once."""
     _check_swesmith_num_images(num_images)
     name, hf_split, revision = _SOURCES["train"]
     dataset = load_dataset(name, split=hf_split, revision=revision or None)
@@ -452,7 +458,7 @@ def load_swesmith_rows(
     skipped_empty_statement = 0
     skipped_unreversible = 0
     skipped_too_costly = 0
-    for row in dataset:
+    for position, row in enumerate(dataset):
         if row["image_name"] not in selected:
             continue
         fail_to_pass = _tests(row["FAIL_TO_PASS"])
@@ -470,7 +476,7 @@ def load_swesmith_rows(
             skipped_too_costly += 1
             continue
         try:
-            rows.append(_swesmith_row(row, fail_to_pass, pass_to_pass))
+            rows.append(keep(position, _swesmith_row(row, fail_to_pass, pass_to_pass)))
         except ValueError:
             skipped_unreversible += 1
             continue
@@ -500,6 +506,37 @@ def load_swesmith_rows(
             total,
         )
     return tuple(rows)
+
+
+@functools.lru_cache(maxsize=None)
+def swesmith_order(
+    num_images: int = DEFAULT_SWESMITH_IMAGES,
+    max_test_count: int | None = None,
+) -> tuple[tuple[int, str], ...]:
+    """(dataset position, instance id) of `load_swesmith_rows(num_images,
+    max_test_count)`, in the same order, without keeping the rows: the 20-image
+    split's rows weigh about 4 GB in memory (18,546 rows, measured 4.1 GB RSS
+    retained and 9.2 GB peak to build), which a sandbox gateway resolving one
+    task at a time must not hold. `swesmith_row_at` builds the row asked for."""
+    if num_images < 1:
+        raise ValueError(f"num_images must be >= 1, got {num_images}")
+    if max_test_count is not None and max_test_count < 1:
+        raise ValueError(f"max_test_count must be >= 1 or None, got {max_test_count}")
+    return _scan_swesmith(
+        num_images, max_test_count, lambda position, row: (position, row.instance_id)
+    )
+
+
+def swesmith_row_at(
+    num_images: int, index: int, max_test_count: int | None = None
+) -> SweRow:
+    """`load_swesmith_rows(num_images, max_test_count)[index]`, built alone."""
+    order = swesmith_order(num_images, max_test_count)
+    if not 0 <= index < len(order):
+        raise IndexError(index)
+    name, hf_split, revision = _SOURCES["train"]
+    row = load_dataset(name, split=hf_split, revision=revision or None)[order[index][0]]
+    return _swesmith_row(row, _tests(row["FAIL_TO_PASS"]), _tests(row["PASS_TO_PASS"]))
 
 
 # MiMo-V2.6-RL-oss's `code` config: 2,698 tasks across Python, Go, JS/TS,

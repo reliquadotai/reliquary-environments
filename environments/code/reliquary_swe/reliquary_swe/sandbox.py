@@ -104,7 +104,8 @@ def row_for(split: str, index: int) -> tuple[SplitRef, corpus.SweRow]:
     if type(index) is not int or index < 0:
         raise IndexError(index)
     if ref.corpus == "train":
-        row = corpus.load_swesmith_rows(ref.num_images)[index]
+        # Built alone: the whole split's rows weigh ~4 GB (`corpus.swesmith_order`).
+        row = corpus.swesmith_row_at(ref.num_images, index)
         swesmith_adapter.ensure_python_profile(row.repo)
     elif ref.corpus == "r2e":
         row = corpus.r2e_row_at(index)
@@ -240,7 +241,7 @@ def sandbox_prompt(split: str, index: int) -> str:
 def sandbox_index(split: str, instance_id: str) -> int:
     ref = parse_split(split)
     if ref.corpus == "train":
-        ids = [row.instance_id for row in corpus.load_swesmith_rows(ref.num_images)]
+        ids = [instance_id for _, instance_id in corpus.swesmith_order(ref.num_images)]
     elif ref.corpus == "r2e":
         ids = corpus.r2e_instance_ids()
     else:
@@ -251,7 +252,9 @@ def sandbox_index(split: str, instance_id: str) -> int:
 def sandbox_images(split: str, num_tasks: int | None = None) -> list[str]:
     ref = parse_split(split)
     if ref.corpus == "train":
-        rows = corpus.load_swesmith_rows(ref.num_images)[:num_tasks]
+        count = len(corpus.swesmith_order(ref.num_images))
+        indexes = range(count if num_tasks is None else min(num_tasks, count))
+        rows = (corpus.swesmith_row_at(ref.num_images, index) for index in indexes)
     elif ref.corpus == "r2e":
         rows = corpus.load_r2e_rows(num_tasks)
     else:
