@@ -24,6 +24,16 @@ task (the path `TerminalEnv.finalize` -> `HarborEnv._grade` takes today, step by
 
 Rows that need the network are never served (boxes have none), nor rows whose
 test.sh imports code from `/app` (`UNSERVED`): the grader would run the agent's code.
+Nor, by default (`EXCLUDE_IN_PROCESS_AGENT_CODE`), rows whose test files run the
+agent's code inside pytest's own process (`in_process_agent_code`): that code can
+write a complete passing report and `os._exit(0)`, which no check on the report
+survives. 17 of the 64 pinned rows are served.
+
+Documented residual: the served rows run the agent's programs through subprocesses.
+A process they leave behind races `stop_processes` (called the moment test.sh
+returns): until it is killed it can rewrite reward.txt and the report, and so forge
+the verdict. Only separate uids for the verdict writer and the agent's code close
+this; prod grading has the same exposure.
 Environment values must be literals: a `${VAR}` template would be resolved against the
 gateway's own environment. The verifier's box must be the agent's image with the task's env and no
 healthcheck: a sandbox grades in a pristine box of `image`, with `env`. Terminal-Bench
@@ -33,6 +43,7 @@ healthcheck: a sandbox grades in a pristine box of `image`, with `env`. Terminal
 from __future__ import annotations
 
 import argparse
+import ast
 import functools
 import io
 import json
@@ -50,7 +61,7 @@ from verifiers.v1.tasksets.harbor.taskset import HarborData, verifier_box_data
 
 from reliquary_terminal.grading import VERIFIER, TerminalTask
 from reliquary_terminal.harness import DEFAULT_COMMAND_TIMEOUT_SECONDS
-from reliquary_terminal.taskset import TerminalConfig, load_train_rows, train_data
+from reliquary_terminal.taskset import TerminalConfig, load_train_rows, tests_files, train_data
 
 ENV = "reliquary-terminal"
 TOOLS = ("bash",)
@@ -151,10 +162,60 @@ def _checked(data: HarborData) -> HarborData:
     return data
 
 
+IN_PROCESS_AGENT_CODE = "in_process_agent_code"
+EXCLUDE_IN_PROCESS_AGENT_CODE = True
+"""Rows tagged `in_process_agent_code` are refused (the default, and the only safe
+setting until the verdict writer and the agent's code run as separate uids)."""
+_LOADERS = frozenset({
+    "spec_from_file_location", "spec_from_loader", "module_from_spec", "exec_module",
+    "load_module", "load_source", "SourceFileLoader", "run_path", "run_module",
+    "import_module", "__import__", "exec", "eval"})
+
+
+def in_process_agent_code(files: Mapping[str, bytes]) -> list[str]:
+    """Static evidence that a row's tests run code from `/app` inside pytest's
+    process, as `<file>: <what>` for every Python file under tests/: a use of
+    `sys.path`, a dynamic load or exec (`_LOADERS`), an `import app...`, or a file
+    that does not parse. Conservative: whether the path is `/app` is not resolved,
+    so a row that only adds its own fixtures to `sys.path` is tagged too."""
+    found = []
+    for name, source in sorted(files.items()):
+        if not name.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            found.append(f"{name}: unparseable")
+            continue
+        what = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Attribute) and node.attr == "path"
+                    and isinstance(node.value, ast.Name) and node.value.id == "sys"):
+                what.add("sys.path")
+            elif isinstance(node, ast.Call):
+                func = node.func
+                called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if called in _LOADERS:
+                    what.add(called)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                modules = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                           else [node.module or ""])
+                if any(m == "app" or m.startswith("app.") for m in modules):
+                    what.add("import app")
+        found.extend(f"{name}: {item}" for item in sorted(what))
+    return found
+
+
 def _refusal(row: Mapping[str, Any]) -> str | None:
     if row.get("allow_internet"):
         return "needs the network; sandbox boxes have none"
-    return UNSERVED.get(row["instance_id"])
+    if row["instance_id"] in UNSERVED:
+        return UNSERVED[row["instance_id"]]
+    if EXCLUDE_IN_PROCESS_AGENT_CODE:
+        evidence = in_process_agent_code(tests_files(row))
+        if evidence:
+            return f"{IN_PROCESS_AGENT_CODE} ({'; '.join(evidence)[:300]})"
+    return None
 
 
 def _train(index: int) -> Declaration:
@@ -274,11 +335,13 @@ class _StoppingAfterTests:
 
     def __init__(self, runtime: Any) -> None:
         self._runtime = runtime
+        self.stopped = False
 
     async def run(self, argv: list[str], env: dict[str, str]) -> Any:
         result = await self._runtime.run(argv, env)
         if list(argv) == VERIFIER:
             await self._runtime.stop_processes()
+            self.stopped = True
         return result
 
     def __getattr__(self, name: str) -> Any:
@@ -326,13 +389,48 @@ async def grade(runtime: Any, state: bytes, *, data: HarborData, roots: tuple[st
             return GradeResult(0.0, {"link_into_grader": flagged[:FACT_TESTS]})
     await grader._stage_tests(runtime, wipe=True)
     trace = _GradingTrace()
-    score = await grader._graded(_StoppingAfterTests(runtime), trace)
+    stopping = _StoppingAfterTests(runtime)
+    score = await grader._graded(stopping, trace)
     reward = score.get("reward") if isinstance(score, dict) else score
     facts = {"grading": _trimmed(trace.info.get("grading")), "metrics": trace.metrics}
+    if stopping.stopped:
+        facts["stray_stopped"] = True
     if (isinstance(reward, bool) or not isinstance(reward, (int, float))
             or not math.isfinite(reward) or not 0.0 <= reward <= 1.0):
         return GradeResult(0.0, {**facts, "reward_out_of_range": repr(reward)[:100]})
     return GradeResult(float(reward), facts)
+
+
+STOP_PROCESSES_SINCE = "e0217aa"
+"""The reliquary-sandbox commit that gives env hooks `runtime.stop_processes()`."""
+
+
+def require_stop_processes(*runtimes: Any) -> None:
+    """Refuse a reliquary-sandbox whose runtimes lack `stop_processes`; None = absent."""
+    for runtime in runtimes:
+        if runtime is not None and not callable(getattr(runtime, "stop_processes", None)):
+            raise ImportError(
+                f"reliquary_terminal.sandbox needs reliquary-sandbox at {STOP_PROCESSES_SINCE} or "
+                f"later: {getattr(runtime, '__qualname__', runtime)!r} has no stop_processes")
+
+
+def _sandbox_runtimes() -> tuple[Any, Any]:
+    """The installed sandbox's TaskRuntime protocol and the gateway's LocalRuntime,
+    each None when not installed (a machine that only prints image lists)."""
+    try:
+        from reliquary_sandbox.episode_task import TaskRuntime
+    except ImportError:
+        return None, None
+    try:
+        from reliquary_sandbox_service.episodes.local_runtime import LocalRuntime
+    except ImportError:  # the SDK alone (no service extras): no gateway here
+        return TaskRuntime, None
+    return TaskRuntime, LocalRuntime
+
+
+# At import: a gateway loads this module when it starts, so an old sandbox fails there,
+# not on every episode's grading.
+require_stop_processes(*_sandbox_runtimes())
 
 
 def sandbox_task(split: str, index: int):

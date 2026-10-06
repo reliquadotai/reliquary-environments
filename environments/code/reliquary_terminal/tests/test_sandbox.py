@@ -49,13 +49,36 @@ def state_archive(roots, members):
     return buffer.getvalue()
 
 
+IN_PROCESS = b"""
+import sys
+sys.path.insert(0, "/app/src")
+from solution import answer
+
+def test_answer():
+    assert answer() == 42
+"""
+SUBPROCESS = b"""
+import subprocess
+
+def test_cli():
+    assert subprocess.run(["python3", "/app/cli.py"]).returncode == 0
+"""
+
+
+def _files(test_outputs):
+    return {"test.sh": base64.b64encode(b"exit 0\n").decode(),
+            "test_outputs.py": base64.b64encode(test_outputs).decode()}
+
+
 APP = state_archive(["/app"], {"0": None, "0/main.py": b"print(1)\n"})
 
 
 @pytest.fixture
 def rows(monkeypatch, tmp_path):
     table = [row(), row(instance_id="candidate-net", allow_internet=True),
-             row(instance_id=PYTHONPATH_ROW)]
+             row(instance_id=PYTHONPATH_ROW),
+             row(instance_id="candidate-inproc", tests_files=_files(IN_PROCESS)),
+             row(instance_id="candidate-subproc", tests_files=_files(SUBPROCESS))]
 
     def materialized(r):
         (tmp_path / r["instance_id"] / "tests").mkdir(parents=True, exist_ok=True)
@@ -277,6 +300,45 @@ async def test_other_absolute_links_are_kept(rows, graded):
     assert result.reward == 1.0 and calls[-1] == ("stage", True)
 
 
+@pytest.mark.parametrize("source, evidence", [
+    (IN_PROCESS, "sys.path"),
+    (b"import importlib.util\nspec = importlib.util.spec_from_file_location('m', '/app/m.py')\n",
+     "spec_from_file_location"),
+    (b"namespace = {}\nexec(compile(open('/app/x.py').read(), 'x', 'exec'), namespace)\n",
+     "exec"),
+    (b"import importlib\nm = importlib.import_module('pkg')\n", "import_module"),
+    (b"from app.module import f\n", "import app"),
+    (b"def broken(:\n", "unparseable"),
+])
+def test_in_process_agent_code_is_found_statically(source, evidence):
+    found = sandbox.in_process_agent_code({"test_outputs.py": source, "test.sh": b"exit 0\n"})
+    assert any(evidence in item for item in found)
+
+
+def test_subprocess_only_tests_are_not_in_process():
+    assert sandbox.in_process_agent_code({"test_outputs.py": SUBPROCESS}) == []
+
+
+def test_a_row_running_agent_code_in_pytest_is_never_served(rows):
+    """The agent's code inside pytest's process can write a complete passing report and
+    `os._exit(0)`: no check on the report survives that."""
+    assert sandbox.EXCLUDE_IN_PROCESS_AGENT_CODE is True
+    with pytest.raises(ValueError, match="in_process_agent_code"):
+        sandbox.declaration("train", 3)
+    assert sandbox.declaration("train", 4).image == DIGEST  # subprocess only: served
+
+
+def test_the_pinned_rows_left_after_the_in_process_exclusion():
+    rows = taskset.load_train_rows()
+    tagged = {r["instance_id"] for r in rows
+              if sandbox.in_process_agent_code(taskset.tests_files(r))}
+    served = [r["instance_id"] for r in rows
+              if sandbox._refusal(r) is None]
+    assert len(tagged) == 45 and len(served) == 17
+    assert "candidate-0674-ml-evaluation" in tagged  # its loader is a fixture, not the test file
+    assert not tagged & set(served)
+
+
 async def test_stray_processes_are_stopped_before_the_reward_is_read(rows):
     """After test.sh and before reward.txt or the report is read, every process left in
     the grading box is killed: none can rewrite either once test.sh is done."""
@@ -290,6 +352,31 @@ async def test_stray_processes_are_stopped_before_the_reward_is_read(rows):
     assert runtime.log.count(("stop_processes",)) == 1
     reads = [i for i, event in enumerate(runtime.log) if event[0] == "read"]
     assert reads and min(reads) > test_sh + 1
+    result = await sandbox.grade(runtime, sandbox.encode_state([], b""), data=data,
+                                 roots=("/app",))
+    assert result.facts["stray_stopped"] is True and "_grader" not in result.facts
+
+
+def test_a_sandbox_without_stop_processes_is_refused_at_import(monkeypatch):
+    """A gateway on a reliquary-sandbox before e0217aa fails when it loads the env,
+    not on every episode."""
+    import importlib
+
+    episode_task = pytest.importorskip("reliquary_sandbox.episode_task")
+
+    class Old:
+        async def run(self, argv, env): ...
+
+    with pytest.raises(ImportError, match="stop_processes"):
+        sandbox.require_stop_processes(Old)
+    sandbox.require_stop_processes(episode_task.TaskRuntime, None)
+    monkeypatch.delattr(episode_task.TaskRuntime, "stop_processes")
+    try:
+        with pytest.raises(ImportError, match="e0217aa"):
+            importlib.reload(sandbox)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(sandbox)
 
 
 def test_every_served_row_writes_the_report_its_reward_needs():
@@ -297,7 +384,7 @@ def test_every_served_row_writes_the_report_its_reward_needs():
     `--ctrf /logs/verifier/ctrf.json`, and the tests collected statically are the ones a
     reward of 1 must show as passed."""
     for index, r in enumerate(taskset.load_train_rows()):
-        if r["instance_id"] in sandbox.UNSERVED:
+        if sandbox._refusal(r) is not None:
             continue
         test_sh = taskset.tests_files(r)["test.sh"]
         assert b"--ctrf /logs/verifier/ctrf.json" in test_sh, r["instance_id"]
