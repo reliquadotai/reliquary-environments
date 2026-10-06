@@ -192,6 +192,14 @@ class Report:
     test_output_tail: str = ""
 
 
+class PristineBoxError(RuntimeError):
+    """A grading box that is not what the corpus says, found before the agent's patch
+    touches it (checking out the base, stripping history, setting hidden tests aside,
+    listing the untracked paths at base): an error about us or the image, never a 0.
+    A RuntimeError like before; on a signed-episode sandbox `sandbox.grade` reports it as
+    the sandbox's `EnvInfraError` (the episode is aborted, not graded)."""
+
+
 def _paths_touched_by(patch: str) -> list[str]:
     """The files a unified diff writes to (the `+++ b/...` side of each hunk).
 
@@ -588,26 +596,34 @@ def _numstat_paths(numstat_z: str) -> list[str]:
     return paths
 
 
-def _r2e_forbidden_paths(
+def _forbidden_patch_paths(
     paths: list[str], untracked: list[str], ignored: list[str]
 ) -> list[str]:
-    """The patch paths R2E grading refuses outright: any under `.venv/`,
-    any that is -- or lies inside -- a path present but untracked at the
-    base (`git ls-files --others --directory`, which lists ignored paths
-    too and collapses a wholly untracked directory to `dir/`), and any git
-    ignores at the base.
+    """The patch paths grading refuses outright, for every split: any under
+    `.venv/`, any that is -- or lies inside -- a path present but untracked
+    at the base (`git ls-files --others --directory`, which lists ignored
+    paths too and collapses a wholly untracked directory to `dir/`), and any
+    git ignores at the base.
 
-    Why: deleting new root entries (`_restore_r2e`) does not reach paths
-    the image already has outside the tracked tree, and those are exactly
-    where a patch can steer the run without touching a test: `run_tests.sh`
-    runs `.venv/bin/python`, so a `.venv/lib/python3.X/site-packages/zz.pth`
-    executes at interpreter start-up, and `python -m pytest` reads plugin
-    entry points from the `<project>.egg-info` the root holds. The agent's
-    own capture (`git add -A`, ignoring what was untracked at setup) never
-    produces such a path; one only appears if the agent un-ignored it on
-    purpose (a `!` rule in `.gitignore`, `.git/info/exclude`). The ignore
-    check runs against the base before the patch is applied, so a
-    `.gitignore` the patch edits has no say in it.
+    Why: restoration only puts back tracked paths and the tests' own files,
+    and never reaches paths the image already has outside the tracked tree --
+    exactly where a patch can steer the run without touching a test. R2E's
+    `run_tests.sh` runs `.venv/bin/python`, so a
+    `.venv/lib/python3.X/site-packages/zz.pth` executes at interpreter
+    start-up, and `python -m pytest` reads plugin entry points from the
+    `<project>.egg-info` the root holds; a polyglot image's ignored
+    `node_modules/.bin/jest` is the runner its test command calls, and one
+    hunk can make it `exit 0`.
+
+    The patch is the agent's to shape, not a faithful `git add -A`: the
+    capture runs in the agent's box, against a base ref and with a git
+    config the agent can rewrite (`diff.external`, a moved
+    `refs/reliquary/base`, a `!` rule in `.gitignore` or
+    `.git/info/exclude`), so any path can appear in it. The ignore check
+    runs against the base before the patch is applied, so a `.gitignore` the
+    patch edits has no say in it. An honest capture never produces such a
+    path: it leaves out what was untracked at setup, and `git add -A` skips
+    ignored files.
 
     `ignored` comes from `git check-ignore` WITH the index, not
     `--no-index`: a tracked file that happens to match an ignore pattern is
@@ -628,8 +644,8 @@ def _r2e_forbidden_paths(
     ]
 
 
-async def _r2e_patch_violations(runtime: vf.Runtime, data: SweData) -> list[str]:
-    """`_r2e_forbidden_paths` for the patch at /tmp/agent.diff, asked of
+async def _patch_violations(runtime: vf.Runtime, data: SweData) -> list[str]:
+    """`_forbidden_patch_paths` for the patch at /tmp/agent.diff, asked of
     this box before the patch is applied. A patch git cannot parse yields
     no paths here and fails to apply right after, scoring 0 there."""
     numstat = await runtime.run(["git", "apply", "--numstat", "-z", "/tmp/agent.diff"], {})
@@ -640,7 +656,7 @@ async def _r2e_patch_violations(runtime: vf.Runtime, data: SweData) -> list[str]
         return []
     others = await runtime.run(["git", "ls-files", "-z", "--others", "--directory"], {})
     if others.exit_code != 0:
-        raise RuntimeError(
+        raise PristineBoxError(
             f"could not list untracked paths for {data.instance_id}: "
             f"{(others.stderr or others.stdout).strip()[-500:]}"
         )
@@ -656,7 +672,7 @@ async def _r2e_patch_violations(runtime: vf.Runtime, data: SweData) -> list[str]
     if ignored.exit_code not in (0, 1):
         detail = (ignored.stderr or ignored.stdout).strip()[-200:]
         return [f"{path} (git check-ignore exit {ignored.exit_code}: {detail})" for path in paths]
-    return _r2e_forbidden_paths(
+    return _forbidden_patch_paths(
         paths,
         [entry for entry in (others.stdout or "").split("\0") if entry],
         [entry for entry in (ignored.stdout or "").split("\0") if entry],
@@ -786,7 +802,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
         # it back is not a real "0 result", it's a box that isn't what it
         # claims to be -- raising here is what keeps that from reading as a
         # silent, wrong zero.
-        raise RuntimeError(
+        raise PristineBoxError(
             f"could not check out {data.base_commit} for {data.instance_id}: "
             f"{(checkout.stderr or checkout.stdout).strip()[-500:]}"
         )
@@ -809,7 +825,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             {"BASE_COMMIT": data.base_commit, "WORKDIR": data.workdir},
         )
         if sever.exit_code != 0:
-            raise RuntimeError(
+            raise PristineBoxError(
                 f"could not sever pristine history for {data.instance_id}: "
                 f"{(sever.stderr or sever.stdout).strip()[-500:]}"
             )
@@ -826,7 +842,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             # `restored=False` gets recorded -- and the test run proceeds
             # anyway, on an unrestored box, exactly like the `checkout` and
             # `sever` steps either side of this one refuse to let happen.
-            raise RuntimeError(
+            raise PristineBoxError(
                 f"could not resolve HEAD after severing history for "
                 f"{data.instance_id}: "
                 f"{(resolved.stderr or resolved.stdout).strip()[-500:]}"
@@ -856,13 +872,13 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             ["sh", "-c", prefix + _STRIP_AND_GC], {"WORKDIR": data.workdir}
         )
         if strip.exit_code != 0:
-            raise RuntimeError(
+            raise PristineBoxError(
                 f"could not strip history for {data.instance_id}: "
                 f"{(strip.stderr or strip.stdout).strip()[-500:]}"
             )
         resolved = await runtime.run(["git", "rev-parse", "HEAD"], {})
         if resolved.exit_code != 0:
-            raise RuntimeError(
+            raise PristineBoxError(
                 f"could not resolve HEAD for {data.instance_id}: "
                 f"{(resolved.stderr or resolved.stdout).strip()[-500:]}"
             )
@@ -883,7 +899,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
                 {"WORKDIR": data.workdir},
             )
             if stash.exit_code != 0:
-                raise RuntimeError(
+                raise PristineBoxError(
                     f"could not set aside the hidden tests for {data.instance_id}: "
                     f"{(stash.stderr or stash.stdout).strip()[-500:]}"
                 )
@@ -906,7 +922,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             ["sh", "-c", "set -e ; " + _STRIP_AND_GC], {"WORKDIR": data.workdir}
         )
         if strip.exit_code != 0:
-            raise RuntimeError(
+            raise PristineBoxError(
                 f"could not strip history for {data.instance_id}: "
                 f"{(strip.stderr or strip.stdout).strip()[-500:]}"
             )
@@ -914,20 +930,20 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     applied = True
     if patch.strip():
         await runtime.write("/tmp/agent.diff", patch.encode())
-        if data.split == "r2e":
-            violations = await _r2e_patch_violations(runtime, data)
-            if violations:
-                # Not applied, on purpose: see `_r2e_forbidden_paths`.
-                return Report(
-                    0.0,
-                    False,
-                    True,
-                    0,
-                    0,
-                    {},
-                    test_output_tail="patch touches paths outside the tracked tree: "
-                    + ", ".join(violations)[:1900],
-                )
+        violations = await _patch_violations(runtime, data)
+        if violations:
+            # Not applied, on purpose, whatever the split: see
+            # `_forbidden_patch_paths`.
+            return Report(
+                0.0,
+                False,
+                True,
+                0,
+                0,
+                {},
+                test_output_tail="patch touches paths outside the tracked tree: "
+                + ", ".join(violations)[:1900],
+            )
         result = await runtime.run(["git", "apply", "-v", "/tmp/agent.diff"], {})
         applied = result.exit_code == 0
         if not applied:

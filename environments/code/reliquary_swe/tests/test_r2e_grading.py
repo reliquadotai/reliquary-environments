@@ -152,7 +152,7 @@ def test_numstat_paths_reads_git_s_own_parse_of_the_patch():
 
 def test_patch_paths_outside_the_tracked_tree_are_forbidden():
     untracked = [".venv/", "coverage.egg-info/", "install.sh", "coverage/tracer.so"]
-    forbidden = grading._r2e_forbidden_paths(
+    forbidden = grading._forbidden_patch_paths(
         [
             "coverage/debug.py",  # tracked source: fine
             "reproduce_issue.py",  # new root file: fine (deleted later)
@@ -242,7 +242,7 @@ async def test_check_ignore_failing_is_a_violation_not_an_infra_error():
             ),
         }
     )
-    assert await grading._r2e_patch_violations(runtime, _r2e_data())
+    assert await grading._patch_violations(runtime, _r2e_data())
     report = await grading.grade(
         runtime, _r2e_data(), "diff --git a/link/x.py b/link/x.py\n"
     )

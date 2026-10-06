@@ -495,3 +495,31 @@ uv run python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary
 
 The package exports `SweTaskset`, `SweEnv`, and `SweEnvConfig` for Verifiers.
 It imports no Reliquary code.
+
+## Signed sandboxes
+
+`reliquary_swe.sandbox:sandbox_task` serves this package's tasks on a signed-episode
+sandbox gateway (`episode_envs = {"reliquary-swe": "reliquary_swe.sandbox:sandbox_task"}`).
+
+- Served splits: `train` and `train:<n>` (SWE-smith), `r2e`, `polyglot`. `eval` (SWE-bench
+  Verified) is refused. Polyglot rows without a pinned digest are refused.
+- State handed to the grader: the diff against `refs/reliquary/base` (so a committed fix
+  counts), published to the miner as its `final_diff`. Grading runs in a pristine box and,
+  on every split, refuses a patch that touches an untracked or ignored path or `.venv/`.
+- Limits: 4 GiB, 10 GiB disk, 1024 pids, 3600 s, 600 s per call, grading 810 s. No network.
+- `reliquary-sandbox` is imported lazily and is not a dependency of this package.
+- A pristine grading box that is not what the corpus says (checking out the base,
+  stripping history, setting hidden tests aside, listing untracked paths, all before the
+  patch is applied) aborts the episode (`EnvInfraError`) instead of grading 0.
+- At import, `reliquary_swe.sandbox` refuses any `verifiers` but the pinned commit and any
+  change to `verifiers.v1.utils.git` (`capture_patch`).
+- Known residual, the same as in container grading: a patch confined to source can
+  monkeypatch pytest's reporting at import time (e.g. reassign
+  `_pytest.reports.TestReport.from_item_and_call`) so every test reports PASSED. Grading
+  in a pristine box does not close it; only an injected canary check would (not built;
+  see "Reward-hacking mitigation").
+- Enablement gate: grading must finish within 810 s under runsc. Measure gold-patch
+  grading per repository under runsc before enabling a split, and exclude rows over budget.
+
+How hooks fail, what is refused and the measured parity table: `docs/sandbox-tasks.md`
+(repository root).

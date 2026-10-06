@@ -179,6 +179,42 @@ _R2E_HIDE_TESTS = " ; ".join(
 )
 
 
+def cleanup_script(split: str) -> str:
+    """The shell cleanup `SweTask.setup` runs before the agent starts (and the sandbox's
+    `prepare`, reliquary_swe.sandbox): checkout, SWE-smith's guard and re-root, R2E's
+    leak guard, ref stripping and gc, R2E's hidden-test removal, in that order."""
+    steps = [_R2E_CHECKOUT if split == "r2e" else _CHECKOUT]
+    # `split` -- already on the wire, and the honest discriminator for this
+    # decision (it is literally "which corpus is this") -- decides whether the
+    # SWE-smith-only guard-and-reroot step runs. See `_TRAIN_GUARD_AND_REROOT`'s
+    # own docstring for why "train" needs it and "eval" must not: a SWE-bench
+    # Verified `base_commit` has no pristine-tree ancestor to sever, and
+    # asserting a "Bug Patch" commit message on it would just fail every eval
+    # task.
+    #
+    # "polyglot" needs no re-root either. Its images come in two shapes, both
+    # checked on real images: HEAD is a parentless "task base" commit whose
+    # tree has the requested behaviour cut out, with the complete upstream --
+    # implementation and tests -- still parked under `origin/<branch>`; or HEAD
+    # is upstream's own tip, with nothing after it. Either way nothing an agent
+    # could use sits in HEAD's ancestry, and the ref stripping below prunes the
+    # parked upstream: after it, a full object-store scan no longer finds the
+    # removed code.
+    if split == "train":
+        steps.append(_TRAIN_GUARD_AND_REROOT)
+    if split == "r2e":
+        steps.append(_R2E_LEAK_GUARD)
+    steps.append(_STRIP_AND_GC)
+    # "r2e" needs no re-root either: HEAD is detached at the pre-fix commit,
+    # and the fix commit is a *descendant* reachable only through the full
+    # upstream history's branch refs, which the strip deletes and `gc` then
+    # prunes (asserted on real images in tests/test_r2e_goldens.py). It does
+    # need its hidden tests out of the box.
+    if split == "r2e":
+        steps.append(_R2E_HIDE_TESTS)
+    return " ; ".join(steps)
+
+
 class SweData(vf.TaskData):
     instance_id: str
     repo: str
@@ -216,37 +252,7 @@ class SweTask(vf.Task[SweData]):
         return self.data.instance_id
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        # `split` -- already on the wire, and the honest discriminator for
-        # this decision (it is literally "which corpus is this") -- decides
-        # whether the SWE-smith-only guard-and-reroot step runs. See
-        # `_TRAIN_GUARD_AND_REROOT`'s own docstring for why "train" needs it
-        # and "eval" must not: a SWE-bench Verified `base_commit` has no
-        # pristine-tree ancestor to sever, and asserting a "Bug Patch"
-        # commit message on it would just fail every eval task.
-        #
-        # "polyglot" needs no re-root either. Its images come in two shapes,
-        # both checked on real images: HEAD is a parentless "task base"
-        # commit whose tree has the requested behaviour cut out, with the
-        # complete upstream -- implementation and tests -- still parked under
-        # `origin/<branch>`; or HEAD is upstream's own tip, with nothing after
-        # it. Either way nothing an agent could use sits in HEAD's ancestry,
-        # and the ref stripping below prunes the parked upstream: after it,
-        # a full object-store scan no longer finds the removed code.
-        steps = [_R2E_CHECKOUT if self.data.split == "r2e" else _CHECKOUT]
-        if self.data.split == "train":
-            steps.append(_TRAIN_GUARD_AND_REROOT)
-        if self.data.split == "r2e":
-            steps.append(_R2E_LEAK_GUARD)
-        steps.append(_STRIP_AND_GC)
-        # "r2e" needs no re-root either: HEAD is detached at the pre-fix
-        # commit, and the fix commit is a *descendant* reachable only through
-        # the full upstream history's branch refs, which the strip deletes
-        # and `gc` then prunes (asserted on real images in
-        # tests/test_r2e_goldens.py). It does need its hidden tests out of
-        # the box.
-        if self.data.split == "r2e":
-            steps.append(_R2E_HIDE_TESTS)
-        cleanup = " ; ".join(steps)
+        cleanup = cleanup_script(self.data.split)
         result = await runtime.run(
             ["sh", "-c", cleanup],
             {"BASE_COMMIT": self.data.base_commit, "WORKDIR": self.data.workdir},
@@ -494,4 +500,4 @@ def task_for(row: corpus.SweRow, index: int, split: str, task_config=None) -> Sw
         task_config,
     )
 
-__all__ = ["SweData", "SweTask", "SweTasksetConfig", "SweTaskset", "task_for"]
+__all__ = ["SweData", "SweTask", "SweTasksetConfig", "SweTaskset", "cleanup_script", "task_for"]

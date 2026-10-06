@@ -443,6 +443,12 @@ def load_swesmith_rows(
         raise ValueError(f"num_images must be >= 1, got {num_images}")
     if max_test_count is not None and max_test_count < 1:
         raise ValueError(f"max_test_count must be >= 1 or None, got {max_test_count}")
+    return _scan_swesmith(num_images, max_test_count, lambda position, row: row)
+
+
+def _scan_swesmith(num_images: int, max_test_count: int | None, keep) -> tuple:
+    """`load_swesmith_rows`'s selection, one pass over the pinned dataset in its native
+    order: `keep(dataset position, SweRow)` for every row that survives, logged once."""
     _check_swesmith_num_images(num_images)
     name, hf_split, revision = _SOURCES["train"]
     dataset = load_dataset(name, split=hf_split, revision=revision or None)
@@ -452,7 +458,7 @@ def load_swesmith_rows(
     skipped_empty_statement = 0
     skipped_unreversible = 0
     skipped_too_costly = 0
-    for row in dataset:
+    for position, row in enumerate(dataset):
         if row["image_name"] not in selected:
             continue
         fail_to_pass = _tests(row["FAIL_TO_PASS"])
@@ -470,7 +476,7 @@ def load_swesmith_rows(
             skipped_too_costly += 1
             continue
         try:
-            rows.append(_swesmith_row(row, fail_to_pass, pass_to_pass))
+            rows.append(keep(position, _swesmith_row(row, fail_to_pass, pass_to_pass)))
         except ValueError:
             skipped_unreversible += 1
             continue
@@ -500,6 +506,37 @@ def load_swesmith_rows(
             total,
         )
     return tuple(rows)
+
+
+@functools.lru_cache(maxsize=None)
+def swesmith_order(
+    num_images: int = DEFAULT_SWESMITH_IMAGES,
+    max_test_count: int | None = None,
+) -> tuple[tuple[int, str], ...]:
+    """(dataset position, instance id) of `load_swesmith_rows(num_images,
+    max_test_count)`, in the same order, without keeping the rows: the 20-image
+    split's rows weigh about 4 GB in memory (18,546 rows, measured 4.1 GB RSS
+    retained and 9.2 GB peak to build), which a sandbox gateway resolving one
+    task at a time must not hold. `swesmith_row_at` builds the row asked for."""
+    if num_images < 1:
+        raise ValueError(f"num_images must be >= 1, got {num_images}")
+    if max_test_count is not None and max_test_count < 1:
+        raise ValueError(f"max_test_count must be >= 1 or None, got {max_test_count}")
+    return _scan_swesmith(
+        num_images, max_test_count, lambda position, row: (position, row.instance_id)
+    )
+
+
+def swesmith_row_at(
+    num_images: int, index: int, max_test_count: int | None = None
+) -> SweRow:
+    """`load_swesmith_rows(num_images, max_test_count)[index]`, built alone."""
+    order = swesmith_order(num_images, max_test_count)
+    if not 0 <= index < len(order):
+        raise IndexError(index)
+    name, hf_split, revision = _SOURCES["train"]
+    row = load_dataset(name, split=hf_split, revision=revision or None)[order[index][0]]
+    return _swesmith_row(row, _tests(row["FAIL_TO_PASS"]), _tests(row["PASS_TO_PASS"]))
 
 
 # MiMo-V2.6-RL-oss's `code` config: 2,698 tasks across Python, Go, JS/TS,
@@ -733,6 +770,29 @@ def _r2e_order_key(instance_id: str) -> str:
     return hashlib.sha256(instance_id.encode()).hexdigest()
 
 
+@functools.cache
+def _r2e_order() -> tuple[tuple[int, str], ...]:
+    """(dataset row, instance id) in the split's fixed order: ascending sha256 of the id."""
+    dataset = _r2e_dataset()
+    ids = [
+        _r2e_instance_id(repo, commit)
+        for repo, commit in zip(dataset["repo_name"], dataset["commit_hash"], strict=True)
+    ]
+    return tuple(sorted(enumerate(ids), key=lambda item: _r2e_order_key(item[1])))
+
+
+def r2e_row_at(index: int) -> SweRow:
+    """Task `index` of the R2E split, built alone (as `load_r2e_rows` builds every task)."""
+    order = _r2e_order()
+    if not 0 <= index < len(order):
+        raise IndexError(index)
+    return _r2e_row(_r2e_dataset()[order[index][0]])
+
+
+def r2e_instance_ids() -> list[str]:
+    return [instance_id for _, instance_id in _r2e_order()]
+
+
 def r2e_row(commit_hash: str) -> SweRow:
     """A single R2E row by its fix commit (the dataset's `commit_hash`, which
     is also the image's tag), built as `load_r2e_rows` builds it, without
@@ -783,11 +843,7 @@ def load_r2e_rows(num_tasks: int | None = None) -> tuple[SweRow, ...]:
     if num_tasks is not None and num_tasks < 1:
         raise ValueError(f"num_tasks must be >= 1 or None, got {num_tasks}")
     dataset = _r2e_dataset()
-    ids = [
-        _r2e_instance_id(repo, commit)
-        for repo, commit in zip(dataset["repo_name"], dataset["commit_hash"], strict=True)
-    ]
-    order = sorted(range(len(ids)), key=lambda i: _r2e_order_key(ids[i]))
+    order = [row for row, _ in _r2e_order()]
     if num_tasks is not None:
         order = order[:num_tasks]
     return tuple(_r2e_row(dataset[i]) for i in order)

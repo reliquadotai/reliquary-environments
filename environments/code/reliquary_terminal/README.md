@@ -142,3 +142,28 @@ See `examples/prime_rl/`: `rl.toml` evaluates on Terminal-Bench 2.1 and
 carries no train source; `train-sources.toml` supplies the `train` split.
 Sixty-four tasks is small — meant as one component of a mix (e.g. with
 `reliquary-swe`'s sources, weighted by `ratio`), not a run on its own.
+
+## Signed sandboxes
+
+`reliquary_terminal.sandbox:sandbox_task` serves the `train` split on a signed-episode
+sandbox gateway (`episode_envs = {"reliquary-terminal": "reliquary_terminal.sandbox:sandbox_task"}`).
+
+- Served: `train` rows only, 17 of the 64. Refused: `eval` (graded in the agent's box by
+  design), rows that need the network, three rows that put `/app` on `PYTHONPATH`, and rows
+  whose tests run agent code inside pytest (`in_process_agent_code`). tmax is not served yet.
+- State handed to the grader: the artifact roots that exist (`/app`), through the sandbox's
+  `archive`, framed with the list of present roots; a deleted root is graded, not an error.
+  The grading box restores them once, then stages `/tests`.
+- Grading refuses links into `/tests`, `/logs`, `/proc`, `/dev` and `/sys`, ignores
+  `reward.json`, requires a complete CTRF report for a reward of 1, and stops stray processes
+  after `test.sh`. Residual: a subprocess left by a served row can race that stop; only separate
+  uids close it.
+- Needs reliquary-sandbox at `e0217aa` or later (`stop_processes`), and `verifiers` at the
+  pinned commit with its Harbor `taskset` and `env` modules unchanged; import fails otherwise.
+- Our own failures before the restore (a state header `extract` cannot have written, the
+  row's test files not parsing, an absent root that cannot be cleared), and grading that
+  never ran `test.sh` through the stopping runtime, abort the episode (`EnvInfraError`)
+  instead of grading. Graded facts carry `stop_ran: true`.
+- `served_indexes("train")` lists the indexes served on sandboxes.
+
+Failure contract, limits and the parity table: `docs/sandbox-tasks.md` (repository root).
