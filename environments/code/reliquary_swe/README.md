@@ -508,6 +508,18 @@ sandbox gateway (`episode_envs = {"reliquary-swe": "reliquary_swe.sandbox:sandbo
   on every split, refuses a patch that touches an untracked or ignored path or `.venv/`.
 - Limits: 4 GiB, 10 GiB disk, 1024 pids, 3600 s, 600 s per call, grading 810 s. No network.
 - `reliquary-sandbox` is imported lazily and is not a dependency of this package.
+- A pristine grading box that is not what the corpus says (checking out the base,
+  stripping history, setting hidden tests aside, listing untracked paths, all before the
+  patch is applied) aborts the episode (`EnvInfraError`) instead of grading 0.
+- At import, `reliquary_swe.sandbox` refuses any `verifiers` but the pinned commit and any
+  change to `verifiers.v1.utils.git` (`capture_patch`).
+- Known residual, the same as in container grading: a patch confined to source can
+  monkeypatch pytest's reporting at import time (e.g. reassign
+  `_pytest.reports.TestReport.from_item_and_call`) so every test reports PASSED. Grading
+  in a pristine box does not close it; only an injected canary check would (not built;
+  see "Reward-hacking mitigation").
+- Enablement gate: grading must finish within 810 s under runsc. Measure gold-patch
+  grading per repository under runsc before enabling a split, and exclude rows over budget.
 
 How hooks fail, what is refused and the measured parity table: `docs/sandbox-tasks.md`
 (repository root).

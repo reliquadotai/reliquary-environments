@@ -158,6 +158,12 @@ sandbox gateway (`episode_envs = {"reliquary-terminal": "reliquary_terminal.sand
   `reward.json`, requires a complete CTRF report for a reward of 1, and stops stray processes
   after `test.sh`. Residual: a subprocess left by a served row can race that stop; only separate
   uids close it.
-- Needs reliquary-sandbox at `e0217aa` or later (`stop_processes`); import fails otherwise.
+- Needs reliquary-sandbox at `e0217aa` or later (`stop_processes`), and `verifiers` at the
+  pinned commit with its Harbor `taskset` and `env` modules unchanged; import fails otherwise.
+- Our own failures before the restore (a state header `extract` cannot have written, the
+  row's test files not parsing, an absent root that cannot be cleared), and grading that
+  never ran `test.sh` through the stopping runtime, abort the episode (`EnvInfraError`)
+  instead of grading. Graded facts carry `stop_ran: true`.
+- `served_indexes("train")` lists the indexes served on sandboxes.
 
 Failure contract, limits and the parity table: `docs/sandbox-tasks.md` (repository root).
