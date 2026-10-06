@@ -194,3 +194,38 @@ async def test_a_failing_ledger_never_fails_the_rollout(monkeypatch, caplog):
     box = DockerRuntime(vf.DockerConfig())
     await _task().setup(box)  # nothing else to set up for this task
     assert any("could not record container" in r.message for r in caplog.records)
+
+
+def _separate_task() -> TerminalTask:
+    from verifiers.v1.tasksets.harbor.taskset import VerifierConfig
+
+    return TerminalTask(HarborData(idx=0, name="t", prompt="p",
+                                   verifier=VerifierConfig(workdir="/")))
+
+
+@pytest.mark.parametrize("make", [_task, _separate_task])
+async def test_a_planted_reward_json_never_stands_in_for_the_tests(make):
+    """Every test.sh of both splits writes reward.txt; a reward.json is never theirs
+    (the agent's, or left by a process it started), whatever the split."""
+    task = make()
+    trace = _trace(task)
+    box = FakeBox(reward="0\n", ctrf=None, exit_code=1)
+    box.files["/logs/verifier/reward.json"] = b'{"reward": 1}'
+    assert await task._graded(box, trace) == 0.0
+
+
+async def test_a_reward_of_one_without_a_passing_test_sh_is_zero_in_a_separate_box():
+    """A MiMo test.sh writes 1 only when pytest passed, then exits with pytest's
+    status: 1 next to a failing exit means something else wrote reward.txt."""
+    task = _separate_task()
+    trace = _trace(task)
+    box = FakeBox(reward="1\n", ctrf=None, exit_code=1)
+    assert await task._graded(box, trace) == 0.0
+    assert trace.info["grading"]["reward_without_success"] == {"reward": 1.0, "exit_code": 1}
+
+
+async def test_a_reward_of_one_with_a_passing_test_sh_stays_one_in_a_separate_box():
+    task = _separate_task()
+    trace = _trace(task)
+    assert await task._graded(FakeBox(reward="1\n", ctrf=None, exit_code=0), trace) == 1.0
+    assert "reward_without_success" not in trace.info["grading"]

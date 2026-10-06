@@ -14,7 +14,11 @@ from __future__ import annotations
 import base64
 import functools
 import json
+import os
 import re
+import shutil
+import tempfile
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
@@ -93,27 +97,96 @@ def load_train_rows() -> tuple[dict, ...]:
     return tuple(rows)
 
 
+GUARD = "anti_hack_guard.py"
+_GUARD_SKIP = (
+    "        if not path.is_file() or path.is_symlink():\n"
+    "            continue\n"
+)
+_GUARD_CHECK = (
+    "        # reliquary-terminal: a symlink with a dangerous name is refused like a\n"
+    "        # planted file, whatever it points to (the shipped guard skipped links).\n"
+    "        if path.is_dir() and not path.is_symlink():\n"
+    "            continue\n"
+)
+
+
+def _guarded(source: bytes) -> bytes:
+    """The rows' `anti_hack_guard.py` (one file, the same in all 64), refusing a
+    planted symlink with a dangerous name as it refuses a planted file: it skipped
+    every symlink, so `conftest.py -> hooks.py` loaded a pytest hook unseen."""
+    text = source.decode()
+    if text.count(_GUARD_SKIP) != 1:
+        raise ValueError("anti_hack_guard.py is not the guard this package patches")
+    return text.replace(_GUARD_SKIP, _GUARD_CHECK).encode()
+
+
+def tests_files(row: dict) -> dict[str, bytes]:
+    """A row's `tests/` as `{relative path: bytes}`, the guard patched (`_guarded`)."""
+    files = row["tests_files"]
+    if isinstance(files, str):
+        files = json.loads(files)
+    out = {}
+    for rel, encoded in files.items():
+        data = base64.b64decode(encoded)
+        out[rel] = _guarded(data) if rel == GUARD else data
+    return out
+
+
+def _matches(task_dir: Path, expected: dict[str, bytes]) -> bool:
+    """Whether `task_dir` holds exactly `tests/` with `expected` in it: nothing
+    more, nothing less, byte for byte, no links."""
+    tests = task_dir / "tests"
+    try:
+        if [p.name for p in task_dir.iterdir()] != ["tests"]:
+            return False
+        found = {}
+        for path in tests.rglob("*"):
+            if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                return False
+            if path.is_file():
+                found[path.relative_to(tests).as_posix()] = path.read_bytes()
+    except OSError:
+        return False
+    return found == expected
+
+
 def materialize_tests(row: dict, root: Path = TRAIN_CACHE) -> Path:
     """Write a row's `tests/` to a task directory `HarborTask` can stage from.
 
     The row carries its tests base64-encoded, so they never live in the
-    image the agent works in. Idempotent: an existing directory is left
-    alone, since the pinned revision cannot change what belongs in it.
+    image the agent works in. An existing directory is used only when it holds
+    exactly the row's files (`_matches`); anything else -- an older guard, a
+    damaged or tampered cache -- is replaced. Safe across processes: each
+    writer stages in its own directory and renames it into place; a writer that
+    finds the place taken by a matching directory keeps that one.
     """
     task_dir = root / row["instance_id"]
-    tests = task_dir / "tests"
-    if tests.is_dir():
+    expected = tests_files(row)
+    if _matches(task_dir, expected):
         return task_dir
-    staging = task_dir.with_name(task_dir.name + ".partial")
-    files = row["tests_files"]
-    if isinstance(files, str):
-        files = json.loads(files)
-    for rel, encoded in files.items():
-        path = staging / "tests" / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(base64.b64decode(encoded))
-    staging.rename(task_dir)
-    return task_dir
+    root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f"{task_dir.name}.partial-", dir=root))
+    try:
+        for rel, data in expected.items():
+            path = staging / "tests" / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        for _ in range(8):
+            try:
+                os.rename(staging, task_dir)
+                return task_dir
+            except OSError:  # taken (a non-empty directory)
+                if _matches(task_dir, expected):
+                    return task_dir
+                stale = root / f"{task_dir.name}.stale-{uuid.uuid4().hex}"
+                try:
+                    os.rename(task_dir, stale)
+                except FileNotFoundError:
+                    continue
+                shutil.rmtree(stale, ignore_errors=True)
+        raise RuntimeError(f"could not materialize {task_dir}")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def train_data(row: dict, idx: int, config: TerminalConfig) -> HarborData:

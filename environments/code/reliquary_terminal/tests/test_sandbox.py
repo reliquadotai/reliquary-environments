@@ -1,6 +1,9 @@
 """reliquary-terminal's sandbox declarations and hooks, without boxes."""
 
 import base64
+import io
+import json
+import tarfile
 
 import pytest
 from sandbox_fakes import ScriptedRuntime
@@ -10,6 +13,7 @@ from reliquary_terminal.grading import TerminalTask
 
 MIB = 1024**2
 DIGEST = "xiaomimimo/mimo-v2.6-rl-oss@sha256:" + "c" * 64
+PYTHONPATH_ROW = "candidate-1682-science-physics"
 
 
 def row(**overrides):
@@ -21,11 +25,45 @@ def row(**overrides):
     return values
 
 
+def state_archive(roots, members):
+    """An archive in the sandbox's state format: the manifest, then `<i>` / `<i>/<rel>`
+    members. `members` maps a name to None (a directory), bytes (a file) or
+    ("link", target)."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        manifest = json.dumps({"version": 1, "roots": roots}).encode()
+        head = tarfile.TarInfo(".reliquary-archive.json")
+        head.size = len(manifest)
+        tar.addfile(head, io.BytesIO(manifest))
+        for name, value in members.items():
+            info = tarfile.TarInfo(name)
+            if value is None:
+                info.type = tarfile.DIRTYPE
+                tar.addfile(info)
+            elif isinstance(value, tuple):
+                info.type, info.linkname = tarfile.SYMTYPE, value[1]
+                tar.addfile(info)
+            else:
+                info.size = len(value)
+                tar.addfile(info, io.BytesIO(value))
+    return buffer.getvalue()
+
+
+APP = state_archive(["/app"], {"0": None, "0/main.py": b"print(1)\n"})
+
+
 @pytest.fixture
 def rows(monkeypatch, tmp_path):
-    table = [row(), row(instance_id="candidate-net", allow_internet=True)]
+    table = [row(), row(instance_id="candidate-net", allow_internet=True),
+             row(instance_id=PYTHONPATH_ROW)]
+
+    def materialized(r):
+        (tmp_path / r["instance_id"] / "tests").mkdir(parents=True, exist_ok=True)
+        (tmp_path / r["instance_id"] / "tests" / "test.sh").write_text("exit 1\n")
+        return tmp_path / r["instance_id"]
+
     monkeypatch.setattr(sandbox, "load_train_rows", lambda: tuple(table))
-    monkeypatch.setattr(taskset, "materialize_tests", lambda r: tmp_path / r["instance_id"])
+    monkeypatch.setattr(taskset, "materialize_tests", materialized)
     monkeypatch.setattr(sandbox, "_mimo_digests",
                         lambda: {f"{taskset.TRAIN_IMAGE_REPOSITORY}:general-agent-env-1": DIGEST})
     return table
@@ -37,13 +75,26 @@ def test_a_mimo_declaration_maps_the_rows_resources(rows):
         DIGEST, "/app", ("/app",), ("bash",))
     assert found.grading_workdir == "/" and found.publish_state is False
     assert found.limits == {"cpus": 1.0, "memory_bytes": 2048 * MIB, "disk_bytes": 10240 * MIB,
-                            "wall_s": 900, "per_call_timeout_s": 180}
+                            "pids": 1024, "wall_s": 900, "per_call_timeout_s": 180}
     assert sandbox.sandbox_prompt("train", 0) == "Do the thing."
 
 
 def test_a_row_that_needs_the_network_is_never_served(rows):
     with pytest.raises(ValueError, match="network"):
         sandbox.declaration("train", 1)
+
+
+def test_a_row_whose_tests_import_from_app_is_never_served(rows):
+    with pytest.raises(ValueError, match="PYTHONPATH"):
+        sandbox.declaration("train", 2)
+
+
+def test_exactly_the_rows_whose_test_sh_sets_pythonpath_are_refused():
+    """On the pinned rows: the refusal list is the rows whose test.sh puts code under
+    /app (the agent's) on PYTHONPATH, so the grader would import the agent's code."""
+    setting = {r["instance_id"] for r in taskset.load_train_rows()
+               if b"PYTHONPATH" in taskset.tests_files(r)["test.sh"]}
+    assert setting == set(sandbox.UNSERVED) and len(setting) == 3
 
 
 def test_terminal_bench_is_never_served():
@@ -68,20 +119,38 @@ def test_states_round_trip_and_malformed_ones_are_refused():
             sandbox.decode_state(bad, ("/app", "/home/user"))
 
 
-async def test_extract_archives_the_present_roots():
+async def test_extract_archives_the_present_roots_without_running_anything():
     runtime = ScriptedRuntime()
-    runtime.on(lambda argv: argv[:2] == ["sh", "-c"], stdout="/app\n/home/user\n")
+    runtime.dirs |= {"/app", "/home/user"}
     state = await sandbox.extract(runtime, roots=("/app", "/home/user"))
+    assert runtime.runs == []
+    assert runtime.reads == [("/app", 1), ("/home/user", 1)]
     assert runtime.archived == (["/app", "/home/user"], sandbox.MAX_ARCHIVE_BYTES)
     assert sandbox.decode_state(state, ("/app", "/home/user"))[0] == ["/app", "/home/user"]
 
 
 async def test_extract_lists_a_deleted_root_as_absent():
+    """`rm -rf /app` (also a dangling `/app` link: the helper's `[ -e ]` is false):
+    the agent's box has no workdir left, and extract never needs one."""
     runtime = ScriptedRuntime()
-    runtime.on(lambda argv: argv[:2] == ["sh", "-c"], stdout="")
     state = await sandbox.extract(runtime, roots=("/app",))
-    assert runtime.archived is None
+    assert runtime.runs == [] and runtime.archived is None
     assert sandbox.decode_state(state, ("/app",)) == ([], b"")
+
+
+@pytest.mark.parametrize("probe", [b"a file", PermissionError("/app"), OSError(5, "odd")])
+async def test_extract_keeps_a_root_it_cannot_read_as_a_file(probe):
+    runtime = ScriptedRuntime()
+    runtime.files["/app"] = probe
+    state = await sandbox.extract(runtime, roots=("/app",))
+    assert sandbox.decode_state(state, ("/app",))[0] == ["/app"]
+
+
+async def test_extract_never_mistakes_a_deadline_for_an_absent_root():
+    runtime = ScriptedRuntime()
+    runtime.files["/app"] = TimeoutError("the step deadline passed")
+    with pytest.raises(TimeoutError):
+        await sandbox.extract(runtime, roots=("/app",))
 
 
 @pytest.fixture
@@ -111,12 +180,27 @@ async def test_grade_removes_an_absent_root_and_restores_the_rest(rows, graded):
     calls, _ = graded
     data = sandbox.declaration("train", 0).data
     runtime = ScriptedRuntime(workdir="/")
-    state = sandbox.encode_state(["/home/user"], b"TAR")
+    archive = state_archive(["/home/user"], {"0": None, "0/notes": b"x"})
+    state = sandbox.encode_state(["/home/user"], archive)
     result = await sandbox.grade(runtime, state, data=data, roots=("/app", "/home/user"))
     assert ["rm", "-rf", "--", "/app"] in [argv for argv, _ in runtime.runs]
-    assert runtime.restored == (b"TAR", ["/home/user"])
+    assert runtime.restored == (archive, ["/home/user"])
     assert calls == [("setup", "grade"), ("stage", True)]
     assert result.reward == 1.0 and result.facts["metrics"] == {"tests_passed": 3.0}
+
+
+async def test_a_deleted_app_is_graded_zero_by_the_real_grading(rows):
+    """No fake grading: the task's own setup, staging and `_graded` on a box without
+    /app. test.sh fails, writes no reward: 0, with no state error."""
+    pytest.importorskip("reliquary_sandbox.episode_task")
+    data = sandbox.declaration("train", 0).data
+    runtime = ScriptedRuntime(workdir="/")
+    runtime.on(lambda argv: argv == ["bash", "/tests/test.sh"], exit_code=1)
+    result = await sandbox.grade(runtime, sandbox.encode_state([], b""), data=data,
+                                 roots=("/app",))
+    assert runtime.restored is None
+    assert result.reward == 0.0 and result.facts["grading"]["exit_code"] == 1
+    assert "state_error" not in result.facts and "link_into_grader" not in result.facts
 
 
 async def test_a_reward_outside_zero_one_is_graded_zero(rows, graded):
@@ -124,16 +208,66 @@ async def test_a_reward_outside_zero_one_is_graded_zero(rows, graded):
     _, results = graded
     results[:] = [5.0]
     data = sandbox.declaration("train", 0).data
-    result = await sandbox.grade(ScriptedRuntime(workdir="/"), sandbox.encode_state(["/app"], b"T"),
+    result = await sandbox.grade(ScriptedRuntime(workdir="/"), sandbox.encode_state(["/app"], APP),
                                  data=data, roots=("/app",))
     assert result.reward == 0.0 and "reward_out_of_range" in result.facts
 
 
-async def test_a_malformed_state_is_graded_zero_not_raised(rows):
+async def test_a_malformed_state_is_our_bug_and_raises(rows):
+    """extract wrote the state; a state it cannot have written is never the agent's."""
     pytest.importorskip("reliquary_sandbox.episode_task")
     data = sandbox.declaration("train", 0).data
-    result = await sandbox.grade(ScriptedRuntime(workdir="/"), b"junk", data=data, roots=("/app",))
-    assert result.reward == 0.0 and "state_error" in result.facts
+    with pytest.raises(ValueError):
+        await sandbox.grade(ScriptedRuntime(workdir="/"), b"junk", data=data, roots=("/app",))
+
+
+async def test_a_restore_failure_is_left_to_the_sandbox(rows, graded):
+    """The sandbox records what it refused (state_unreadable, graded 0) or what failed
+    on its side (aborted); grade does not second-guess it."""
+    pytest.importorskip("reliquary_sandbox.episode_task")
+
+    class Refusing(ScriptedRuntime):
+        async def restore_archive(self, data, roots):
+            raise OSError("archive: symlink '0' resolves outside the roots")
+
+    data = sandbox.declaration("train", 0).data
+    with pytest.raises(OSError, match="outside the roots"):
+        await sandbox.grade(Refusing(workdir="/"), sandbox.encode_state(["/app"], APP),
+                            data=data, roots=("/app",))
+
+
+@pytest.mark.parametrize("members, flagged", [
+    ({"0": None, "0/t": ("link", "/tests/test.sh")}, ["/app/t"]),
+    ({"0": None, "0/r": ("link", "/logs/verifier/reward.txt")}, ["/app/r"]),
+    ({"0": None, "0/d": ("link", "/usr/../root")}, ["/app/d"]),
+    ({"0": None, "0/s": ("link", "/solution")}, ["/app/s"]),
+    ({"0": None, "0/o": ("link", "/oracle/x")}, ["/app/o"]),
+    ({"0": ("link", "/tests")}, ["/app"]),
+    ({"0": None, "0/a": ("link", "b/reward.txt"), "0/b": ("link", "/logs/verifier")},
+     ["/app/a", "/app/b"]),
+    ({"0": None, "0/c": ("link", "d"), "0/d": ("link", "c")}, ["/app/c", "/app/d"]),
+])
+async def test_a_link_into_the_graders_files_is_graded_zero(rows, graded, members, flagged):
+    pytest.importorskip("reliquary_sandbox.episode_task")
+    calls, _ = graded
+    data = sandbox.declaration("train", 0).data
+    state = sandbox.encode_state(["/app"], state_archive(["/app"], members))
+    result = await sandbox.grade(ScriptedRuntime(workdir="/"), state, data=data, roots=("/app",))
+    assert result.reward == 0.0 and result.facts == {"link_into_grader": flagged}
+    assert calls == [("setup", "grade")]  # tests never staged, never run
+
+
+async def test_other_absolute_links_are_kept(rows, graded):
+    """venvs need them: `.venv/bin/python -> /usr/bin/python3`."""
+    pytest.importorskip("reliquary_sandbox.episode_task")
+    calls, _ = graded
+    data = sandbox.declaration("train", 0).data
+    members = {"0": None, "0/.venv": None, "0/.venv/bin": None,
+               "0/.venv/bin/python": ("link", "/usr/bin/python3"),
+               "0/.venv/bin/python3": ("link", "python"), "0/tmp": ("link", "/tmp/testsuite")}
+    state = sandbox.encode_state(["/app"], state_archive(["/app"], members))
+    result = await sandbox.grade(ScriptedRuntime(workdir="/"), state, data=data, roots=("/app",))
+    assert result.reward == 1.0 and calls[-1] == ("stage", True)
 
 
 def test_sandbox_task_builds_the_gateways_contract(rows):
@@ -142,39 +276,7 @@ def test_sandbox_task_builds_the_gateways_contract(rows):
     assert isinstance(task, episode_task.SandboxTask)
     assert task.effective_grading_workdir == "/" and task.tools == ("bash",)
     assert task.limits.cpus == 1.0 and task.limits.memory_bytes == 2048 * MIB
-
-
-def test_the_presence_check_keeps_symlinked_roots_and_drops_deleted_ones(tmp_path):
-    """The script `extract` runs, run here by the real sh: a root the agent deleted is
-    absent (graded with the root removed), a root it replaced by a symlink, even a
-    dangling one, is present (archived as the link, as verifiers' collect does)."""
-    import subprocess
-
-    kept, linked, dangling = tmp_path / "kept", tmp_path / "linked", tmp_path / "dangling"
-    kept.mkdir()
-    linked.symlink_to("/etc")
-    dangling.symlink_to(tmp_path / "nowhere")
-    roots = [str(kept), str(tmp_path / "deleted"), str(linked), str(dangling)]
-    listed = subprocess.run(["sh", "-c", sandbox._PRESENT, "roots", *roots],
-                            capture_output=True, text=True, check=True)
-    assert listed.stdout.splitlines() == [str(kept), str(linked), str(dangling)]
-
-
-async def test_a_state_the_grading_box_refuses_is_graded_zero_not_raised(rows, graded):
-    """restore_archive refuses an archive (a relative symlink leaving the roots, ...)
-    with an OSError: the agent's outcome, graded 0, never an env failure."""
-    pytest.importorskip("reliquary_sandbox.episode_task")
-    calls, _ = graded
-
-    class Refusing(ScriptedRuntime):
-        async def restore_archive(self, data, roots):
-            raise OSError("archive: symlink '0' resolves outside the roots")
-
-    data = sandbox.declaration("train", 0).data
-    result = await sandbox.grade(Refusing(workdir="/"), sandbox.encode_state(["/app"], b"T"),
-                                 data=data, roots=("/app",))
-    assert result.reward == 0.0 and "outside the roots" in result.facts["state_error"]
-    assert calls == [("setup", "grade")]
+    assert task.limits.pids == 1024
 
 
 def test_an_unpinned_image_is_never_silently_left_out(rows, monkeypatch):
@@ -185,7 +287,11 @@ def test_an_unpinned_image_is_never_silently_left_out(rows, monkeypatch):
         sandbox.sandbox_images("train")
 
 
-def test_the_image_list_skips_only_rows_that_need_the_network(rows):
+def test_the_image_list_skips_only_the_refused_rows(rows):
+    rows.append(row(instance_id="candidate-y", docker_image="general-agent-env-2:oss"))
+    with pytest.raises(ValueError, match="no pinned digest"):
+        sandbox.sandbox_images("train")
+    rows.pop()
     assert sandbox.sandbox_images("train") == [DIGEST]
 
 

@@ -1,4 +1,9 @@
-"""A scripted TaskRuntime for sandbox hook tests: no box, no Docker, nothing runs."""
+"""A scripted TaskRuntime for sandbox hook tests: no box, no Docker, nothing runs.
+
+Workdir-aware, like a box: `run` raises when `config.workdir` does not exist (a
+docker exec into a deleted workdir fails). Paths exist when they are `/`, a
+file in `files` or a directory in `dirs`; reading a directory raises
+IsADirectoryError, as the sandbox's helper does."""
 
 from types import SimpleNamespace
 
@@ -8,7 +13,9 @@ class ScriptedRuntime:
         self.config = SimpleNamespace(type="reliquary-sandbox", workdir=workdir)
         self.env = {}
         self.runs = []
+        self.reads = []
         self.files = {}
+        self.dirs = set()
         self._answers = []
         self.archived = None
         self.restored = None
@@ -17,7 +24,12 @@ class ScriptedRuntime:
         self._answers.append((predicate, SimpleNamespace(exit_code=exit_code, stdout=stdout,
                                                          stderr=stderr)))
 
+    def exists(self, path):
+        return path == "/" or path in self.files or path in self.dirs
+
     async def run(self, argv, env):
+        if not self.exists(self.config.workdir):
+            raise RuntimeError(f"the workdir {self.config.workdir} does not exist")
         self.runs.append((list(argv), dict(env)))
         for predicate, result in self._answers:
             if predicate(list(argv)):
@@ -25,6 +37,9 @@ class ScriptedRuntime:
         return SimpleNamespace(exit_code=0, stdout="", stderr="")
 
     async def read(self, path, max_bytes=None):
+        self.reads.append((path, max_bytes))
+        if path in self.dirs:
+            raise IsADirectoryError(path)
         if path not in self.files:
             raise FileNotFoundError(path)
         data = self.files[path]

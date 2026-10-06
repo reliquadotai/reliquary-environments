@@ -69,3 +69,63 @@ def test_image_workdir_takes_the_last_declaration(tmp_path):
     )
     assert taskset.image_workdir(tmp_path) == "/app/sub"
     assert taskset.image_workdir(tmp_path / "missing") is None
+
+
+def _guard(tmp_path):
+    import importlib.util
+
+    task_dir = taskset.materialize_tests(taskset.load_train_rows()[0], tmp_path / "cache")
+    spec = importlib.util.spec_from_file_location("guard", task_dir / "tests" / taskset.GUARD)
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    return guard
+
+
+@pytest.mark.parametrize("target", ["real", "/tmp/elsewhere/conftest.py", "../hooks/x.py", "dir"])
+def test_the_guard_refuses_dangerous_names_that_are_symlinks(tmp_path, target):
+    """The shipped guard skipped symlinks: `conftest.py -> ../hooks/x.py` planted a
+    pytest hook it never saw. Dangling or not, to a file or not, a planted link with
+    a dangerous name is refused like a planted file."""
+    guard = _guard(tmp_path)
+    app = tmp_path / "app"
+    (app / "sub").mkdir(parents=True)
+    (app / "real").write_text("import os\n")
+    (app / "dir").mkdir()
+    (app / "sub" / "conftest.py").symlink_to(app / target if target in ("real", "dir") else target)
+    assert guard.scan(None, app=app) == "planted_interpreter_hook:sub/conftest.py"
+    (app / "sub" / "conftest.py").unlink()
+    assert guard.scan(None, app=app) is None
+
+
+def test_the_guard_still_refuses_planted_files_and_accepts_listed_ones(tmp_path):
+    guard = _guard(tmp_path)
+    app = tmp_path / "app"
+    app.mkdir()
+    (app / "conftest.py").write_text("x = 1\n")
+    assert guard.scan(None, app=app) == "planted_interpreter_hook:conftest.py"
+    digest = guard.sha256(app / "conftest.py")
+    assert guard.scan({"files": {"conftest.py": digest}}, app=app) is None
+
+
+def test_materialize_replaces_a_cache_dir_that_disagrees_with_the_row(tmp_path):
+    row = taskset.load_train_rows()[0]
+    task_dir = taskset.materialize_tests(row, tmp_path)
+    test_sh = task_dir / "tests" / "test.sh"
+    pristine = test_sh.read_bytes()
+    test_sh.write_bytes(b"printf '1\\n' > /logs/verifier/reward.txt\n")
+    (task_dir / "tests" / "extra.py").write_text("planted\n")
+    assert taskset.materialize_tests(row, tmp_path) == task_dir
+    assert test_sh.read_bytes() == pristine
+    assert not (task_dir / "tests" / "extra.py").exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == [row["instance_id"]]
+
+
+def test_materialize_is_safe_when_processes_race(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    row = taskset.load_train_rows()[0]
+    with ThreadPoolExecutor(8) as pool:
+        dirs = list(pool.map(lambda _: taskset.materialize_tests(row, tmp_path), range(16)))
+    assert set(dirs) == {tmp_path / row["instance_id"]}
+    assert sorted(p.name for p in tmp_path.iterdir()) == [row["instance_id"]]
+    assert (dirs[0] / "tests" / "test.sh").is_file()

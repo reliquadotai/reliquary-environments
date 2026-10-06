@@ -17,6 +17,20 @@ The reward is still `reward.txt`, read by verifiers' own code: this only adds
 what used to be thrown away, and nothing it does after the reward is read --
 a malformed or hostile report, a failing read -- can change the outcome.
 
+Two things can only lower it, never raise it:
+
+- `reward.json` is never read, in either split. verifiers prefers it over
+  `reward.txt`, but no `test.sh` of either split writes it (all 89 + 64 write
+  `reward.txt`), so one in the box was planted: by the agent, or by a process
+  it left running;
+- in a separate grading box (`train`), a nonzero `reward.txt` next to a
+  nonzero `test.sh` exit is 0, recorded as `reward_without_success`. Every
+  MiMo `test.sh` writes 1 only when pytest passed and then exits with pytest's
+  status (the guard's rejection exits 0 after writing 0), so a 1 with a failing
+  exit was written by something else -- a background process a planted file
+  started. Terminal-Bench (`eval`) keeps its own semantics: it is graded as it
+  ships, in the agent's box, untrusted anyway (below).
+
 **Untrusted in the `eval` split.** There `test.sh` runs in the box the agent
 worked in, as Terminal-Bench ships it, and anything the agent left running
 there can write `/logs/verifier/ctrf.json` or the output this records. The
@@ -116,6 +130,11 @@ class TerminalTask(HarborTask):
             stale = f"{type(e).__name__}: {str(e)[-500:]}"
         watched = _Watched(runtime)
         score = await super()._graded(watched, trace)
+        if (self.data.verifier is not None and watched.verifier is not None
+                and score != 0 and watched.verifier.exit_code != 0):
+            grading["reward_without_success"] = {"reward": score,
+                                                 "exit_code": watched.verifier.exit_code}
+            score = 0.0
         # Nothing below may change the outcome: the score is already decided.
         try:
             if watched.verifier is not None:
@@ -140,9 +159,15 @@ class TerminalTask(HarborTask):
                         }
                     )
         except Exception as e:  # noqa: BLE001 - see above
-            grading = {"ctrf": None, "error": f"{type(e).__name__}: {str(e)[-500:]}"}
+            grading = {"ctrf": None, "error": f"{type(e).__name__}: {str(e)[-500:]}",
+                       **({"reward_without_success": grading["reward_without_success"]}
+                          if "reward_without_success" in grading else {})}
         trace.info["grading"] = grading
         return score
+
+    async def _reward_json(self, runtime: Runtime) -> None:
+        """Never read: see this module's docstring."""
+        return None
 
 
 __all__ = ["CTRF", "TerminalTask", "summarize_ctrf"]

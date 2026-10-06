@@ -7,19 +7,23 @@ task (the path `TerminalEnv.finalize` -> `HarborEnv._grade` takes today, step by
   bundle in role "agent" (Task 12);
 * extract (the agent's box): the artifact roots that exist, through `runtime.archive`
   (never the image's tar), framed as `STATE_MAGIC` + `{"roots": [...]}` + newline +
-  archive. A root the agent removed is listed as absent (verifiers' `required=False`):
-  graded, never an error;
+  archive. Nothing runs in the box: each root is probed with `runtime.read(root, 1)`,
+  the sandbox's helper from `/` (the box's workdir is `/app`, which the agent may have
+  deleted, and its `sh` is the agent's). A missing root, or a dangling link, is listed
+  as absent (verifiers' `required=False`): graded, never an error;
 * grade (a pristine box, workdir `/`): `TerminalTask(verifier_box_data(data)).setup`
   in role "grade", `rm -rf` of absent roots, one `runtime.restore_archive` of the
-  present roots, `_stage_tests(wipe=True)`, then `_graded` (anti-hack guard, test.sh,
-  reward.txt, CTRF), all unchanged. A root the agent replaced by a symlink travels as
-  that link (an absolute target outside the roots stays an inert link, so the tests
-  fail on it); an archive the restore refuses (a relative link leaving the roots) is
-  graded 0 here, with the reason under `state_error`.
+  present roots, a refusal of links into the grader's files (`link_into_grader`, 0),
+  `_stage_tests(wipe=True)`, then `_graded` (anti-hack guard, test.sh, reward.txt,
+  CTRF; see `grading` for what can only lower the reward). A root the agent replaced
+  by a symlink travels as that link (an absolute target outside the roots stays an
+  inert link, so the tests fail on it). What the restore refuses is the sandbox's to
+  grade (`state_unreadable`, 0), what fails on its side is its to abort.
 
-Rows that need the network are never served (boxes have none). Environment values
-must be literals: a `${VAR}` template would be resolved against the gateway's own
-environment. The verifier's box must be the agent's image with the task's env and no
+Rows that need the network are never served (boxes have none), nor rows whose
+test.sh imports code from `/app` (`UNSERVED`): the grader would run the agent's code.
+Environment values must be literals: a `${VAR}` template would be resolved against the
+gateway's own environment. The verifier's box must be the agent's image with the task's env and no
 healthcheck: a sandbox grades in a pristine box of `image`, with `env`. Terminal-Bench
 2.1 (`eval`) grades in the agent's box by design and is never served.
 """
@@ -28,10 +32,13 @@ from __future__ import annotations
 
 import argparse
 import functools
+import io
 import json
 import math
+import posixpath
 import re
 import sys
+import tarfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.resources import files
@@ -54,8 +61,20 @@ GRADING_TIMEOUT_S = 600.0
 COMMAND_TIMEOUT_S = int(DEFAULT_COMMAND_TIMEOUT_SECONDS)
 FACT_TESTS = 20
 MIB = 1024**2
+PIDS = 1024
 _TEMPLATE = re.compile(r"\$\{")
-_PRESENT = 'for r do if [ -e "$r" ] || [ -L "$r" ]; then printf "%s\\n" "$r"; fi; done'
+ARCHIVE_MANIFEST = ".reliquary-archive.json"
+GRADER_DIRS = ("/tests", "/logs", "/solution", "/oracle", "/root")
+"""Where the grader's own files live: a restored link resolving into one is refused."""
+MAX_LINK_HOPS = 40
+_PYTHONPATH = ("its test.sh puts code under /app on PYTHONPATH: the grader would import "
+               "the agent's code")
+UNSERVED: dict[str, str] = {
+    "candidate-1247-security-reverse-engineering": _PYTHONPATH,
+    "candidate-1682-science-physics": _PYTHONPATH,
+    "candidate-2684-security-appsec": _PYTHONPATH,
+}
+"""MiMo rows never served on sandboxes, with why."""
 
 
 @functools.cache
@@ -125,20 +144,27 @@ def _checked(data: HarborData) -> HarborData:
     return data
 
 
+def _refusal(row: Mapping[str, Any]) -> str | None:
+    if row.get("allow_internet"):
+        return "needs the network; sandbox boxes have none"
+    return UNSERVED.get(row["instance_id"])
+
+
 def _train(index: int) -> Declaration:
     rows = load_train_rows()
     if type(index) is not int or not 0 <= index < len(rows):
         raise IndexError(index)
     row = rows[index]
-    if row.get("allow_internet"):
-        raise ValueError(f"{row['instance_id']} needs the network; sandbox boxes have none")
+    refused = _refusal(row)
+    if refused:
+        raise ValueError(f"{row['instance_id']}: {refused}")
     data = _checked(train_data(row, index, TerminalConfig(id=ENV, split="train")))
     image = _mimo_digests().get(data.image or "")
     if image is None:
         raise ValueError(f"{data.name}: image {data.image!r} has no pinned digest; run "
                          "scripts/pin_mimo_digests.py")
     limits = {"cpus": float(row["cpus"]), "memory_bytes": int(row["memory_mb"]) * MIB,
-              "disk_bytes": int(row["storage_mb"]) * MIB,
+              "disk_bytes": int(row["storage_mb"]) * MIB, "pids": PIDS,
               "wall_s": int(math.ceil(row["agent_timeout_sec"])),
               "per_call_timeout_s": COMMAND_TIMEOUT_S}
     return Declaration(image=image, workdir=data.workdir, data=data,
@@ -160,14 +186,76 @@ async def prepare(runtime: Any, *, data: HarborData) -> str:
     return ""
 
 
+async def _present(runtime: Any, root: str) -> bool:
+    """Whether `root` exists, by the sandbox's helper (`[ -e ]`, from `/`): a missing
+    root or a dangling link is absent; a directory, a file, or anything else it
+    refuses to read is present (`archive` then decides what to do with it)."""
+    try:
+        await runtime.read(root, max_bytes=1)
+    except FileNotFoundError:
+        return False
+    except TimeoutError:
+        raise
+    except OSError:
+        return True
+    return True
+
+
 async def extract(runtime: Any, *, roots: tuple[str, ...]) -> bytes:
-    listed = await runtime.run(["sh", "-c", _PRESENT, "roots", *roots], {})
-    if listed.exit_code != 0:
-        raise RuntimeError("the agent's box could not list its state roots")
-    present_lines = set(listed.stdout.splitlines())
-    present = [root for root in roots if root in present_lines]
+    present = [root for root in roots if await _present(runtime, root)]
     archive = await runtime.archive(present, MAX_ARCHIVE_BYTES) if present else b""
     return encode_state(present, archive)
+
+
+def _restored_links(archive: bytes, roots: list[str]) -> dict[str, str]:
+    """Each symlink of a restored archive (already vetted by the sandbox): its path
+    in the box -> its target."""
+    links = {}
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+        for info in tar:
+            if info.name == ARCHIVE_MANIFEST or not info.issym():
+                continue
+            head, _, rel = info.name.partition("/")
+            root = roots[int(head)]
+            links[posixpath.join(root, rel) if rel else root] = info.linkname
+    return links
+
+
+def _resolved(path: str, links: Mapping[str, str]) -> str | None:
+    """`path` with the archive's links followed, as the kernel walks it; None for a
+    loop. The image's own links are not followed: the image is pristine."""
+    current, pending, hops = "/", [p for p in path.split("/") if p], 0
+    while pending:
+        part = pending.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            current = posixpath.dirname(current)
+            continue
+        candidate = posixpath.join(current, part)
+        target = links.get(candidate)
+        if target is None:
+            current = candidate
+            continue
+        hops += 1
+        if hops > MAX_LINK_HOPS:
+            return None
+        if target.startswith("/"):
+            current = "/"
+        pending = [p for p in target.split("/") if p] + pending
+    return current
+
+
+def links_into_grader(archive: bytes, roots: list[str]) -> list[str]:
+    """The restored links that resolve into the grader's files (`GRADER_DIRS`) or
+    loop. Other absolute links are kept: venvs need them."""
+    links = _restored_links(archive, roots)
+    flagged = []
+    for path in sorted(links):
+        end = _resolved(path, links)
+        if end is None or any(end == d or end.startswith(d + "/") for d in GRADER_DIRS):
+            flagged.append(path)
+    return flagged
 
 
 class _GradingTrace:
@@ -194,10 +282,8 @@ def _trimmed(grading: Any) -> Any:
 async def grade(runtime: Any, state: bytes, *, data: HarborData, roots: tuple[str, ...]):
     from reliquary_sandbox.episode_task import GradeResult
 
-    try:
-        present, archive = decode_state(state, roots)
-    except ValueError as exc:
-        return GradeResult(0.0, {"state_error": str(exc)[:200]})
+    # `extract` wrote the state: one it cannot have written is our bug, never the agent's.
+    present, archive = decode_state(state, roots)
     grader = TerminalTask(verifier_box_data(data))
     grader.setup_role = "grade"
     await grader.setup(runtime)
@@ -207,13 +293,10 @@ async def grade(runtime: Any, state: bytes, *, data: HarborData, roots: tuple[st
             if removed.exit_code != 0:
                 raise RuntimeError(f"could not remove {root} in the grading box")
     if present:
-        try:
-            await runtime.restore_archive(archive, present)
-        except OSError as exc:
-            # The sandbox refused the agent's archive (StateUnreadable, FileTooLarge, both
-            # OSError): the agent's outcome. Infrastructure faults are recorded by the
-            # runtime itself and still abort the episode.
-            return GradeResult(0.0, {"state_error": str(exc)[:200]})
+        await runtime.restore_archive(archive, present)
+        flagged = links_into_grader(archive, present)
+        if flagged:
+            return GradeResult(0.0, {"link_into_grader": flagged[:FACT_TESTS]})
     await grader._stage_tests(runtime, wipe=True)
     trace = _GradingTrace()
     score = await grader._graded(runtime, trace)
@@ -250,7 +333,7 @@ def sandbox_images(split: str, num_tasks: int | None = None) -> list[str]:
     rows = load_train_rows()
     count = len(rows) if num_tasks is None else num_tasks
     images = [declaration(split, index).image for index in range(min(count, len(rows)))
-              if not rows[index].get("allow_internet")]  # never served, never pulled
+              if not _refusal(rows[index])]  # never served, never pulled
     return list(dict.fromkeys(images))
 
 
