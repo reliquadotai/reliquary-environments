@@ -22,23 +22,35 @@ Agent-attributable outcomes are values, not exceptions: a git refusal in the age
 box, or a box whose git stopped answering because the agent wrecked it (`rm -rf` of its
 workdir), is an empty diff (graded like verifiers grades it), and an untracked list the
 agent deleted, replaced or inflated is an empty list. The step deadline and real box
-faults are never swallowed: they reach the sandbox, which records them itself. An
-exception from `grade` means the pristine image is not what the corpus says, which is
-ours: the gateway grades it 0.0 `grading_failed` and counts it per env, so watch that
-counter.
+faults are never swallowed: they reach the sandbox, which records them itself. A
+pristine box that is not what the corpus says, found before the agent's patch touches it
+(`grading.PristineBoxError`: checking out the base, stripping history, setting hidden
+tests aside, listing untracked paths), is ours: `grade` raises the sandbox's
+`EnvInfraError` and the episode is aborted, logged and counted per env. Any other
+exception from `grade` is an env bug the gateway grades 0.0 `grading_failed` and counts
+per env, so watch both counters.
 
 reliquary-sandbox is imported only inside `sandbox_task` and `grade`: it is not a
 dependency of this public package, and a gateway always has it.
+
+At import this module refuses any verifiers but the pinned one (`VERIFIERS_COMMIT`, read
+from the installed distribution's `direct_url.json`) and any change to the verifiers
+modules the hooks rely on (`PINNED_VERIFIERS_MODULES`: `capture_patch` and
+`snapshot_untracked`): a gateway with another verifiers fails at start.
 """
 
 from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
+import importlib.metadata
+import importlib.util
 import json
 import sys
 from dataclasses import dataclass, field
 from importlib.resources import files
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -47,6 +59,44 @@ from verifiers.v1.utils.git import snapshot_untracked
 
 from reliquary_swe import corpus, grading, swesmith_adapter
 from reliquary_swe.taskset import PROMPT, SweData, cleanup_script, task_for
+
+VERIFIERS_COMMIT = "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"
+PINNED_VERIFIERS_MODULES = {
+    "verifiers.v1.utils.git": "3134629cebc6e0475d7e375a8479056548a11e6849dfb9f944eb608f38c4d4d0",
+}
+"""sha256 of each verifiers module whose behaviour the hooks rely on, at VERIFIERS_COMMIT."""
+
+
+def installed_direct_url() -> str | None:
+    try:
+        return importlib.metadata.distribution("verifiers").read_text("direct_url.json")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def installed_verifiers_sources() -> dict[str, bytes]:
+    return {name: Path(importlib.util.find_spec(name).origin).read_bytes()
+            for name in PINNED_VERIFIERS_MODULES}
+
+
+def require_pinned_verifiers(direct_url: str | None, sources: dict[str, bytes]) -> None:
+    """Raise ImportError unless verifiers was installed from VERIFIERS_COMMIT and each
+    pinned module is byte-identical to the one checked."""
+    try:
+        commit = json.loads(direct_url or "")["vcs_info"]["commit_id"]
+    except (ValueError, KeyError, TypeError):
+        commit = None
+    if commit != VERIFIERS_COMMIT:
+        raise ImportError(f"reliquary_swe.sandbox needs verifiers at {VERIFIERS_COMMIT} "
+                          f"(installed from git); found {commit or 'no pinned commit'}")
+    for name, digest in PINNED_VERIFIERS_MODULES.items():
+        if hashlib.sha256(sources.get(name, b"")).hexdigest() != digest:
+            raise ImportError(f"verifiers' {name} differs from the pinned one; re-check "
+                              "reliquary_swe.sandbox against it before raising the pin")
+
+
+# At import: a gateway loads this module when it starts.
+require_pinned_verifiers(installed_direct_url(), installed_verifiers_sources())
 
 ENV = "reliquary-swe"
 TOOLS = ("bash", "edit")
@@ -212,9 +262,13 @@ def swe_facts(report: grading.Report, data: SweData) -> dict[str, Any]:
 
 
 async def grade(runtime: Any, state: bytes, *, data: SweData):
-    from reliquary_sandbox.episode_task import GradeResult
+    from reliquary_sandbox.episode_task import EnvInfraError, GradeResult
 
-    report = await grading.grade(runtime, data, state.decode("utf-8", "replace"))
+    try:
+        report = await grading.grade(runtime, data, state.decode("utf-8", "replace"))
+    except grading.PristineBoxError as exc:
+        # Raised only before the agent's patch touches the box: ours, so aborted.
+        raise EnvInfraError(str(exc)) from exc
     return GradeResult(report.reward, swe_facts(report, data))
 
 

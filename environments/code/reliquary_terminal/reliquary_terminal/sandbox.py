@@ -16,11 +16,14 @@ task (the path `TerminalEnv.finalize` -> `HarborEnv._grade` takes today, step by
   present roots, a refusal of links into the grader's files (`link_into_grader`, 0),
   `_stage_tests(wipe=True)`, then `_graded` (anti-hack guard, test.sh, reward.txt,
   CTRF; see `grading` for what can only lower the reward), with every process left
-  in the box stopped (`runtime.stop_processes`) as soon as test.sh returns. A root
+  in the box stopped (`runtime.stop_processes`) as soon as test.sh returns (fact
+  `stop_ran`; grading that never ran test.sh through it raises EnvInfraError). A root
   the agent replaced by a symlink travels as that link (an absolute target outside
   the roots stays an inert link, so the tests fail on it). What the restore refuses
   is the sandbox's to grade (`state_unreadable`, 0), what fails on its side is its to
-  abort.
+  abort. Our own failures before the restore (a state `extract` cannot have written,
+  our test files not parsing, an absent root that cannot be cleared) raise the sandbox's
+  `EnvInfraError`: aborted, never graded.
 
 Rows that need the network are never served (boxes have none), nor rows whose
 test.sh imports code from `/app` (`UNSERVED`): the grader would run the agent's code.
@@ -38,6 +41,12 @@ Environment values must be literals: a `${VAR}` template would be resolved again
 gateway's own environment. The verifier's box must be the agent's image with the task's env and no
 healthcheck: a sandbox grades in a pristine box of `image`, with `env`. Terminal-Bench
 2.1 (`eval`) grades in the agent's box by design and is never served.
+
+At import this module refuses any verifiers but the pinned one (`VERIFIERS_COMMIT`, read
+from the installed distribution's `direct_url.json`) and any change to the Harbor taskset
+and env modules grading relies on (`PINNED_VERIFIERS_MODULES`, `verifier_box_data`
+included), and a reliquary-sandbox without `stop_processes`: a gateway with either fails
+at start.
 """
 
 from __future__ import annotations
@@ -45,6 +54,9 @@ from __future__ import annotations
 import argparse
 import ast
 import functools
+import hashlib
+import importlib.metadata
+import importlib.util
 import io
 import json
 import math
@@ -55,13 +67,55 @@ import tarfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib.resources import files
+from pathlib import Path
 from typing import Any
 
 from verifiers.v1.tasksets.harbor.taskset import HarborData, verifier_box_data
 
-from reliquary_terminal.grading import VERIFIER, TerminalTask
+from reliquary_terminal.grading import VERIFIER, TerminalTask, collected_tests
 from reliquary_terminal.harness import DEFAULT_COMMAND_TIMEOUT_SECONDS
 from reliquary_terminal.taskset import TerminalConfig, load_train_rows, tests_files, train_data
+
+VERIFIERS_COMMIT = "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"
+PINNED_VERIFIERS_MODULES = {
+    "verifiers.v1.tasksets.harbor.taskset":
+        "89d478628d542472f005d025a00674d0123e49a271afafada35c312af420aaf4",
+    "verifiers.v1.tasksets.harbor.env":
+        "27782078b543f54cafd234400ac35be2348ca1ba5472e4f7100a9d20077854d2",
+}
+"""sha256 of each verifiers module whose behaviour grading relies on, at VERIFIERS_COMMIT."""
+
+
+def installed_direct_url() -> str | None:
+    try:
+        return importlib.metadata.distribution("verifiers").read_text("direct_url.json")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def installed_verifiers_sources() -> dict[str, bytes]:
+    return {name: Path(importlib.util.find_spec(name).origin).read_bytes()
+            for name in PINNED_VERIFIERS_MODULES}
+
+
+def require_pinned_verifiers(direct_url: str | None, sources: dict[str, bytes]) -> None:
+    """Raise ImportError unless verifiers was installed from VERIFIERS_COMMIT and each
+    pinned module is byte-identical to the one checked."""
+    try:
+        commit = json.loads(direct_url or "")["vcs_info"]["commit_id"]
+    except (ValueError, KeyError, TypeError):
+        commit = None
+    if commit != VERIFIERS_COMMIT:
+        raise ImportError(f"reliquary_terminal.sandbox needs verifiers at {VERIFIERS_COMMIT} "
+                          f"(installed from git); found {commit or 'no pinned commit'}")
+    for name, digest in PINNED_VERIFIERS_MODULES.items():
+        if hashlib.sha256(sources.get(name, b"")).hexdigest() != digest:
+            raise ImportError(f"verifiers' {name} differs from the pinned one; re-check "
+                              "reliquary_terminal.sandbox against it before raising the pin")
+
+
+# At import: a gateway loads this module when it starts.
+require_pinned_verifiers(installed_direct_url(), installed_verifiers_sources())
 
 ENV = "reliquary-terminal"
 TOOLS = ("bash",)
@@ -370,10 +424,19 @@ def _trimmed(grading: Any) -> Any:
 
 
 async def grade(runtime: Any, state: bytes, *, data: HarborData, roots: tuple[str, ...]):
-    from reliquary_sandbox.episode_task import GradeResult
+    from reliquary_sandbox.episode_task import EnvInfraError, GradeResult
 
-    # `extract` wrote the state: one it cannot have written is our bug, never the agent's.
-    present, archive = decode_state(state, roots)
+    # Until the restore below, nothing in the box or here is the agent's: a failure is
+    # ours (EnvInfraError: the episode is aborted, never graded).
+    try:
+        # `extract` wrote the state: one it cannot have written is our bug.
+        present, archive = decode_state(state, roots)
+    except ValueError as exc:
+        raise EnvInfraError(str(exc)) from exc
+    try:
+        collected_tests(data.task_dir)  # our test files, read again (cached) by `_graded`
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise EnvInfraError(f"{data.name}: our test files do not parse: {exc}") from exc
     grader = TerminalTask(verifier_box_data(data))
     grader.setup_role = "grade"
     await grader.setup(runtime)
@@ -381,7 +444,7 @@ async def grade(runtime: Any, state: bytes, *, data: HarborData, roots: tuple[st
         if root not in present:
             removed = await runtime.run(["rm", "-rf", "--", root], {})
             if removed.exit_code != 0:
-                raise RuntimeError(f"could not remove {root} in the grading box")
+                raise EnvInfraError(f"could not remove {root} in the grading box")
     if present:
         await runtime.restore_archive(archive, present)
         flagged = links_into_grader(archive, present)
@@ -391,10 +454,14 @@ async def grade(runtime: Any, state: bytes, *, data: HarborData, roots: tuple[st
     trace = _GradingTrace()
     stopping = _StoppingAfterTests(runtime)
     score = await grader._graded(stopping, trace)
+    if not stopping.stopped:
+        # test.sh did not run through `VERIFIER`, so nothing stopped the box's processes
+        # before the reward was read: an integration bug, never a reward.
+        raise EnvInfraError(f"{data.name}: grading ended without running test.sh and "
+                            "stop_processes")
     reward = score.get("reward") if isinstance(score, dict) else score
-    facts = {"grading": _trimmed(trace.info.get("grading")), "metrics": trace.metrics}
-    if stopping.stopped:
-        facts["stray_stopped"] = True
+    facts = {"grading": _trimmed(trace.info.get("grading")), "metrics": trace.metrics,
+             "stop_ran": True}
     if (isinstance(reward, bool) or not isinstance(reward, (int, float))
             or not math.isfinite(reward) or not 0.0 <= reward <= 1.0):
         return GradeResult(0.0, {**facts, "reward_out_of_range": repr(reward)[:100]})
@@ -452,13 +519,25 @@ def sandbox_prompt(split: str, index: int) -> str:
     return declaration(split, index).data.prompt
 
 
+def served_indexes(split: str, num_tasks: int | None = None) -> list[int]:
+    """The indexes `sandbox_task(split, index)` serves, among the first `num_tasks` rows
+    (all by default): the rows not refused (`_refusal`). A served row whose image has no
+    pinned digest raises, never silently left out."""
+    if split != "train":
+        raise ValueError(f"reliquary-terminal serves train on sandboxes, not {split!r}")
+    rows = load_train_rows()
+    count = len(rows) if num_tasks is None else min(num_tasks, len(rows))
+    served = [index for index in range(count) if not _refusal(rows[index])]
+    for index in served:
+        declaration(split, index)
+    return served
+
+
 def sandbox_images(split: str, num_tasks: int | None = None) -> list[str]:
     if split != "train":
         raise ValueError(f"no image list for {split!r}")
-    rows = load_train_rows()
-    count = len(rows) if num_tasks is None else num_tasks
-    images = [declaration(split, index).image for index in range(min(count, len(rows)))
-              if not _refusal(rows[index])]  # never served, never pulled
+    images = [declaration(split, index).image  # refused rows: never served, never pulled
+              for index in served_indexes(split, num_tasks)]
     return list(dict.fromkeys(images))
 
 

@@ -187,6 +187,7 @@ def graded(monkeypatch):
         calls.append(("stage", wipe))
 
     async def graded_(self, runtime, trace):
+        await runtime.run(grading.VERIFIER, {})  # as the real `_graded` does
         trace.info["grading"] = {"exit_code": 0, "output_tail": "ok", "ctrf": None}
         trace.record_metrics({"tests_passed": 3.0})
         return calls_result.pop(0)
@@ -233,11 +234,56 @@ async def test_a_reward_outside_zero_one_is_graded_zero(rows, graded):
     assert result.reward == 0.0 and "reward_out_of_range" in result.facts
 
 
-async def test_a_malformed_state_is_our_bug_and_raises(rows):
+async def test_a_malformed_state_is_ours_and_aborts(rows):
     """extract wrote the state; a state it cannot have written is never the agent's."""
+    from reliquary_sandbox.episode_task import EnvInfraError
+
     data = sandbox.declaration("train", 0).data
-    with pytest.raises(ValueError):
+    with pytest.raises(EnvInfraError, match="not a reliquary-terminal state"):
         await sandbox.grade(ScriptedRuntime(workdir="/"), b"junk", data=data, roots=("/app",))
+
+
+async def test_clearing_an_absent_root_that_fails_is_ours(rows, graded):
+    """Before any of the agent's state is restored, the pristine box is ours."""
+    from reliquary_sandbox.episode_task import EnvInfraError
+
+    data = sandbox.declaration("train", 0).data
+    runtime = ScriptedRuntime(workdir="/")
+    runtime.on(lambda argv: argv[:2] == ["rm", "-rf"], exit_code=1)
+    with pytest.raises(EnvInfraError, match="could not remove /app"):
+        await sandbox.grade(runtime, sandbox.encode_state([], b""), data=data, roots=("/app",))
+
+
+async def test_our_unparseable_test_file_is_ours_and_found_before_the_restore(rows, graded,
+                                                                              tmp_path):
+    from reliquary_sandbox.episode_task import EnvInfraError
+
+    data = sandbox.declaration("train", 0).data
+    (tmp_path / "candidate-x" / "tests" / "test_outputs.py").write_text("def broken(:\n")
+    runtime = ScriptedRuntime(workdir="/")
+    with pytest.raises(EnvInfraError, match="test files"):
+        await sandbox.grade(runtime, sandbox.encode_state(["/app"], APP), data=data,
+                            roots=("/app",))
+    assert runtime.restored is None
+
+
+async def test_grading_that_never_ran_test_sh_is_ours_never_a_reward(rows, graded, monkeypatch):
+    from reliquary_sandbox.episode_task import EnvInfraError
+
+    async def skips_test_sh(self, runtime, trace):
+        return 1.0
+
+    monkeypatch.setattr(TerminalTask, "_graded", skips_test_sh)
+    data = sandbox.declaration("train", 0).data
+    with pytest.raises(EnvInfraError, match="stop_processes"):
+        await sandbox.grade(ScriptedRuntime(workdir="/"), sandbox.encode_state(["/app"], APP),
+                            data=data, roots=("/app",))
+
+
+def test_served_indexes_are_the_rows_not_refused(rows):
+    assert sandbox.served_indexes("train") == [0, 4]
+    with pytest.raises(ValueError):
+        sandbox.served_indexes("eval")
 
 
 async def test_a_restore_failure_is_left_to_the_sandbox(rows, graded):
@@ -351,7 +397,7 @@ async def test_stray_processes_are_stopped_before_the_reward_is_read(rows):
     assert reads and min(reads) > test_sh + 1
     result = await sandbox.grade(runtime, sandbox.encode_state([], b""), data=data,
                                  roots=("/app",))
-    assert result.facts["stray_stopped"] is True and "_grader" not in result.facts
+    assert result.facts["stop_ran"] is True and "_grader" not in result.facts
 
 
 def test_a_sandbox_without_stop_processes_is_refused_at_import(monkeypatch):
@@ -429,3 +475,47 @@ def test_a_verifier_box_unlike_the_agents_is_refused(rows, monkeypatch, update):
     monkeypatch.setattr(sandbox, "train_data", changed)
     with pytest.raises(ValueError, match="not servable"):
         sandbox.declaration("train", 0)
+
+
+# -- the verifiers this module was checked against --------------------------
+
+PINNED_URL = ('{"url": "https://github.com/PrimeIntellect-ai/verifiers.git", "vcs_info": '
+              '{"vcs": "git", "commit_id": "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"}}')
+
+
+def test_the_installed_verifiers_is_the_pinned_one():
+    sandbox.require_pinned_verifiers(sandbox.installed_direct_url(),
+                                     sandbox.installed_verifiers_sources())
+    assert set(sandbox.PINNED_VERIFIERS_MODULES) == {"verifiers.v1.tasksets.harbor.taskset",
+                                                     "verifiers.v1.tasksets.harbor.env"}
+
+
+@pytest.mark.parametrize("direct_url", [None, "", "{}", PINNED_URL.replace("b2e4", "0000")])
+def test_verifiers_from_another_commit_is_refused(direct_url):
+    with pytest.raises(ImportError, match="b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"):
+        sandbox.require_pinned_verifiers(direct_url, sandbox.installed_verifiers_sources())
+
+
+@pytest.mark.parametrize("module", ["verifiers.v1.tasksets.harbor.taskset",
+                                    "verifiers.v1.tasksets.harbor.env"])
+def test_a_changed_verifiers_module_is_refused(module):
+    sources = dict(sandbox.installed_verifiers_sources())
+    sources[module] += b"\n# patched\n"
+    with pytest.raises(ImportError, match=module.replace(".", r"\.")):
+        sandbox.require_pinned_verifiers(PINNED_URL, sources)
+
+
+def test_the_verifiers_check_runs_at_import(monkeypatch):
+    import importlib
+    import importlib.metadata
+
+    def missing(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", missing)
+    try:
+        with pytest.raises(ImportError, match="verifiers"):
+            importlib.reload(sandbox)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(sandbox)

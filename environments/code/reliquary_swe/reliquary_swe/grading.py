@@ -192,6 +192,14 @@ class Report:
     test_output_tail: str = ""
 
 
+class PristineBoxError(RuntimeError):
+    """A grading box that is not what the corpus says, found before the agent's patch
+    touches it (checking out the base, stripping history, setting hidden tests aside,
+    listing the untracked paths at base): an error about us or the image, never a 0.
+    A RuntimeError like before; on a signed-episode sandbox `sandbox.grade` reports it as
+    the sandbox's `EnvInfraError` (the episode is aborted, not graded)."""
+
+
 def _paths_touched_by(patch: str) -> list[str]:
     """The files a unified diff writes to (the `+++ b/...` side of each hunk).
 
@@ -648,7 +656,7 @@ async def _patch_violations(runtime: vf.Runtime, data: SweData) -> list[str]:
         return []
     others = await runtime.run(["git", "ls-files", "-z", "--others", "--directory"], {})
     if others.exit_code != 0:
-        raise RuntimeError(
+        raise PristineBoxError(
             f"could not list untracked paths for {data.instance_id}: "
             f"{(others.stderr or others.stdout).strip()[-500:]}"
         )
@@ -794,7 +802,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
         # it back is not a real "0 result", it's a box that isn't what it
         # claims to be -- raising here is what keeps that from reading as a
         # silent, wrong zero.
-        raise RuntimeError(
+        raise PristineBoxError(
             f"could not check out {data.base_commit} for {data.instance_id}: "
             f"{(checkout.stderr or checkout.stdout).strip()[-500:]}"
         )
@@ -817,7 +825,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             {"BASE_COMMIT": data.base_commit, "WORKDIR": data.workdir},
         )
         if sever.exit_code != 0:
-            raise RuntimeError(
+            raise PristineBoxError(
                 f"could not sever pristine history for {data.instance_id}: "
                 f"{(sever.stderr or sever.stdout).strip()[-500:]}"
             )
@@ -834,7 +842,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             # `restored=False` gets recorded -- and the test run proceeds
             # anyway, on an unrestored box, exactly like the `checkout` and
             # `sever` steps either side of this one refuse to let happen.
-            raise RuntimeError(
+            raise PristineBoxError(
                 f"could not resolve HEAD after severing history for "
                 f"{data.instance_id}: "
                 f"{(resolved.stderr or resolved.stdout).strip()[-500:]}"
@@ -864,13 +872,13 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             ["sh", "-c", prefix + _STRIP_AND_GC], {"WORKDIR": data.workdir}
         )
         if strip.exit_code != 0:
-            raise RuntimeError(
+            raise PristineBoxError(
                 f"could not strip history for {data.instance_id}: "
                 f"{(strip.stderr or strip.stdout).strip()[-500:]}"
             )
         resolved = await runtime.run(["git", "rev-parse", "HEAD"], {})
         if resolved.exit_code != 0:
-            raise RuntimeError(
+            raise PristineBoxError(
                 f"could not resolve HEAD for {data.instance_id}: "
                 f"{(resolved.stderr or resolved.stdout).strip()[-500:]}"
             )
@@ -891,7 +899,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
                 {"WORKDIR": data.workdir},
             )
             if stash.exit_code != 0:
-                raise RuntimeError(
+                raise PristineBoxError(
                     f"could not set aside the hidden tests for {data.instance_id}: "
                     f"{(stash.stderr or stash.stdout).strip()[-500:]}"
                 )
@@ -914,7 +922,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             ["sh", "-c", "set -e ; " + _STRIP_AND_GC], {"WORKDIR": data.workdir}
         )
         if strip.exit_code != 0:
-            raise RuntimeError(
+            raise PristineBoxError(
                 f"could not strip history for {data.instance_id}: "
                 f"{(strip.stderr or strip.stdout).strip()[-500:]}"
             )

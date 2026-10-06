@@ -162,16 +162,59 @@ async def test_grade_runs_the_packages_grading_and_reports_its_facts(monkeypatch
     assert "results" not in result.facts
 
 
-async def test_grade_lets_an_image_bug_raise(monkeypatch):
-    # grading.grade raises for a box that is not what the corpus says: an env/image bug,
-    # graded 0.0 `grading_failed` and counted by the gateway, never swallowed here.
+async def test_grade_lets_an_env_bug_raise(monkeypatch):
+    # Any other exception from grading.grade is an env bug: graded 0.0 `grading_failed` and
+    # counted by the gateway, never swallowed here, never turned into an abort.
+    from reliquary_sandbox.episode_task import EnvInfraError
 
     async def broken(runtime, data, patch):
-        raise RuntimeError("could not check out")
+        raise KeyError("an env bug")
 
     monkeypatch.setattr(sandbox.grading, "grade", broken)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyError) as raised:
         await sandbox.grade(ScriptedRuntime(), b"", data=DATA)
+    assert not isinstance(raised.value, EnvInfraError)
+
+
+async def test_a_pristine_box_that_is_not_what_the_corpus_says_is_ours(monkeypatch):
+    # The preparation steps run before the agent's patch touches the box: their failure is
+    # the image's or ours, so the episode is aborted (EnvInfraError), never graded 0.
+    from reliquary_sandbox.episode_task import EnvInfraError
+
+    async def broken(runtime, data, patch):
+        raise grading.PristineBoxError("could not strip history")
+
+    monkeypatch.setattr(sandbox.grading, "grade", broken)
+    with pytest.raises(EnvInfraError, match="could not strip history"):
+        await sandbox.grade(ScriptedRuntime(), b"", data=DATA)
+
+
+def _r2e_or_polyglot(split):
+    row = corpus.SweRow(instance_id="r__x", repo="r/r", problem_statement="", fail_to_pass=(),
+                        pass_to_pass=(), gold_patch="", base_commit="HEAD",
+                        image="img@sha256:" + "b" * 64, expected_output_json="{}")
+    return taskset.task_for(row, 0, split).data
+
+
+@pytest.mark.parametrize("data, failing", [
+    (DATA, lambda argv: argv[:3] == ["git", "checkout", "-q"]),
+    (DATA, lambda argv: argv[:2] == ["sh", "-c"] and taskset._STRIP_AND_GC in argv[2]),
+    (DATA, lambda argv: argv == ["git", "rev-parse", "HEAD"]),
+    (_r2e_or_polyglot("r2e"), lambda argv: argv[:2] == ["sh", "-c"] and "mv /r2e_tests" in argv[2]),
+    (_r2e_or_polyglot("polyglot"),
+     lambda argv: argv[:2] == ["sh", "-c"] and taskset._STRIP_AND_GC in argv[2]),
+    (DATA, lambda argv: argv[:3] == ["git", "ls-files", "-z"]),
+])
+async def test_each_pristine_box_preparation_failure_is_a_pristine_box_error(data, failing):
+    runtime = ScriptedRuntime()
+    runtime.on(lambda argv: argv[:3] == ["git", "apply", "--numstat"], stdout="1\t1\tsrc/x.py\0")
+    runtime.on(lambda argv: argv == ["git", "rev-parse", "HEAD"] and not failing(argv),
+               stdout="abc\n")
+    runtime.on(failing, exit_code=1, stderr="fatal")
+    runtime._answers.insert(0, runtime._answers.pop())  # the failure wins
+    with pytest.raises(grading.PristineBoxError):
+        await grading.grade(runtime, data, "diff --git a/src/x.py b/src/x.py\n")
+    assert issubclass(grading.PristineBoxError, RuntimeError)  # unchanged outside sandboxes
 
 
 def test_sandbox_task_builds_the_gateways_contract(monkeypatch):
@@ -421,3 +464,44 @@ def test_the_sandbox_resolves_train_without_loading_the_split(fake_swesmith, mon
     assert sandbox.sandbox_images("train:2") == ["img.a@sha256:" + "e" * 64,
                                                  "img.b@sha256:" + "e" * 64]
     assert sandbox.sandbox_images("train:2", 1) == ["img.a@sha256:" + "e" * 64]
+
+
+# -- the verifiers this module was checked against --------------------------
+
+PINNED_URL = ('{"url": "https://github.com/PrimeIntellect-ai/verifiers.git", "vcs_info": '
+              '{"vcs": "git", "commit_id": "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"}}')
+
+
+def test_the_installed_verifiers_is_the_pinned_one():
+    sandbox.require_pinned_verifiers(sandbox.installed_direct_url(),
+                                     sandbox.installed_verifiers_sources())
+    assert set(sandbox.PINNED_VERIFIERS_MODULES) == {"verifiers.v1.utils.git"}
+
+
+@pytest.mark.parametrize("direct_url", [None, "", "{}", PINNED_URL.replace("b2e4", "0000")])
+def test_verifiers_from_another_commit_is_refused(direct_url):
+    with pytest.raises(ImportError, match="b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"):
+        sandbox.require_pinned_verifiers(direct_url, sandbox.installed_verifiers_sources())
+
+
+def test_a_changed_verifiers_module_is_refused():
+    sources = dict(sandbox.installed_verifiers_sources())
+    sources["verifiers.v1.utils.git"] += b"\n# patched\n"
+    with pytest.raises(ImportError, match="verifiers.v1.utils.git"):
+        sandbox.require_pinned_verifiers(PINNED_URL, sources)
+
+
+def test_the_check_runs_at_import(monkeypatch):
+    import importlib
+    import importlib.metadata
+
+    def missing(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", missing)
+    try:
+        with pytest.raises(ImportError, match="verifiers"):
+            importlib.reload(sandbox)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(sandbox)

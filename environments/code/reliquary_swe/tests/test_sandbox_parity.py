@@ -116,6 +116,9 @@ async def episode(gateway, split, index, calls, *, case, expected, exits_zero=Tr
         assert all(record["exit_code"] == 0 for record in run.records), run.records
     assert run.final["status"] == "graded", run.final
     assert run.final["reward"] == expected, run.final
+    if expected == 0.0:
+        # A zero from the package's own grading, never a sandbox verdict (`_grader`).
+        assert "_grader" not in (run.final["grading"] or {}), run.final
     return run
 
 
