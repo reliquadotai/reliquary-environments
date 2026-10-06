@@ -119,7 +119,7 @@ async def episode(gateway, index, calls, *, case, expected=None, exits_zero=True
             "cpu_total_ms": run.final["cpu_total_ms"],
             "state_bytes": (len(run.state) if run.state is not None else None),
             "calls": len(run.records), "grader": facts.get("_grader"),
-            "stray_stopped": facts.get("stray_stopped"),
+            "stop_ran": facts.get("stop_ran"),
             "link_into_grader": facts.get("link_into_grader"),
             "exit_code": inner.get("exit_code"),
             "ctrf_counts": (inner.get("ctrf") or {}).get("counts") if inner.get("ctrf") else None,
@@ -245,14 +245,14 @@ def _prepend_to_mutable(payload: str):
 
 async def test_a_stray_process_in_the_grading_box_is_stopped_and_graded_zero(gateway):
     # A detached process left in the grading box is SIGKILLed before the reward is read
-    # (`stop_processes`, the moment test.sh returns): graded 0, never aborted, `stray_stopped`.
+    # (`stop_processes`, the moment test.sh returns): graded 0, never aborted, `stop_ran`.
     # The respawning branch -- a fork bomb the kill rounds cannot drain -> `grading_box_failed`
     # -- is covered by reliquary-sandbox's own suite (test_runtime_stop_processes.py and
     # test_episode_grader.py); it is not run live, to keep an exponential fork bomb off a box
     # that shares a TMax validation.
     index, calls = _prepend_to_mutable(_STRAY)
     run = await episode(gateway, index, calls, case="stray stopped", expected=0.0)
-    assert run.final["grading"]["stray_stopped"] is True
+    assert run.final["grading"]["stop_ran"] is True
     assert "_grader" not in run.final["grading"]
 
 
