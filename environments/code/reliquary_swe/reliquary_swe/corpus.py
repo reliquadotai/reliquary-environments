@@ -733,6 +733,29 @@ def _r2e_order_key(instance_id: str) -> str:
     return hashlib.sha256(instance_id.encode()).hexdigest()
 
 
+@functools.cache
+def _r2e_order() -> tuple[tuple[int, str], ...]:
+    """(dataset row, instance id) in the split's fixed order: ascending sha256 of the id."""
+    dataset = _r2e_dataset()
+    ids = [
+        _r2e_instance_id(repo, commit)
+        for repo, commit in zip(dataset["repo_name"], dataset["commit_hash"], strict=True)
+    ]
+    return tuple(sorted(enumerate(ids), key=lambda item: _r2e_order_key(item[1])))
+
+
+def r2e_row_at(index: int) -> SweRow:
+    """Task `index` of the R2E split, built alone (as `load_r2e_rows` builds every task)."""
+    order = _r2e_order()
+    if not 0 <= index < len(order):
+        raise IndexError(index)
+    return _r2e_row(_r2e_dataset()[order[index][0]])
+
+
+def r2e_instance_ids() -> list[str]:
+    return [instance_id for _, instance_id in _r2e_order()]
+
+
 def r2e_row(commit_hash: str) -> SweRow:
     """A single R2E row by its fix commit (the dataset's `commit_hash`, which
     is also the image's tag), built as `load_r2e_rows` builds it, without
@@ -783,11 +806,7 @@ def load_r2e_rows(num_tasks: int | None = None) -> tuple[SweRow, ...]:
     if num_tasks is not None and num_tasks < 1:
         raise ValueError(f"num_tasks must be >= 1 or None, got {num_tasks}")
     dataset = _r2e_dataset()
-    ids = [
-        _r2e_instance_id(repo, commit)
-        for repo, commit in zip(dataset["repo_name"], dataset["commit_hash"], strict=True)
-    ]
-    order = sorted(range(len(ids)), key=lambda i: _r2e_order_key(ids[i]))
+    order = [row for row, _ in _r2e_order()]
     if num_tasks is not None:
         order = order[:num_tasks]
     return tuple(_r2e_row(dataset[i]) for i in order)

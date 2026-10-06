@@ -58,6 +58,9 @@ markers = [
   # Runs a full instance's test suite inside a container (tens of seconds
   # or more); deselect with `-m "not slow"` to keep the routine loop quick.
   "slow: tests that run for longer than a routine test loop should wait",
+  # Episodes on a local signed-episode gateway with gVisor: the sandbox test host only,
+  # with RUN_SANDBOX_PARITY=1 (docs/sandbox-tasks.md).
+  "sandbox_live: runs episodes on a local signed-episode gateway (test host only)",
 ]
 
 [tool.uv]
