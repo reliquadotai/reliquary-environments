@@ -267,3 +267,109 @@ async def test_restore_from_test_patch_reports_a_failed_checkout():
     runtime = _FakeRuntime(fail_on=frozenset({failing}))
     ok = await grading._restore_from_test_patch(runtime, data)
     assert ok is False
+
+
+# -- Every split refuses a patch outside the tracked tree ---------------------
+#
+# The agent's diff is agent-controlled (`diff.external` in .git/config, a moved
+# base ref, a `!` ignore rule): a hunk can rewrite a file the image ships
+# untracked or ignored -- `node_modules/.bin/jest` -> `exit 0` -- for any split.
+
+
+class _AnsweringRuntime:
+    """Answers a command from `answers` (first substring of the joined argv
+    that matches), else exit 0 with a SHA-shaped stdout; records every one."""
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.commands: list[str] = []
+
+    async def run(self, argv, env):
+        command = " ".join(argv)
+        self.commands.append(command)
+        for needle, result in self.answers.items():
+            if needle in command:
+                return result
+        return SimpleNamespace(exit_code=0, stdout="0" * 40 + "\n", stderr="")
+
+    async def write(self, path, data):
+        self.commands.append(f"write {path}")
+
+
+def _data(split: str):
+    from reliquary_swe.taskset import SweData
+
+    return SweData(
+        idx=0, name="x", prompt="p", instance_id="x", repo="", base_commit="HEAD", version="",
+        fail_to_pass=(), pass_to_pass=(), gold_patch="", split=split,
+        test_patch=(
+            "diff --git a/mimo_test_command.sh b/mimo_test_command.sh\nnew file mode 100755\n"
+            "--- /dev/null\n+++ b/mimo_test_command.sh\n@@ -0,0 +1 @@\n+npx jest\n"
+        ) if split == "polyglot" else "",
+        test_command="bash mimo_test_command.sh" if split == "polyglot" else "",
+    )
+
+
+def _ok(stdout=""):
+    return SimpleNamespace(exit_code=0, stdout=stdout, stderr="")
+
+
+def _runtime(patch_path: str, untracked: str = "", ignored: str = ""):
+    return _AnsweringRuntime({
+        "--numstat": _ok(f"1\t1\t{patch_path}\0"),
+        "ls-files -z --others --directory": _ok(untracked),
+        "check-ignore": SimpleNamespace(exit_code=0 if ignored else 1, stdout=ignored,
+                                        stderr=""),
+    })
+
+
+def test_the_patch_path_refusal_is_split_agnostic():
+    assert not hasattr(grading, "_r2e_patch_violations")
+    assert not hasattr(grading, "_r2e_forbidden_paths")
+    assert grading._forbidden_patch_paths(["a.py", ".venv/x"], [], []) == [".venv/x"]
+
+
+async def test_a_polyglot_patch_to_an_ignored_runner_scores_zero_unapplied():
+    runtime = _runtime("node_modules/.bin/jest", ignored="node_modules/.bin/jest\0")
+    report = await grading.grade(runtime, _data("polyglot"),
+                                 "diff --git a/node_modules/.bin/jest b/node_modules/.bin/jest\n")
+    assert (report.reward, report.applied) == (0.0, False)
+    assert "outside the tracked tree" in report.test_output_tail
+    assert "git apply -v /tmp/agent.diff" not in runtime.commands
+
+
+async def test_a_polyglot_patch_to_an_untracked_file_scores_zero_unapplied():
+    runtime = _runtime("tools/runner.sh", untracked="tools/\0")
+    report = await grading.grade(runtime, _data("polyglot"),
+                                 "diff --git a/tools/runner.sh b/tools/runner.sh\n")
+    assert (report.reward, report.applied) == (0.0, False)
+    assert "git apply -v /tmp/agent.diff" not in runtime.commands
+
+
+async def test_an_honest_polyglot_patch_still_passes():
+    runtime = _runtime("src/index.js", untracked="node_modules/\0")
+    report = await grading.grade(runtime, _data("polyglot"),
+                                 "diff --git a/src/index.js b/src/index.js\n")
+    assert (report.reward, report.applied) == (1.0, True)
+    assert "git apply -v /tmp/agent.diff" in runtime.commands
+
+
+async def test_a_train_patch_to_an_ignored_path_scores_zero_unapplied(monkeypatch):
+    runtime = _runtime("build/lib/pkg/core.py", ignored="build/lib/pkg/core.py\0")
+    report = await grading.grade(runtime, _data("train"),
+                                 "diff --git a/build/lib/pkg/core.py b/build/lib/pkg/core.py\n")
+    assert (report.reward, report.applied) == (0.0, False)
+    assert "git apply -v /tmp/agent.diff" not in runtime.commands
+
+
+async def test_an_honest_train_patch_still_passes(monkeypatch):
+    # SWE-smith's per-repository command and parser stand in for a passing run.
+    monkeypatch.setattr(grading.swesmith_adapter, "test_command", lambda row: ["run-tests"])
+    monkeypatch.setattr(grading.swesmith_adapter, "parse_results",
+                        lambda row, out: {"tests/test_a.py::test_a": "PASSED"})
+    data = _data("train").model_copy(update={"repo": "swesmith/oauthlib__oauthlib.1fd52536",
+                                             "fail_to_pass": ("tests/test_a.py::test_a",)})
+    runtime = _runtime("pkg/core.py")
+    report = await grading.grade(runtime, data, "diff --git a/pkg/core.py b/pkg/core.py\n")
+    assert (report.reward, report.applied) == (1.0, True)
+    assert "git apply -v /tmp/agent.diff" in runtime.commands
