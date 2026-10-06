@@ -14,6 +14,8 @@ class ScriptedRuntime:
         self.env = {}
         self.runs = []
         self.reads = []
+        self.log = []
+        """Every run, read and stop_processes, in order."""
         self.files = {}
         self.dirs = set()
         self._answers = []
@@ -31,6 +33,7 @@ class ScriptedRuntime:
         if not self.exists(self.config.workdir):
             raise RuntimeError(f"the workdir {self.config.workdir} does not exist")
         self.runs.append((list(argv), dict(env)))
+        self.log.append(("run", list(argv)))
         for predicate, result in self._answers:
             if predicate(list(argv)):
                 return result
@@ -38,6 +41,7 @@ class ScriptedRuntime:
 
     async def read(self, path, max_bytes=None):
         self.reads.append((path, max_bytes))
+        self.log.append(("read", path))
         if path in self.dirs:
             raise IsADirectoryError(path)
         if path not in self.files:
@@ -48,6 +52,9 @@ class ScriptedRuntime:
         if max_bytes is not None and len(data) > max_bytes:
             raise OSError(27, f"{path} exceeds {max_bytes} bytes")
         return data
+
+    async def stop_processes(self):
+        self.log.append(("stop_processes",))
 
     async def write(self, path, data):
         self.files[path] = bytes(data)

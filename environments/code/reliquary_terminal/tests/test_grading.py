@@ -196,10 +196,51 @@ async def test_a_failing_ledger_never_fails_the_rollout(monkeypatch, caplog):
     assert any("could not record container" in r.message for r in caplog.records)
 
 
-def _separate_task() -> TerminalTask:
+TESTS = b"""
+import pytest
+
+@pytest.mark.parametrize("x", [1, 2])
+def test_values(x):
+    pass
+
+async def test_async():
+    pass
+
+class TestGroup:
+    def test_member(self):
+        pass
+
+class TestHelper:
+    def __init__(self):
+        pass
+
+    def test_never_collected(self):
+        pass
+
+def helper():
+    def test_nested():
+        pass
+"""
+COVERED = ["tests/test_outputs.py::test_values", "tests/test_outputs.py::test_values",
+           "tests/test_outputs.py::test_async", "tests/test_outputs.py::TestGroup::test_member"]
+
+
+def _ctrf(names, status="passed", extra=()):
+    tests = [{"name": n, "status": status} for n in names] + list(extra)
+    return json.dumps({"results": {"tests": tests}}).encode()
+
+
+@pytest.fixture
+def task_dir(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_outputs.py").write_bytes(TESTS)
+    return tmp_path
+
+
+def _separate_task(task_dir=None) -> TerminalTask:
     from verifiers.v1.tasksets.harbor.taskset import VerifierConfig
 
-    return TerminalTask(HarborData(idx=0, name="t", prompt="p",
+    return TerminalTask(HarborData(idx=0, name="t", prompt="p", task_dir=str(task_dir or ""),
                                    verifier=VerifierConfig(workdir="/")))
 
 
@@ -214,18 +255,56 @@ async def test_a_planted_reward_json_never_stands_in_for_the_tests(make):
     assert await task._graded(box, trace) == 0.0
 
 
-async def test_a_reward_of_one_without_a_passing_test_sh_is_zero_in_a_separate_box():
+async def test_a_reward_of_one_without_a_passing_test_sh_is_zero_in_a_separate_box(task_dir):
     """A MiMo test.sh writes 1 only when pytest passed, then exits with pytest's
     status: 1 next to a failing exit means something else wrote reward.txt."""
-    task = _separate_task()
+    task = _separate_task(task_dir)
     trace = _trace(task)
-    box = FakeBox(reward="1\n", ctrf=None, exit_code=1)
+    box = FakeBox(reward="1\n", ctrf=_ctrf(COVERED), exit_code=1)
     assert await task._graded(box, trace) == 0.0
     assert trace.info["grading"]["reward_without_success"] == {"reward": 1.0, "exit_code": 1}
 
 
-async def test_a_reward_of_one_with_a_passing_test_sh_stays_one_in_a_separate_box():
-    task = _separate_task()
+async def test_a_reward_of_one_with_a_complete_report_stays_one_in_a_separate_box(task_dir):
+    task = _separate_task(task_dir)
     trace = _trace(task)
-    assert await task._graded(FakeBox(reward="1\n", ctrf=None, exit_code=0), trace) == 1.0
+    box = FakeBox(reward="1\n", ctrf=_ctrf(COVERED), exit_code=0)
+    assert await task._graded(box, trace) == 1.0
     assert "reward_without_success" not in trace.info["grading"]
+    assert "ctrf_incomplete" not in trace.info["grading"]
+
+
+def test_the_collected_tests_are_what_pytest_collects_by_default(task_dir):
+    assert grading.collected_tests(task_dir) == {
+        ("test_outputs.py", "test_values"), ("test_outputs.py", "test_async"),
+        ("test_outputs.py", "TestGroup", "test_member")}
+
+
+@pytest.mark.parametrize("ctrf, why", [
+    (None, "no report"),
+    (_ctrf(COVERED[:-1]), "TestGroup::test_member"),
+    (_ctrf(COVERED, extra=[{"name": "tests/test_outputs.py::test_async", "status": "failed"}]),
+     "failed"),
+    (_ctrf([]), "no test passed"),
+    (_ctrf(COVERED, status="skipped"), "no test passed"),
+    (b"{not json", "unreadable"),
+])
+async def test_a_reward_of_one_needs_every_collected_test_passed_in_a_separate_box(
+        task_dir, ctrf, why):
+    """Agent code can end pytest early with `os._exit(0)`: exit 0, reward 1 from
+    test.sh, but the report lacks the tests that never ran."""
+    task = _separate_task(task_dir)
+    trace = _trace(task)
+    box = FakeBox(reward="1\n", ctrf=ctrf, exit_code=0)
+    box.files.pop("/logs/verifier/ctrf.json", None)
+    if ctrf is not None:
+        box.ctrf = ctrf
+    assert await task._graded(box, trace) == 0.0
+    assert why in trace.info["grading"]["ctrf_incomplete"]
+
+
+async def test_terminal_bench_keeps_its_reward_without_a_report():
+    """eval is graded as it ships: no report requirement."""
+    task = _task()
+    box = FakeBox(reward="1\n", ctrf=None, exit_code=0)
+    assert await task._graded(box, _trace(task)) == 1.0

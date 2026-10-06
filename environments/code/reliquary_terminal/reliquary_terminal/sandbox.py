@@ -15,10 +15,12 @@ task (the path `TerminalEnv.finalize` -> `HarborEnv._grade` takes today, step by
   in role "grade", `rm -rf` of absent roots, one `runtime.restore_archive` of the
   present roots, a refusal of links into the grader's files (`link_into_grader`, 0),
   `_stage_tests(wipe=True)`, then `_graded` (anti-hack guard, test.sh, reward.txt,
-  CTRF; see `grading` for what can only lower the reward). A root the agent replaced
-  by a symlink travels as that link (an absolute target outside the roots stays an
-  inert link, so the tests fail on it). What the restore refuses is the sandbox's to
-  grade (`state_unreadable`, 0), what fails on its side is its to abort.
+  CTRF; see `grading` for what can only lower the reward), with every process left
+  in the box stopped (`runtime.stop_processes`) as soon as test.sh returns. A root
+  the agent replaced by a symlink travels as that link (an absolute target outside
+  the roots stays an inert link, so the tests fail on it). What the restore refuses
+  is the sandbox's to grade (`state_unreadable`, 0), what fails on its side is its to
+  abort.
 
 Rows that need the network are never served (boxes have none), nor rows whose
 test.sh imports code from `/app` (`UNSERVED`): the grader would run the agent's code.
@@ -46,7 +48,7 @@ from typing import Any
 
 from verifiers.v1.tasksets.harbor.taskset import HarborData, verifier_box_data
 
-from reliquary_terminal.grading import TerminalTask
+from reliquary_terminal.grading import VERIFIER, TerminalTask
 from reliquary_terminal.harness import DEFAULT_COMMAND_TIMEOUT_SECONDS
 from reliquary_terminal.taskset import TerminalConfig, load_train_rows, train_data
 
@@ -64,8 +66,13 @@ MIB = 1024**2
 PIDS = 1024
 _TEMPLATE = re.compile(r"\$\{")
 ARCHIVE_MANIFEST = ".reliquary-archive.json"
-GRADER_DIRS = ("/tests", "/logs", "/solution", "/oracle", "/root")
-"""Where the grader's own files live: a restored link resolving into one is refused."""
+GRADER_DIRS = ("/tests", "/logs")
+"""Where the grader's own files live: a restored link resolving into one is refused.
+No MiMo test.sh, test file or image config mentions /solution or /oracle; /root is
+where uv and pyenv keep the interpreters venv links point to."""
+MAGIC_DIRS = ("/proc", "/dev", "/sys")
+"""Kernel trees whose links lead anywhere (`/proc/self/root` is `/` again, `/dev/fd/N`
+any file the reader holds): a restored link resolving into one is refused."""
 MAX_LINK_HOPS = 40
 _PYTHONPATH = ("its test.sh puts code under /app on PYTHONPATH: the grader would import "
                "the agent's code")
@@ -247,15 +254,35 @@ def _resolved(path: str, links: Mapping[str, str]) -> str | None:
 
 
 def links_into_grader(archive: bytes, roots: list[str]) -> list[str]:
-    """The restored links that resolve into the grader's files (`GRADER_DIRS`) or
-    loop. Other absolute links are kept: venvs need them."""
+    """The restored links that resolve into the grader's files (`GRADER_DIRS`), into
+    a kernel tree (`MAGIC_DIRS`), or loop. Other absolute links are kept: venvs need
+    them."""
     links = _restored_links(archive, roots)
     flagged = []
     for path in sorted(links):
         end = _resolved(path, links)
-        if end is None or any(end == d or end.startswith(d + "/") for d in GRADER_DIRS):
+        if end is None or any(end == d or end.startswith(d + "/")
+                              for d in (*GRADER_DIRS, *MAGIC_DIRS)):
             flagged.append(path)
     return flagged
+
+
+class _StoppingAfterTests:
+    """The grading runtime, stopping every process left in the box as soon as
+    test.sh returns: nothing a planted file started can rewrite reward.txt or the
+    report before `_graded` reads them."""
+
+    def __init__(self, runtime: Any) -> None:
+        self._runtime = runtime
+
+    async def run(self, argv: list[str], env: dict[str, str]) -> Any:
+        result = await self._runtime.run(argv, env)
+        if list(argv) == VERIFIER:
+            await self._runtime.stop_processes()
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._runtime, name)
 
 
 class _GradingTrace:
@@ -299,7 +326,7 @@ async def grade(runtime: Any, state: bytes, *, data: HarborData, roots: tuple[st
             return GradeResult(0.0, {"link_into_grader": flagged[:FACT_TESTS]})
     await grader._stage_tests(runtime, wipe=True)
     trace = _GradingTrace()
-    score = await grader._graded(runtime, trace)
+    score = await grader._graded(_StoppingAfterTests(runtime), trace)
     reward = score.get("reward") if isinstance(score, dict) else score
     facts = {"grading": _trimmed(trace.info.get("grading")), "metrics": trace.metrics}
     if (isinstance(reward, bool) or not isinstance(reward, (int, float))

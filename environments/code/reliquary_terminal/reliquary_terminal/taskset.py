@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import functools
+import hashlib
 import json
 import os
 import re
@@ -98,6 +99,10 @@ def load_train_rows() -> tuple[dict, ...]:
 
 
 GUARD = "anti_hack_guard.py"
+GUARD_SHA256 = "336149b10b45d03b7774ba589d984e9663135cfc660f3a133fc482a8716d0e3a"
+"""The guard all 64 rows ship, at the pinned revision."""
+GUARD_PATCHED_SHA256 = "76b45434a9479164c2577f6a3da1601ad655453aeec1503c6c222f91a92bac9c"
+"""The same guard after `_guarded`."""
 _GUARD_SKIP = (
     "        if not path.is_file() or path.is_symlink():\n"
     "            continue\n"
@@ -114,10 +119,13 @@ def _guarded(source: bytes) -> bytes:
     """The rows' `anti_hack_guard.py` (one file, the same in all 64), refusing a
     planted symlink with a dangerous name as it refuses a planted file: it skipped
     every symlink, so `conftest.py -> hooks.py` loaded a pytest hook unseen."""
-    text = source.decode()
-    if text.count(_GUARD_SKIP) != 1:
-        raise ValueError("anti_hack_guard.py is not the guard this package patches")
-    return text.replace(_GUARD_SKIP, _GUARD_CHECK).encode()
+    if hashlib.sha256(source).hexdigest() != GUARD_SHA256:
+        raise ValueError("anti_hack_guard.py does not have the pinned sha256: not the guard "
+                         "this package patches")
+    patched = source.decode().replace(_GUARD_SKIP, _GUARD_CHECK).encode()
+    if hashlib.sha256(patched).hexdigest() != GUARD_PATCHED_SHA256:
+        raise ValueError("the patched anti_hack_guard.py does not have the pinned sha256")
+    return patched
 
 
 def tests_files(row: dict) -> dict[str, bytes]:

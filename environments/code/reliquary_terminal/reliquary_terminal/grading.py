@@ -24,12 +24,23 @@ Two things can only lower it, never raise it:
   `reward.txt`), so one in the box was planted: by the agent, or by a process
   it left running;
 - in a separate grading box (`train`), a nonzero `reward.txt` next to a
-  nonzero `test.sh` exit is 0, recorded as `reward_without_success`. Every
-  MiMo `test.sh` writes 1 only when pytest passed and then exits with pytest's
-  status (the guard's rejection exits 0 after writing 0), so a 1 with a failing
-  exit was written by something else -- a background process a planted file
-  started. Terminal-Bench (`eval`) keeps its own semantics: it is graded as it
-  ships, in the agent's box, untrusted anyway (below).
+  nonzero `test.sh` exit is 0, recorded as `reward_without_success`: a MiMo
+  `test.sh` writes 1 only when pytest passed (about half then exit with
+  pytest's status, the rest exit 0 regardless), so a 1 with a failing exit was
+  written by something else -- a background process a planted file started;
+- in a separate grading box, a nonzero reward also needs the CTRF report to
+  show no failed test, at least one passed, and every test pytest collects by
+  default from the row's `tests/test_*.py` (`collected_tests`: `test_*`
+  functions at module level, `test_*` methods of `Test*` classes without
+  `__init__`) among the passed ones; otherwise 0, recorded as
+  `ctrf_incomplete`. Agent code imported by the tests can end pytest early
+  with `os._exit(0)`: exit 0, reward 1, and a report without the tests that
+  never ran. Every MiMo `test.sh` passes `--ctrf /logs/verifier/ctrf.json`
+  (pytest-json-ctrf 0.5.2 in all 64 images: names are `<path>::[Class::]test`,
+  parameters dropped).
+
+Terminal-Bench (`eval`) keeps its own semantics: it is graded as it ships, in
+the agent's box, untrusted anyway (below).
 
 **Untrusted in the `eval` split.** There `test.sh` runs in the box the agent
 worked in, as Terminal-Bench ships it, and anything the agent left running
@@ -40,9 +51,12 @@ per-test data is fit for debugging there, never for partial credit. In the
 
 from __future__ import annotations
 
+import ast
+import functools
 import json
 import logging
 from collections import Counter
+from pathlib import Path
 
 from verifiers.v1.runtimes import DockerRuntime, Runtime
 from verifiers.v1.tasksets.harbor.taskset import HarborTask
@@ -85,6 +99,56 @@ def summarize_ctrf(raw: bytes) -> dict:
             entry["message"] = str(message)[:MAX_MESSAGE_CHARS]
         out.append(entry)
     return {"counts": dict(counts), "tests": out, "omitted": len(tests) - len(out)}
+
+
+@functools.lru_cache(maxsize=256)
+def collected_tests(task_dir: str | Path) -> frozenset[tuple[str, ...]]:
+    """The tests pytest collects by default from `<task_dir>/tests/test_*.py`, read
+    statically: `(file, function)` for module-level `test_*` functions and
+    `(file, class, method)` for `test_*` methods of `Test*` classes that have no
+    `__init__` (pytest skips those). Parametrized tests count once."""
+    found = set()
+    for path in sorted((Path(task_dir) / "tests").glob("test_*.py")):
+        tree = ast.parse(path.read_bytes(), filename=str(path))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if node.name.startswith("test_"):
+                    found.add((path.name, node.name))
+            elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                methods = [m.name for m in node.body
+                           if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                if "__init__" not in methods:
+                    found.update((path.name, node.name, m) for m in methods
+                                 if m.startswith("test_"))
+    return frozenset(found)
+
+
+def _ctrf_key(name: str) -> tuple[str, ...]:
+    parts = name.split("::")
+    return (parts[0].rsplit("/", 1)[-1], *(p.split("[", 1)[0] for p in parts[1:]))
+
+
+def ctrf_incomplete(raw: bytes | None, expected: frozenset[tuple[str, ...]]) -> str | None:
+    """Why a CTRF report cannot back a reward of 1, or None when it can."""
+    if raw is None:
+        return "no report"
+    try:
+        tests = json.loads(raw)["results"]["tests"]
+        if not isinstance(tests, list):
+            raise ValueError("`results.tests` is not a list")
+        statuses = [(str(t["name"]), str(t["status"])) for t in tests]
+    except Exception as e:  # noqa: BLE001 - any malformed report backs nothing
+        return f"unreadable report: {type(e).__name__}"
+    failed = sum(status == "failed" for _, status in statuses)
+    if failed:
+        return f"{failed} failed"
+    passed = {_ctrf_key(name) for name, status in statuses if status == "passed"}
+    if not passed:
+        return "no test passed"
+    missing = sorted("::".join(key) for key in expected - passed)
+    if missing:
+        return f"not passed: {', '.join(missing)}"[:MAX_MESSAGE_CHARS]
+    return None
 
 
 class _Watched:
@@ -130,11 +194,22 @@ class TerminalTask(HarborTask):
             stale = f"{type(e).__name__}: {str(e)[-500:]}"
         watched = _Watched(runtime)
         score = await super()._graded(watched, trace)
-        if (self.data.verifier is not None and watched.verifier is not None
-                and score != 0 and watched.verifier.exit_code != 0):
-            grading["reward_without_success"] = {"reward": score,
-                                                 "exit_code": watched.verifier.exit_code}
-            score = 0.0
+        raw, read_error = None, None
+        if stale is None:
+            try:
+                raw = await runtime.read(CTRF, max_bytes=MAX_CTRF_BYTES)
+            except Exception as e:  # noqa: BLE001 - recorded; a missing report backs nothing
+                read_error = f"{type(e).__name__}: {str(e)[-500:]}"
+        if self.data.verifier is not None and score != 0:
+            if watched.verifier is not None and watched.verifier.exit_code != 0:
+                grading["reward_without_success"] = {"reward": score,
+                                                     "exit_code": watched.verifier.exit_code}
+                score = 0.0
+            else:
+                why = ctrf_incomplete(raw, collected_tests(self.data.task_dir))
+                if why is not None:
+                    grading["ctrf_incomplete"] = why
+                    score = 0.0
         # Nothing below may change the outcome: the score is already decided.
         try:
             if watched.verifier is not None:
@@ -143,9 +218,11 @@ class TerminalTask(HarborTask):
                 grading["output_tail"] = output[-MAX_OUTPUT_CHARS:]
             if stale is not None:
                 grading["ctrf_error"] = f"could not clear a stale report: {stale}"
+            elif read_error is not None:
+                grading["ctrf_error"] = read_error
             else:
                 try:
-                    report = summarize_ctrf(await runtime.read(CTRF, max_bytes=MAX_CTRF_BYTES))
+                    report = summarize_ctrf(raw)
                 except Exception as e:  # noqa: BLE001 - any report problem is recorded, not raised
                     grading["ctrf_error"] = f"{type(e).__name__}: {str(e)[-500:]}"
                 else:
@@ -160,8 +237,8 @@ class TerminalTask(HarborTask):
                     )
         except Exception as e:  # noqa: BLE001 - see above
             grading = {"ctrf": None, "error": f"{type(e).__name__}: {str(e)[-500:]}",
-                       **({"reward_without_success": grading["reward_without_success"]}
-                          if "reward_without_success" in grading else {})}
+                       **{key: grading[key] for key in ("reward_without_success",
+                                                        "ctrf_incomplete") if key in grading}}
         trace.info["grading"] = grading
         return score
 
@@ -170,4 +247,4 @@ class TerminalTask(HarborTask):
         return None
 
 
-__all__ = ["CTRF", "TerminalTask", "summarize_ctrf"]
+__all__ = ["CTRF", "TerminalTask", "collected_tests", "ctrf_incomplete", "summarize_ctrf"]

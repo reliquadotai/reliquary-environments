@@ -8,7 +8,7 @@ import tarfile
 import pytest
 from sandbox_fakes import ScriptedRuntime
 
-from reliquary_terminal import sandbox, taskset
+from reliquary_terminal import grading, sandbox, taskset
 from reliquary_terminal.grading import TerminalTask
 
 MIB = 1024**2
@@ -239,13 +239,16 @@ async def test_a_restore_failure_is_left_to_the_sandbox(rows, graded):
 @pytest.mark.parametrize("members, flagged", [
     ({"0": None, "0/t": ("link", "/tests/test.sh")}, ["/app/t"]),
     ({"0": None, "0/r": ("link", "/logs/verifier/reward.txt")}, ["/app/r"]),
-    ({"0": None, "0/d": ("link", "/usr/../root")}, ["/app/d"]),
-    ({"0": None, "0/s": ("link", "/solution")}, ["/app/s"]),
-    ({"0": None, "0/o": ("link", "/oracle/x")}, ["/app/o"]),
+    ({"0": None, "0/d": ("link", "/usr/../tests")}, ["/app/d"]),
     ({"0": ("link", "/tests")}, ["/app"]),
     ({"0": None, "0/a": ("link", "b/reward.txt"), "0/b": ("link", "/logs/verifier")},
      ["/app/a", "/app/b"]),
     ({"0": None, "0/c": ("link", "d"), "0/d": ("link", "c")}, ["/app/c", "/app/d"]),
+    # Magic links: /proc/self/root is `/` again, /dev/fd/N any file the reader holds.
+    ({"0": None, "0/p": ("link", "/proc/self/root/tests/test_outputs.py")}, ["/app/p"]),
+    ({"0": None, "0/f": ("link", "/dev/fd/3")}, ["/app/f"]),
+    ({"0": None, "0/s": ("link", "/sys/kernel")}, ["/app/s"]),
+    ({"0": None, "0/q": ("link", "../proc/1/cwd")}, ["/app/q"]),
 ])
 async def test_a_link_into_the_graders_files_is_graded_zero(rows, graded, members, flagged):
     pytest.importorskip("reliquary_sandbox.episode_task")
@@ -258,16 +261,50 @@ async def test_a_link_into_the_graders_files_is_graded_zero(rows, graded, member
 
 
 async def test_other_absolute_links_are_kept(rows, graded):
-    """venvs need them: `.venv/bin/python -> /usr/bin/python3`."""
+    """venvs need them: `.venv/bin/python -> /usr/bin/python3`, and uv's or pyenv's
+    interpreters live under /root."""
     pytest.importorskip("reliquary_sandbox.episode_task")
     calls, _ = graded
     data = sandbox.declaration("train", 0).data
     members = {"0": None, "0/.venv": None, "0/.venv/bin": None,
                "0/.venv/bin/python": ("link", "/usr/bin/python3"),
-               "0/.venv/bin/python3": ("link", "python"), "0/tmp": ("link", "/tmp/testsuite")}
+               "0/.venv/bin/python3": ("link", "python"), "0/tmp": ("link", "/tmp/testsuite"),
+               "0/.venv/bin/uvpy": ("link",
+                                    "/root/.local/share/uv/python/cpython-3.12/bin/python3.12"),
+               "0/pyenv": ("link", "/root/.pyenv/versions/3.12.4/bin/python")}
     state = sandbox.encode_state(["/app"], state_archive(["/app"], members))
     result = await sandbox.grade(ScriptedRuntime(workdir="/"), state, data=data, roots=("/app",))
     assert result.reward == 1.0 and calls[-1] == ("stage", True)
+
+
+async def test_stray_processes_are_stopped_before_the_reward_is_read(rows):
+    """After test.sh and before reward.txt or the report is read, every process left in
+    the grading box is killed: none can rewrite either once test.sh is done."""
+    pytest.importorskip("reliquary_sandbox.episode_task")
+    data = sandbox.declaration("train", 0).data
+    runtime = ScriptedRuntime(workdir="/")
+    runtime.on(lambda argv: argv == ["bash", "/tests/test.sh"], exit_code=1)
+    await sandbox.grade(runtime, sandbox.encode_state([], b""), data=data, roots=("/app",))
+    test_sh = runtime.log.index(("run", ["bash", "/tests/test.sh"]))
+    assert runtime.log[test_sh + 1] == ("stop_processes",)
+    assert runtime.log.count(("stop_processes",)) == 1
+    reads = [i for i, event in enumerate(runtime.log) if event[0] == "read"]
+    assert reads and min(reads) > test_sh + 1
+
+
+def test_every_served_row_writes_the_report_its_reward_needs():
+    """On the pinned rows: test.sh runs `tests/test_outputs.py` with
+    `--ctrf /logs/verifier/ctrf.json`, and the tests collected statically are the ones a
+    reward of 1 must show as passed."""
+    for index, r in enumerate(taskset.load_train_rows()):
+        if r["instance_id"] in sandbox.UNSERVED:
+            continue
+        test_sh = taskset.tests_files(r)["test.sh"]
+        assert b"--ctrf /logs/verifier/ctrf.json" in test_sh, r["instance_id"]
+        assert b"test_outputs.py" in test_sh, r["instance_id"]
+        data = sandbox.declaration("train", index).data
+        tests = grading.collected_tests(data.task_dir)
+        assert tests and {key[0] for key in tests} == {"test_outputs.py"}, r["instance_id"]
 
 
 def test_sandbox_task_builds_the_gateways_contract(rows):

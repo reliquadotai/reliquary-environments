@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import json
+
 import pytest
 import verifiers.v1 as vf
 
@@ -129,3 +132,21 @@ def test_materialize_is_safe_when_processes_race(tmp_path):
     assert set(dirs) == {tmp_path / row["instance_id"]}
     assert sorted(p.name for p in tmp_path.iterdir()) == [row["instance_id"]]
     assert (dirs[0] / "tests" / "test.sh").is_file()
+
+
+def test_a_guard_other_than_the_pinned_one_is_refused():
+    row = dict(taskset.load_train_rows()[0])
+    files = json.loads(row["tests_files"]) if isinstance(row["tests_files"], str) \
+        else dict(row["tests_files"])
+    guard = base64.b64decode(files[taskset.GUARD])
+    files[taskset.GUARD] = base64.b64encode(guard + b"\n# changed\n").decode()
+    row["tests_files"] = files
+    with pytest.raises(ValueError, match="sha256"):
+        taskset.tests_files(row)
+
+
+def test_the_patched_guard_is_the_pinned_one():
+    import hashlib
+
+    guard = taskset.tests_files(taskset.load_train_rows()[0])[taskset.GUARD]
+    assert hashlib.sha256(guard).hexdigest() == taskset.GUARD_PATCHED_SHA256
