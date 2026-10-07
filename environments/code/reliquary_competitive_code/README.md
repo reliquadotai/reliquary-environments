@@ -52,11 +52,25 @@ Drop counts: filled in with the published revision.
 - A program that sleeps, deadlocks or blocks scores 0 (`timeout`); only one
   starved on the host's run queue past its limit is `harness_overload`, which
   gives no verdict (grading raises).
+- Deterministic grading: the module-level `random` is seeded with a fixed
+  value (`guest.RANDOM_SEED`) before every run and the runner pins
+  `PYTHONHASHSEED=0`, so the same program prints the same output on every
+  grading.
 
 ## Known limits
 
 - Problems with several valid answers are excluded: the comparison is exact
-  on tokens, there is no checker.
+  on tokens, there is no checker. Two detectors: the statement says so ("print
+  any", "if there are several answers" without a tie-break), counted as
+  `dropped_multi_answer`; or a test that feeds one of the statement's example
+  inputs expects another output than the statement shows (Codeforces 1433D),
+  counted as `dropped_example_mismatch`, and every copy of that problem goes.
+  A multi-answer problem whose tests agree with its examples and whose
+  statement does not say so still slips through. The second detector also
+  drops a few gradable problems whose statement is corrupt (numbers written as
+  words, "Ten" for 10, in machine-translated statements).
+- A program that reseeds `random` from entropy (`random.seed()`,
+  `random.Random()`, a seed from `time`) is not deterministic.
 - Python only.
 - Deduplication across sources is MinHash on statements; about 161 residual
   near-duplicate pairs remain across splits.
