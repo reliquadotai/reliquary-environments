@@ -40,11 +40,15 @@ STATIC_REASONS = (
     "install_unparsed",
     "setup_network",
     "docker_in_test",
+    "in_process_agent_code",
     "pip_pin_conflict",
     "apt_unknown",
     "apt_conflict",
     "decontaminated",
 )
+# Static reasons added after the base image was built (2026-10-05): they
+# exclude a task but leave its packages in the base.
+POST_BASE_REASONS = frozenset({"in_process_agent_code"})
 # Reason codes the box phase adds (`scripts/tmax_validate.py`).
 BOX_REASONS = (
     "base_missing_package",
@@ -110,6 +114,15 @@ def task_facts(source: tmax.Source, task_id: str) -> TaskFacts:
     if match:
         line = test[test.rfind("\n", 0, match.start()) + 1 : test.find("\n", match.end())]
         facts.reasons["docker_in_test"] = line.strip()[:300]
+    # The test would run the agent's code inside pytest's own process, where
+    # it can write a passing report and exit: refused on signed-episode
+    # sandboxes by default, so never kept here either. Imported here because
+    # `sandbox` imports the taskset, which imports this module.
+    from reliquary_terminal.sandbox import in_process_agent_code
+
+    evidence = in_process_agent_code({tmax.FINAL_TEST: test.encode()})
+    if evidence:
+        facts.reasons["in_process_agent_code"] = "; ".join(evidence)[:300]
     return facts
 
 
@@ -619,7 +632,10 @@ def build_manifest(
     texts = {tid: (tmax_instruction(source, tid), tmax_text(source, tid)) for tid in facts}
     for tid, evidence in decontaminate(contamination, texts).items():
         facts[tid].reasons["decontaminated"] = evidence
-    alive = {tid for tid, f in facts.items() if not f.reasons}
+    # Package planning counts the tasks excluded only for a reason added after
+    # the base image was built and validated, so adding that reason does not
+    # change the base (and void the validation).
+    alive = {tid for tid, f in facts.items() if not set(f.reasons) - POST_BASE_REASONS}
     pip = plan_pip({tid: facts[tid].pip for tid in sorted(alive)})
     for tid, evidence in pip.conflicts.items():
         facts[tid].reasons["pip_pin_conflict"] = evidence

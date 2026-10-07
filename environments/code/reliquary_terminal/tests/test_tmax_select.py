@@ -308,3 +308,19 @@ def test_the_shipped_manifest_parts_follow_the_rule():
             assert entry["part"] in anchors.values()
     by_part = manifest["counts"]["part"]
     assert sum(sum(v.values()) for v in by_part.values()) == 14601 - manifest["counts"]["status"]["excluded"]
+
+
+def test_a_test_that_loads_the_agents_code_in_process_is_excluded_but_keeps_its_packages(tmp_path):
+    src = tmp_path / "src"
+    tid = make_task(src, "task_000001_aaaaaaaa")
+    (src / tid / "test_final_state.py").write_text(
+        "import sys\nsys.path.insert(0, '/home/user')\nimport solution\n\ndef test_out():\n    assert solution.f() == 42\n"
+    )
+    source = tmax.Source(src)
+    manifest, base = tmax_select.build_manifest(
+        source, tmax_select.AptIndex.parse([PACKAGES]), tmax_select.Contamination({})
+    )
+    assert manifest["tasks"][tid]["reasons"] == ["in_process_agent_code"]
+    # Added after the base was built: the base still carries what the task asked for.
+    assert "tesseract-ocr" in base["apt.txt"].split()
+    assert "numpy==1.26.4" in base["requirements.txt"].split()

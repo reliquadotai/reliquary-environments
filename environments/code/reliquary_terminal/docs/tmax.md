@@ -173,10 +173,11 @@ run.
 | `install_unparsed` | 42 | 8 | an apt or pip install inside a compound statement, from a variable, or with options this converter does not model (`-r`, `-e`, a path, a URL, `--target`, a venv's pip) |
 | `setup_network` | 630 | 78 | the data half still fetches something (curl/wget to a URL, `git clone`, rustup, `go get/install`, npm/yarn, `cargo install/fetch`, `pip download`, `add-apt-repository`, `apt-key`, ...) |
 | `docker_in_test` | 12 | 0 | the final test calls docker |
+| `in_process_agent_code` | 201 | 85 | the final test loads the agent's code into pytest's process (`sys.path`, `importlib` loaders, `eval`; `sandbox.in_process_agent_code`): that code could write a passing report and exit. Added 2026-10-07, after the base was built: these tasks' packages stay in the base |
 | `pip_pin_conflict`, `apt_unknown`, `apt_conflict` | 0 | 0 | see 5 |
 | `decontaminated` | 4 | 1 | overlaps Terminal-Bench 2.0 or 2.1 (see 7) |
 
-The result: 8,540 excluded and **6,061 pending** for the box phase. Their
+The result: 8,540 excluded and **6,061 pending** for the box phase (8,625 and 5,976 since `in_process_agent_code`). Their
 domains are data_querying 871, data_science 778, software_engineering 735,
 file_operations 705, data_processing 697, debugging 690, scientific_computing
 663, security 592 and system_administration 330. 3,785 of them are 8/8 in
@@ -347,13 +348,13 @@ will be retried). **Kept: 3,781 (83.7 %).** Excluded: `solution_fails` 402,
 `answer_needed_by_reference` 1. Unlike the pilot, the mutation check does
 reject some tasks (2.7 %), still far from River's ~40 % weak tests.
 Throughput about 105 tasks/h. At that rate the run ends around 2026-10-07
-20:00 UTC with about 5,050 kept tasks, about 2,400 SFT and 2,650 RL.
+20:00 UTC with about 5,000 kept tasks once `in_process_agent_code` is
+applied, about 2,400 SFT and 2,600 RL.
 
-Not yet applied: 85 pending tasks (1.4 %) have a final test that runs the
-agent's code inside pytest's process (`sandbox.in_process_agent_code`:
-`sys.path` 48, `importlib` loaders 32, `eval` 6). On signed-episode
-sandboxes these are refused by default; the `tmax` splits should drop them
-too.
+85 of the pending tasks (1.4 %) have a final test that runs the agent's
+code inside pytest's process. They were validated, and are now excluded by
+the static stage (`in_process_agent_code`, decision 6), as signed-episode
+sandboxes refuse such rows by default.
 
 ## Open questions
 
