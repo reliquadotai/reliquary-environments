@@ -256,3 +256,20 @@ def test_huge_integers_convert_to_and_from_text() -> None:
     digits = "7" * 5000
     result = run_test("print(int(input()))\n", digits + "\n", time_limit_s=2.0, output_cap=output_cap(digits))
     assert result.status == "ok" and result.stdout.strip() == digits
+
+
+def test_random_is_seeded_the_same_on_every_run() -> None:
+    code = "import random\nprint(random.random(), random.randint(1, 10**9))\nrandom.shuffle(a := list(range(9)))\nprint(a)\n"
+    outputs = {run_test(code, "", time_limit_s=2.0, output_cap=output_cap("x" * 100)).stdout for _ in range(2)}
+    assert len(outputs) == 1 and outputs.pop().strip()
+
+
+def test_guest_run_seeds_random_per_run_and_restores_the_host_state() -> None:
+    import random
+
+    from reliquary_competitive_code.judge import guest
+
+    state = random.getstate()
+    first = guest.run("import random\nprint(random.random())\n", "", 1000)
+    second = guest.run("import random\nprint(random.random())\n", "", 1000)
+    assert first["stdout"] == second["stdout"] and random.getstate() == state

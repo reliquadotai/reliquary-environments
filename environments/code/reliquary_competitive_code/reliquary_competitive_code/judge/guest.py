@@ -10,14 +10,18 @@ subprocess locally). What this file guarantees is that the rules are the same
 everywhere: the same modules, the same `sys`, the same verdict for an exit.
 
 Contract for a host: one run per fresh process (or fork), never concurrent;
-module state (e.g. monkeypatched math, random seed, daemon threads) is not
-isolated between runs in one process.
+module state (e.g. monkeypatched math, daemon threads) is not isolated between
+runs in one process. Determinism: the module-level `random` is seeded with
+RANDOM_SEED before every run, and the host must pin PYTHONHASHSEED=0 (the local
+runner does); a program that reseeds from entropy (`random.seed()`,
+`random.Random()`, a seed taken from `time`) stays non-deterministic.
 """
 
 from __future__ import annotations
 
 import builtins
 import io
+import random
 import sys
 import threading
 import time
@@ -34,6 +38,9 @@ DENIED_BUILTINS = frozenset({
     "locals", "open", "vars",
 })
 GATE_MESSAGE = "is not available in the grader sandbox"
+# Every run starts the module-level `random` from this seed, so a randomised
+# program prints the same thing on every grading of the same completion.
+RANDOM_SEED = 0
 
 
 class OutputLimitExceeded(BaseException):
@@ -113,11 +120,13 @@ def run(code: str, stdin_text: str, output_cap: int) -> dict:
     saved_limit = sys.getrecursionlimit()
     saved_digits = sys.get_int_max_str_digits()
     saved_stack = threading.stack_size()
+    saved_random = random.getstate()
     threads_before = set(threading.enumerate())
     sys.stdin, sys.stdout = stdin, stdout
     # Competitive answers routinely print integers beyond the default 4300
     # digits; the original judges have no such limit.
     sys.set_int_max_str_digits(0)
+    random.seed(RANDOM_SEED)
     status = "ok"
     start = time.process_time()
     try:
@@ -145,6 +154,7 @@ def run(code: str, stdin_text: str, output_cap: int) -> dict:
         sys.setrecursionlimit(saved_limit)
         sys.set_int_max_str_digits(saved_digits)
         threading.stack_size(saved_stack)
+        random.setstate(saved_random)
     text = raw_out.getvalue().decode("utf-8", errors="replace")
     return {
         "status": status,
