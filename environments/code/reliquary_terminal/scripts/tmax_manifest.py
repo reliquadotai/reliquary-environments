@@ -26,6 +26,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", type=Path, help="tasks.zip or its unpacked tree (default: download the pinned zip)")
     parser.add_argument("--validation", type=Path, help="directory of the box phase's per-task JSON results")
+    parser.add_argument(
+        "--base-image",
+        help="REPOSITORY@sha256:... of the pushed base image, when the box phase ran on a local "
+        "image id (sha256:...). Pass --validated-id too: the local id the results name.",
+    )
+    parser.add_argument("--validated-id", help="the local image id (sha256:...) the validation ran on")
     parser.add_argument("--out", type=Path, default=tmax_select.MANIFEST)
     parser.add_argument("--base-dir", type=Path, default=tmax_select.BASE_DIR)
     args = parser.parse_args()
@@ -41,6 +47,8 @@ def main() -> None:
             result = json.loads(path.read_text())
             validation[result["task_id"]] = result
     manifest, base = tmax_select.build_manifest(source, index, contamination, validation)
+    if args.base_image:
+        manifest = tmax_select.repin_base_image(manifest, args.base_image, args.validated_id)
     args.out.write_text(tmax_select.dump_manifest(manifest))
     args.base_dir.mkdir(parents=True, exist_ok=True)
     for name, content in base.items():

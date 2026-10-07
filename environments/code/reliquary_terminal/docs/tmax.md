@@ -312,6 +312,11 @@ uv run python scripts/tmax_validate.py run --image <registry>/reliquary-tmax-bas
 uv run python scripts/tmax_manifest.py --source tasks.zip --validation validation/
 ```
 
+If the run used a local image id (`build --no-push`, as on 2026-10-05), push
+that image, then pass `--base-image REPOSITORY@sha256:<digest> --validated-id
+sha256:<local id>` to `tmax_manifest.py`: the manifest is repinned to the
+pushed digest and keeps the local id as `base_image_id`.
+
 Then: commit the manifest, run `tests/` (the shipped-manifest test must be
 updated once tasks are kept), add a `tmax` source to
 `examples/prime_rl/train-sources.toml`, and set `tmax_rows` in

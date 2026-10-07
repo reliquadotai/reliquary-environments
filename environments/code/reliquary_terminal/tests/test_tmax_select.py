@@ -324,3 +324,17 @@ def test_a_test_that_loads_the_agents_code_in_process_is_excluded_but_keeps_its_
     # Added after the base was built: the base still carries what the task asked for.
     assert "tesseract-ocr" in base["apt.txt"].split()
     assert "numpy==1.26.4" in base["requirements.txt"].split()
+
+
+def test_repin_base_image_from_a_local_id_to_the_pushed_digest():
+    local = "sha256:" + "3" * 64
+    pushed = "ghcr.io/example/reliquary-tmax-base@sha256:" + "4" * 64
+    manifest = {"base_image": local, "tasks": {}}
+    out = tmax_select.repin_base_image(manifest, pushed, local)
+    assert out["base_image"] == pushed and out["base_image_id"] == local
+    with pytest.raises(ValueError, match="pinned by digest"):
+        tmax_select.repin_base_image(manifest, "ghcr.io/example/reliquary-tmax-base:latest", local)
+    with pytest.raises(ValueError, match="not on --validated-id"):
+        tmax_select.repin_base_image(manifest, pushed, "sha256:" + "5" * 64)
+    with pytest.raises(ValueError, match="nothing to repin"):
+        tmax_select.repin_base_image(out, pushed, local)

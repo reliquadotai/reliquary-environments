@@ -724,6 +724,23 @@ def build_manifest(
     return manifest, base_files(apt.packages, pip.requirements, torch_cpu)
 
 
+def repin_base_image(manifest: dict, image: str, validated_id: str | None) -> dict:
+    """The manifest with `base_image` set to the pushed `image`
+    (REPOSITORY@sha256:...), when the box phase ran on a local image id. The
+    id stays recorded as `base_image_id`. Pushing keeps the image's id, so on
+    a host with the same Docker image store (classic or containerd: the id is
+    the config digest in one, the manifest digest in the other), `docker image
+    inspect --format '{{.Id}}'` of the pulled image must print it."""
+    if "@sha256:" not in image:
+        raise ValueError(f"the base image must be pinned by digest (REPOSITORY@sha256:...), got {image!r}")
+    current = manifest.get("base_image")
+    if not current or not current.startswith("sha256:"):
+        raise ValueError(f"nothing to repin: the manifest's base image is {current!r}, not a local image id")
+    if validated_id != current:
+        raise ValueError(f"the validation ran on {current}, not on --validated-id {validated_id}")
+    return {**manifest, "base_image": image, "base_image_id": current}
+
+
 def _reason_rank(code: str) -> int:
     order = STATIC_REASONS + BOX_REASONS
     return order.index(code) if code in order else len(order)
