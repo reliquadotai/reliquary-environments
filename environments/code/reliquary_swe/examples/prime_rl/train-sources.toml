@@ -12,6 +12,10 @@
 #   each -- roughly 0.3 TB compressed, more once unpacked. Raise it only
 #   after checking the Docker disk; `python -m reliquary_swe.images` prints
 #   the exact list to pre-pull.
+# - `num_tasks = 300` (r2e) is 300 R2E-Gym-Subset images, 0.8-1.5 GB each on
+#   disk for the three measured -- at most ~0.45 TB, less by however many
+#   layers images of one repository share (not measured). The split's order
+#   is a fixed hash order, so any prefix mixes the 10 repositories.
 # - `ratio = 1.0` each: an even mix until a pilot says which corpus carries
 #   more signal per rollout.
 
@@ -37,6 +41,22 @@ ratio = 1.0
 env.taskset.id = "reliquary-swe"
 env.taskset.split = "polyglot"
 env.taskset.num_tasks = 100
+env.agent.harness.id = "bash"
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 40
+
+[source.curriculum.gates.zero_signal]
+type = "advantage_range"
+reject_min = 0.0
+reject_max = 0.0
+
+[[source]]
+name = "reliquary-swe-r2e"
+ratio = 1.0
+env.taskset.id = "reliquary-swe"
+env.taskset.split = "r2e"
+env.taskset.num_tasks = 300
 env.agent.harness.id = "bash"
 env.agent.runtime.type = "docker"
 env.agent.runtime.allow = []

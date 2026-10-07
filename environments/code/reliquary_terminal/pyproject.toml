@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reliquary-terminal"
-version = "0.1.0a1"
+version = "0.2.0"
 description = "Terminal-Bench 2.1 for evaluation and MiMo-V2.6's terminal tasks for training, graded by each task's own tests"
 readme = "README.md"
 license = "MIT"
@@ -36,6 +36,9 @@ addopts = ["-q", "--strict-markers"]
 asyncio_mode = "auto"
 markers = [
   "docker: tests that provision a Docker container",
+  # Episodes on a local signed-episode gateway with gVisor: the sandbox test host only,
+  # with RUN_SANDBOX_PARITY=1 (docs/sandbox-tasks.md).
+  "sandbox_live: runs episodes on a local signed-episode gateway (test host only)",
 ]
 
 [tool.uv]

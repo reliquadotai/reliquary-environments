@@ -95,8 +95,8 @@ class SweEnv(vf.Env[SweEnvConfig]):
             # grading.grade's own docstring.
             "results_parsed": report.results_parsed,
             "test_command_exit_code": report.test_command_exit_code,
-            # Polyglot only (empty otherwise): the one clue to whether a
-            # nonzero exit was a real failing test or a runner that never
+            # Polyglot and R2E only (empty otherwise): the one clue to
+            # whether a 0 was a real failing test or a runner that never
             # started -- see grading.Report.test_output_tail.
             "test_output_tail": report.test_output_tail,
         }

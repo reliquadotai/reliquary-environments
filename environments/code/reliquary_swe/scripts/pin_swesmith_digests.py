@@ -25,12 +25,20 @@ ACCEPT = ",".join(
 TIMEOUT = 30  # seconds per registry request
 
 
-def digest(image: str) -> str:
-    name, _, tag = image.partition(":")
-    tag = tag or "latest"
+def pull_token(name: str) -> str:
+    """An anonymous Docker Hub pull token for repository `name`."""
     url = f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{name}:pull"
     with urllib.request.urlopen(url, timeout=TIMEOUT) as r:
-        token = json.load(r)["token"]
+        return json.load(r)["token"]
+
+
+def digest(image: str, token: str | None = None) -> str:
+    """`image` (`name:tag`) as `name@sha256:...`. `token` lets a caller
+    pinning many tags of one repository fetch it once (see
+    `pin_r2e_digests.py`); by default each call fetches its own."""
+    name, _, tag = image.partition(":")
+    tag = tag or "latest"
+    token = token or pull_token(name)
     req = urllib.request.Request(
         f"https://registry-1.docker.io/v2/{name}/manifests/{tag}",
         method="HEAD",

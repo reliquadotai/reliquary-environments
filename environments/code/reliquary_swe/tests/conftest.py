@@ -16,17 +16,46 @@ because the policy is enforced, but because nothing ever enforced it.
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import shutil
 import subprocess
+import sys
+import types
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import provision_runtime
-
 from reliquary_swe.env import SweEnv, SweEnvConfig
 from reliquary_swe.taskset import SweTask
+from verifiers.v1.runtimes import provision_runtime
+
+
+def _install_episode_task_shim() -> None:
+    """reliquary-sandbox is private and absent in CI: when its `episode_task` cannot be
+    imported, put the test-only copy (`episode_task_shim.py`, stdlib only) in its place so
+    the hook tests run anyway. `test_episode_task_shim.py` checks the copy against the
+    real module wherever that is installed."""
+    try:
+        import reliquary_sandbox.episode_task  # noqa: F401
+    except ImportError:
+        name = "reliquary_sandbox.episode_task"
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).with_name("episode_task_shim.py"))
+        module = importlib.util.module_from_spec(spec)
+        parent = sys.modules.get("reliquary_sandbox")
+        if parent is None:
+            parent = types.ModuleType("reliquary_sandbox")
+            parent.__path__ = []
+            sys.modules["reliquary_sandbox"] = parent
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        parent.episode_task = module
+
+
+_install_episode_task_shim()
 
 
 def _docker_available() -> bool:
@@ -96,6 +125,19 @@ def _task_for(instance_id: str) -> SweTask:
     raise AssertionError(f"{instance_id} is not in the taskset")
 
 
+def _limits() -> dict[str, float]:
+    """Optional `--cpus`/`--memory` caps on every box these tests start, from
+    `RELIQUARY_SWE_TEST_CPUS` and `RELIQUARY_SWE_TEST_MEMORY_GB`. Unset (the
+    default) means no cap, as before. For a container host that also serves
+    production containers, where a test box must not compete unbounded."""
+    limits = {}
+    if cpus := os.environ.get("RELIQUARY_SWE_TEST_CPUS"):
+        limits["cpu"] = float(cpus)
+    if memory := os.environ.get("RELIQUARY_SWE_TEST_MEMORY_GB"):
+        limits["memory"] = float(memory)
+    return limits
+
+
 @asynccontextmanager
 async def provisioned_runtime(task: SweTask) -> AsyncIterator[vf.Runtime]:
     """Provision and tear down a real box for `task`, network-restricted and
@@ -108,6 +150,7 @@ async def provisioned_runtime(task: SweTask) -> AsyncIterator[vf.Runtime]:
         image=task.data.image,
         workdir=task.data.workdir,
         allow=task.data.network_allow,
+        **_limits(),
     )
     async with provision_runtime(docker_config) as box:
         # Marks the box as having been through one trusted-setup pass; a
@@ -194,7 +237,7 @@ async def run_gold_episode(task: SweTask) -> vf.Episode:
             # This box is Docker-only; the config's own default (Prime) has no
             # host here. The task's real image/workdir/network policy still
             # come from resolve_runtime_config, exactly as a real run would.
-            grading_runtime=vf.DockerConfig(),
+            grading_runtime=vf.DockerConfig(**_limits()),
         )
     )
     await env.finalize(task, episode)

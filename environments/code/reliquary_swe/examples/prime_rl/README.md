@@ -141,16 +141,17 @@ logging format.
 ## Train for real
 
 `train-sources.toml` is the training corpus: SWE-smith (`split = "train"`,
-top 20 images) and the MiMo-V2.6 polyglot tasks (`split = "polyglot"`, first
-100 tasks), mixed evenly. It is supplied exactly like the smoke file, so
+top 20 images), the MiMo-V2.6 polyglot tasks (`split = "polyglot"`, first
+100 tasks) and R2E-Gym-Subset (`split = "r2e"`, first 300 tasks), mixed
+evenly. It is supplied exactly like the smoke file, so
 `rl.toml` still carries no source of its own, and
 `tests/test_examples.py` checks it never names `eval`.
 
-Pre-pull every image first — one per polyglot task, gigabytes each — and
+Pre-pull every image first — one per polyglot or R2E task, gigabytes each — and
 check the Docker disk before starting, not after:
 
 ```bash
-for args in "--split train --num-images 20" "--split polyglot --num-tasks 100"; do
+for args in "--split train --num-images 20" "--split polyglot --num-tasks 100" "--split r2e --num-tasks 300"; do
   prime-rl/.venv/bin/python -m reliquary_swe.images $args
 done | xargs -P 4 -n 1 docker pull -q
 df -h "$(docker info --format '{{.DockerRootDir}}')"

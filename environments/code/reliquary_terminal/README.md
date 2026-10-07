@@ -13,10 +13,58 @@ section 4, option C):
 `--taskset.split` has no default, so a training source cannot fall back to
 the evaluation set by omission.
 
-Like `reliquary-swe`, this package defines no tools: the harness
-(`bash`, `mini_swe_agent`, ...) supplies the shell. It builds on
-`verifiers`' own Harbor integration (`HarborTask`, `HarborEnv`) rather than
-reimplementing it.
+Like `reliquary-swe`, this package defines no tools of its own: the harness
+supplies the shell. It builds on `verifiers`' own Harbor integration
+(`HarborTask`, `HarborEnv`) rather than reimplementing it, and adds three
+things a 2026-10-02 qualification run showed were missing (below): a
+per-command timeout, per-test grading detail, and removal of the containers
+an interrupted run leaves behind.
+
+## The shell: `bash` with a per-command timeout
+
+The package's default harness, `reliquary-terminal`, is `verifiers`' `bash`
+harness with one function replaced. Upstream runs every command with a fixed
+3,600 s timeout that kills `bash` alone; in the qualification run one `grep`
+over a whole tree held its rollout for 1,489 s. Here a command that outlives
+`--env.agent.harness.command-timeout` (default 180 s) has its process group
+killed, and the agent gets its output so far followed by
+`[command timed out after 180 s; its process group was killed. ...]`; only the
+last MiB of each output stream is kept. 180 s is 18x the
+longest of the 2,120 terminal commands in that run's traces (10 s;
+`environment.toml`, `command_timeout_seconds`). `--env.agent.harness.id bash`
+still selects the upstream harness, without the timeout.
+
+## Grading detail
+
+Every task of both splits runs pytest with `--ctrf /logs/verifier/ctrf.json`
+before writing 1 or 0 to `reward.txt`. The reward is still `reward.txt`; the
+trace that carries it also gets `info["grading"]` -- `test.sh`'s exit code,
+the tail of its output (where `anti_hack_guard.py` explains a rejection),
+and each test's name, status and failure message -- and the metrics
+`tests_total`, `tests_passed`, `tests_failed`. A report already in the box
+is deleted before `test.sh` runs, so a missing one reads as missing.
+
+## Containers left behind
+
+`verifiers` removes a rollout's container on a clean exit and on a first
+Ctrl-C or SIGTERM, but not when the process is SIGKILLed -- which its own
+worker pool does to a worker still tearing down 10 s after an interrupt --
+and its containers (named after the rollout's trace id) carry no label. So every process that sets up
+a box for this package records the container's name in a ledger under
+`~/.cache/reliquary-terminal/containers/`, and a detached guardian removes
+them once that process is dead, however it died. Ledgers whose guardian died
+too are reaped when the environment next starts on the host, or by hand:
+
+```bash
+uv run python -m reliquary_terminal.containers list   # ledgers and their containers
+uv run python -m reliquary_terminal.containers reap   # remove those of dead processes
+```
+
+Only names shaped like verifiers' boxes (32 hex, or `vf-` + 12 hex), from
+ledgers this user wrote on this host and in this pid namespace, are ever
+removed. A process that cannot read its own start time or pid namespace
+(no `/proc`) records nothing and starts no guardian: "cannot tell" always
+reads as alive.
 
 ## `eval`: Terminal-Bench 2.1
 
@@ -84,8 +132,8 @@ uv sync --locked
 uv run pytest
 ```
 
-Container tests are marked `@pytest.mark.docker` and skip without a
-reachable Docker daemon. They pull two images: `alexgshaw/fix-git` and
+Container tests are marked `@pytest.mark.docker` and run only with
+`RELIQUARY_DOCKER_TESTS=1` and a reachable Docker daemon. They pull two images: `alexgshaw/fix-git` and
 `general-agent-env-1`.
 
 ## Train
@@ -94,3 +142,28 @@ See `examples/prime_rl/`: `rl.toml` evaluates on Terminal-Bench 2.1 and
 carries no train source; `train-sources.toml` supplies the `train` split.
 Sixty-four tasks is small — meant as one component of a mix (e.g. with
 `reliquary-swe`'s sources, weighted by `ratio`), not a run on its own.
+
+## Signed sandboxes
+
+`reliquary_terminal.sandbox:sandbox_task` serves the `train` split on a signed-episode
+sandbox gateway (`episode_envs = {"reliquary-terminal": "reliquary_terminal.sandbox:sandbox_task"}`).
+
+- Served: `train` rows only, 17 of the 64. Refused: `eval` (graded in the agent's box by
+  design), rows that need the network, three rows that put `/app` on `PYTHONPATH`, and rows
+  whose tests run agent code inside pytest (`in_process_agent_code`). tmax is not served yet.
+- State handed to the grader: the artifact roots that exist (`/app`), through the sandbox's
+  `archive`, framed with the list of present roots; a deleted root is graded, not an error.
+  The grading box restores them once, then stages `/tests`.
+- Grading refuses links into `/tests`, `/logs`, `/proc`, `/dev` and `/sys`, ignores
+  `reward.json`, requires a complete CTRF report for a reward of 1, and stops stray processes
+  after `test.sh`. Residual: a subprocess left by a served row can race that stop; only separate
+  uids close it.
+- Needs reliquary-sandbox at `e0217aa` or later (`stop_processes`), and `verifiers` at the
+  pinned commit with its Harbor `taskset` and `env` modules unchanged; import fails otherwise.
+- Our own failures before the restore (a state header `extract` cannot have written, the
+  row's test files not parsing, an absent root that cannot be cleared), and grading that
+  never ran `test.sh` through the stopping runtime, abort the episode (`EnvInfraError`)
+  instead of grading. Graded facts carry `stop_ran: true`.
+- `served_indexes("train")` lists the indexes served on sandboxes.
+
+Failure contract, limits and the parity table: `docs/sandbox-tasks.md` (repository root).

@@ -35,12 +35,12 @@ def test_train_sources_never_name_the_evaluation_split():
     sources = tomllib.loads(_TRAIN_SOURCES.read_text())["source"]
     assert sources
     for source in sources:
-        assert source["env"]["taskset"]["split"] in ("train", "polyglot"), source["name"]
+        assert source["env"]["taskset"]["split"] in ("train", "polyglot", "r2e"), source["name"]
 
 
 def test_train_sources_bound_the_polyglot_disk_budget():
-    # One image per polyglot task: an unbounded source would try to pull
-    # the whole corpus, several terabytes, on the first pass through it.
+    # One image per polyglot or R2E task: an unbounded source would try to
+    # pull the whole corpus, terabytes, on the first pass through it.
     for source in tomllib.loads(_TRAIN_SOURCES.read_text())["source"]:
-        if source["env"]["taskset"]["split"] == "polyglot":
+        if source["env"]["taskset"]["split"] in ("polyglot", "r2e"):
             assert isinstance(source["env"]["taskset"].get("num_tasks"), int)

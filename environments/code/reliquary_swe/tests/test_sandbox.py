@@ -1,0 +1,507 @@
+"""reliquary-swe's sandbox declarations and hooks, without boxes (see test_sandbox_parity.py
+for the live goldens)."""
+
+import pytest
+from sandbox_fakes import ScriptedRuntime
+
+from reliquary_swe import corpus, grading, sandbox, taskset
+
+GIB = 1024**3
+ROW = corpus.SweRow(instance_id="oauthlib__x", repo="oauthlib/oauthlib",
+                    problem_statement="Fix it.", fail_to_pass=("t::a",), pass_to_pass=(),
+                    gold_patch="", base_commit="origin/oauthlib__x~1",
+                    image="jyangballin/swesmith.x86_64.o@sha256:" + "a" * 64)
+DATA = taskset.task_for(ROW, 3, "train").data
+
+
+def _train_row(split, index):
+    return sandbox.SplitRef("train", 20), ROW
+
+
+def test_cleanup_script_is_what_setup_runs():
+    assert taskset.cleanup_script("train").startswith("set -e")
+    assert taskset._TRAIN_GUARD_AND_REROOT in taskset.cleanup_script("train")
+    assert taskset._TRAIN_GUARD_AND_REROOT not in taskset.cleanup_script("r2e")
+    assert taskset._R2E_HIDE_TESTS in taskset.cleanup_script("r2e")
+    assert taskset.cleanup_script("polyglot").endswith(taskset._STRIP_AND_GC)
+
+
+def test_split_names():
+    assert sandbox.parse_split("train") == sandbox.SplitRef("train", corpus.DEFAULT_SWESMITH_IMAGES)
+    assert sandbox.parse_split("train:5") == sandbox.SplitRef("train", 5)
+    assert sandbox.parse_split("r2e") == sandbox.SplitRef("r2e")
+    for bad in ("train:", "train:05", "train:x", "polyglot:3", "", "TRAIN"):
+        with pytest.raises(ValueError):
+            sandbox.parse_split(bad)
+
+
+def test_the_evaluation_set_is_never_served():
+    with pytest.raises(ValueError, match="evaluation"):
+        sandbox.parse_split("eval")
+
+
+def test_a_declaration_maps_the_row(monkeypatch):
+    monkeypatch.setattr(sandbox, "row_for", _train_row)
+    found = sandbox.declaration("train", 3)
+    assert (found.image, found.workdir, found.tools) == (ROW.image, "/testbed", ("bash", "edit"))
+    assert found.grading_workdir is None and found.publish_state is True
+    assert found.limits == {"memory_bytes": 4 * GIB, "disk_bytes": 10 * GIB, "pids": 1024,
+                            "wall_s": 3600, "per_call_timeout_s": 600}
+    assert found.grading_timeout_s <= 810
+    assert found.data == DATA
+
+
+def test_the_prompt_is_the_tasksets(monkeypatch):
+    monkeypatch.setattr(sandbox, "row_for", _train_row)
+    assert sandbox.sandbox_prompt("train", 3) == DATA.prompt
+
+
+def test_a_tag_only_image_needs_a_pinned_digest(monkeypatch):
+    row = corpus.SweRow(instance_id="p", repo="", problem_statement="", fail_to_pass=(),
+                        pass_to_pass=(), gold_patch="", image="xiaomimimo/mimo-v2.6-rl-oss:p")
+    monkeypatch.setattr(sandbox, "_polyglot_digests", lambda: {})
+    with pytest.raises(ValueError, match="pinned digest"):
+        sandbox.image_of(row)
+    pinned = "xiaomimimo/mimo-v2.6-rl-oss@sha256:" + "b" * 64
+    monkeypatch.setattr(sandbox, "_polyglot_digests", lambda: {row.image: pinned})
+    assert sandbox.image_of(row) == pinned
+
+
+def test_polyglot_tasks_index_one_cached_load(monkeypatch):
+    # A gateway resolves many indexes: one load of the split, never one cached prefix per index.
+    rows = tuple(corpus.SweRow(instance_id=f"t{i}", repo="", problem_statement="",
+                               fail_to_pass=(), pass_to_pass=(), gold_patch="",
+                               image=f"repo:t{i}") for i in range(3))
+    calls = []
+    monkeypatch.setattr(sandbox.corpus, "load_polyglot_rows",
+                        lambda num_tasks: calls.append(num_tasks) or rows)
+    monkeypatch.setattr(sandbox, "_polyglot_digests",
+                        lambda: {row.image: "repo@sha256:" + "e" * 64 for row in rows})
+    assert sandbox.row_for("polyglot", 2) == (sandbox.SplitRef("polyglot"), rows[2])
+    with pytest.raises(IndexError):
+        sandbox.row_for("polyglot", 3)
+    assert calls == [None, None]
+
+
+async def test_prepare_runs_the_setup_cleanup_then_records_base_and_untracked():
+    runtime = ScriptedRuntime()
+    runtime.on(lambda argv: argv[:2] == ["sh", "-c"] and "ls-files" in argv[2],
+               stdout="run_tests.sh\0install.sh\0")
+    await sandbox.prepare(runtime, data=DATA)
+    argv, env = runtime.runs[0]
+    assert argv[2].startswith(taskset.cleanup_script("train"))
+    assert argv[2].endswith(f'git -C "$WORKDIR" update-ref {sandbox.BASE_REF} HEAD')
+    assert env == {"BASE_COMMIT": DATA.base_commit, "WORKDIR": "/testbed"}
+    assert runtime.files["/testbed/.git/reliquary-untracked"] == b"run_tests.sh\0install.sh"
+
+
+async def test_a_failed_cleanup_fails_the_open():
+    runtime = ScriptedRuntime()
+    runtime.on(lambda argv: argv[:2] == ["sh", "-c"], exit_code=1, stderr="not a Bug Patch")
+    with pytest.raises(RuntimeError, match="preparation failed"):
+        await sandbox.prepare(runtime, data=DATA)
+
+
+def _capture(seen, patch="diff --git a/x b/x\n", error=None):
+    async def fake_capture(trace, runtime, base_commit="", env=None, write_path=None, ignore=None):
+        seen.update(base=base_commit, ignore=ignore)
+        if error:
+            trace.info["patch_error"] = error
+        else:
+            trace.info["patch"] = patch
+    return fake_capture
+
+
+async def test_extract_diffs_against_the_recorded_base_not_head(monkeypatch):
+    runtime = ScriptedRuntime()
+    runtime.files["/testbed/.git/reliquary-untracked"] = b"run_tests.sh\0"
+    runtime.on(lambda argv: argv[:2] == ["git", "rev-parse"], stdout="abc123\n")
+    seen = {}
+    monkeypatch.setattr(sandbox.vf, "capture_patch", _capture(seen))
+    state = await sandbox.extract(runtime, data=DATA)
+    assert runtime.runs[0][0] == ["git", "rev-parse", "--verify", "-q", sandbox.BASE_REF]
+    assert seen == {"base": "abc123", "ignore": ["run_tests.sh"]}
+    assert state == b"diff --git a/x b/x\n"
+
+
+async def test_extract_without_base_or_list_falls_back_like_verifiers(monkeypatch):
+    runtime = ScriptedRuntime()
+    runtime.on(lambda argv: argv[:2] == ["git", "rev-parse"], exit_code=1)
+    seen = {}
+    monkeypatch.setattr(sandbox.vf, "capture_patch", _capture(seen, error="exit=128 broken"))
+    assert await sandbox.extract(runtime, data=DATA) == b""
+    assert seen == {"base": "", "ignore": []}
+
+
+@pytest.mark.parametrize("listed", [OSError(22, "not a regular file"), b"x" * (1024 * 1024 + 1)])
+async def test_an_untracked_list_the_agent_broke_is_its_own_outcome(monkeypatch, listed):
+    # The sandbox's read raises OSError subclasses (StateUnreadable, FileTooLarge) for a list
+    # the agent replaced by a FIFO, a directory or a huge file: a value, never an exception.
+    runtime = ScriptedRuntime()
+    runtime.files["/testbed/.git/reliquary-untracked"] = listed
+    runtime.on(lambda argv: argv[:2] == ["git", "rev-parse"], stdout="abc123\n")
+    seen = {}
+    monkeypatch.setattr(sandbox.vf, "capture_patch", _capture(seen))
+    assert await sandbox.extract(runtime, data=DATA) == b"diff --git a/x b/x\n"
+    assert seen == {"base": "abc123", "ignore": []}
+
+
+async def test_grade_runs_the_packages_grading_and_reports_its_facts(monkeypatch):
+    received = {}
+
+    async def fake_grade(runtime, data, patch):
+        received.update(data=data, patch=patch)
+        return grading.Report(1.0, True, True, 1, 0, {"t::a": "PASSED"}, results_parsed=1,
+                              test_command_exit_code=0)
+
+    monkeypatch.setattr(sandbox.grading, "grade", fake_grade)
+    result = await sandbox.grade(ScriptedRuntime(), b"diff --git a/x b/x\n", data=DATA)
+    assert received == {"data": DATA, "patch": "diff --git a/x b/x\n"}
+    assert result.reward == 1.0
+    assert result.facts["applied"] is True and result.facts["fail_to_pass_total"] == 1
+    assert "results" not in result.facts
+
+
+async def test_grade_lets_an_env_bug_raise(monkeypatch):
+    # Any other exception from grading.grade is an env bug: graded 0.0 `grading_failed` and
+    # counted by the gateway, never swallowed here, never turned into an abort.
+    from reliquary_sandbox.episode_task import EnvInfraError
+
+    async def broken(runtime, data, patch):
+        raise KeyError("an env bug")
+
+    monkeypatch.setattr(sandbox.grading, "grade", broken)
+    with pytest.raises(KeyError) as raised:
+        await sandbox.grade(ScriptedRuntime(), b"", data=DATA)
+    assert not isinstance(raised.value, EnvInfraError)
+
+
+async def test_a_pristine_box_that_is_not_what_the_corpus_says_is_ours(monkeypatch):
+    # The preparation steps run before the agent's patch touches the box: their failure is
+    # the image's or ours, so the episode is aborted (EnvInfraError), never graded 0.
+    from reliquary_sandbox.episode_task import EnvInfraError
+
+    async def broken(runtime, data, patch):
+        raise grading.PristineBoxError("could not strip history")
+
+    monkeypatch.setattr(sandbox.grading, "grade", broken)
+    with pytest.raises(EnvInfraError, match="could not strip history"):
+        await sandbox.grade(ScriptedRuntime(), b"", data=DATA)
+
+
+def _r2e_or_polyglot(split):
+    row = corpus.SweRow(instance_id="r__x", repo="r/r", problem_statement="", fail_to_pass=(),
+                        pass_to_pass=(), gold_patch="", base_commit="HEAD",
+                        image="img@sha256:" + "b" * 64, expected_output_json="{}")
+    return taskset.task_for(row, 0, split).data
+
+
+@pytest.mark.parametrize("data, failing", [
+    (DATA, lambda argv: argv[:3] == ["git", "checkout", "-q"]),
+    (DATA, lambda argv: argv[:2] == ["sh", "-c"] and taskset._STRIP_AND_GC in argv[2]),
+    (DATA, lambda argv: argv == ["git", "rev-parse", "HEAD"]),
+    (_r2e_or_polyglot("r2e"), lambda argv: argv[:2] == ["sh", "-c"] and "mv /r2e_tests" in argv[2]),
+    (_r2e_or_polyglot("polyglot"),
+     lambda argv: argv[:2] == ["sh", "-c"] and taskset._STRIP_AND_GC in argv[2]),
+    (DATA, lambda argv: argv[:3] == ["git", "ls-files", "-z"]),
+])
+async def test_each_pristine_box_preparation_failure_is_a_pristine_box_error(data, failing):
+    runtime = ScriptedRuntime()
+    runtime.on(lambda argv: argv[:3] == ["git", "apply", "--numstat"], stdout="1\t1\tsrc/x.py\0")
+    runtime.on(lambda argv: argv == ["git", "rev-parse", "HEAD"] and not failing(argv),
+               stdout="abc\n")
+    runtime.on(failing, exit_code=1, stderr="fatal")
+    runtime._answers.insert(0, runtime._answers.pop())  # the failure wins
+    with pytest.raises(grading.PristineBoxError):
+        await grading.grade(runtime, data, "diff --git a/src/x.py b/src/x.py\n")
+    assert issubclass(grading.PristineBoxError, RuntimeError)  # unchanged outside sandboxes
+
+
+def test_sandbox_task_builds_the_gateways_contract(monkeypatch):
+    from reliquary_sandbox import episode_task
+    monkeypatch.setattr(sandbox, "row_for", _train_row)
+    task = sandbox.sandbox_task("train", 3)
+    assert isinstance(task, episode_task.SandboxTask)
+    assert task.limits == episode_task.TaskLimits(**sandbox.LIMITS)
+    assert task.publish_state and task.effective_grading_workdir == "/testbed"
+
+
+async def test_extract_lets_the_step_deadline_through(monkeypatch):
+    # TimeoutError is an OSError: the deadline must reach the sandbox (extract_timeout).
+    runtime = ScriptedRuntime()
+    runtime.files["/testbed/.git/reliquary-untracked"] = TimeoutError("the step deadline passed")
+    monkeypatch.setattr(sandbox.vf, "capture_patch", _capture({}))
+    with pytest.raises(TimeoutError):
+        await sandbox.extract(runtime, data=DATA)
+
+
+async def test_a_box_whose_git_stopped_answering_extracts_an_empty_diff(monkeypatch):
+    # capture_patch raises SandboxError when git fails and `true` fails too, e.g. the agent
+    # removed its workdir. A real box fault is still seen by the sandbox (its runtime records
+    # it), so this only ever turns the agent's own wreckage into an empty diff.
+    import verifiers.v1 as vf
+
+    async def gone(trace, runtime, base_commit="", env=None, write_path=None, ignore=None):
+        raise vf.SandboxError("patch capture failed and the box stopped answering")
+
+    monkeypatch.setattr(sandbox.vf, "capture_patch", gone)
+    assert await sandbox.extract(ScriptedRuntime(), data=DATA) == b""
+
+
+async def test_prepare_refuses_an_untracked_list_over_its_bound():
+    runtime = ScriptedRuntime()
+    huge = "\0".join(f"vendor/{i:07d}.bin" for i in range(sandbox.MAX_UNTRACKED_BYTES // 10))
+    runtime.on(lambda argv: argv[:2] == ["sh", "-c"] and "ls-files" in argv[2], stdout=huge)
+    with pytest.raises(RuntimeError, match="untracked"):
+        await sandbox.prepare(runtime, data=DATA)
+    assert "/testbed/.git/reliquary-untracked" not in runtime.files
+
+
+def _polyglot_rows(count):
+    return tuple(corpus.SweRow(instance_id=f"t{i}", repo="", problem_statement=f"do {i}",
+                               fail_to_pass=(), pass_to_pass=(), gold_patch="",
+                               base_commit="HEAD", image=f"mimo:t{i}", workdir="/workspace/repo")
+                 for i in range(count))
+
+
+def test_an_unpinned_polyglot_index_is_refused_at_resolve(monkeypatch):
+    monkeypatch.setattr(sandbox.corpus, "load_polyglot_rows", lambda num_tasks: _polyglot_rows(3))
+    monkeypatch.setattr(sandbox, "_polyglot_digests",
+                        lambda: {"mimo:t0": "mimo@sha256:" + "c" * 64})
+    assert sandbox.declaration("polyglot", 0).image == "mimo@sha256:" + "c" * 64
+    for entry in (sandbox.declaration, sandbox.sandbox_prompt, sandbox.row_for):
+        with pytest.raises(ValueError, match="no pinned digest"):
+            entry("polyglot", 1)
+
+
+def test_the_images_command_lists_the_whole_split_by_default(monkeypatch, capsys):
+    import json
+
+    monkeypatch.setattr(sandbox.corpus, "load_polyglot_rows",
+                        lambda num_tasks: _polyglot_rows(3)[:num_tasks])
+    monkeypatch.setattr(sandbox, "_polyglot_digests",
+                        lambda: {f"mimo:t{i}": f"mimo@sha256:{i}" + "d" * 63 for i in range(3)})
+    sandbox.main(["images", "--split", "polyglot"])
+    manifest = json.loads(capsys.readouterr().out)
+    assert manifest["num_tasks"] is None and len(manifest["images"]) == 3
+
+
+def test_every_polyglot_task_is_pinned():
+    # Downloads the pinned polyglot revision once, as tests/test_polyglot_corpus.py does.
+    rows = corpus.load_polyglot_rows(None)
+    assert len(rows) == 2698
+    assert all(sandbox.image_of(row).startswith("xiaomimimo/mimo-v2.6-rl-oss@sha256:")
+               for row in rows)
+    assert len(sandbox.sandbox_images("polyglot")) == len({row.image for row in rows})
+
+
+def test_r2e_row_at_follows_the_split_order():
+    # Downloads the pinned R2E revision once, as tests/test_r2e_corpus.py does.
+    assert [corpus.r2e_row_at(i) for i in range(3)] == list(corpus.load_r2e_rows(3))
+    assert corpus.r2e_instance_ids()[:3] == [row.instance_id for row in corpus.load_r2e_rows(3)]
+
+
+@pytest.mark.parametrize("cleanup_tail, expected",
+                         [("false && true", 1), ("true && false", 1), ("true && true", 0)])
+def test_the_base_ref_never_hides_a_failed_cleanup_check(cleanup_tail, expected):
+    # R2E's cleanup ends on `test ! -e A && test ! -e B`, a list `set -e` does not exit on:
+    # the base ref must not run (and turn the exit into 0) after a failed check.
+    import subprocess
+
+    script = 'git() { echo ran; } ; set -e ; ' + cleanup_tail + sandbox._RECORD_BASE
+    done = subprocess.run(["sh", "-c", script], capture_output=True, text=True,
+                          env={"WORKDIR": "/nonexistent", "PATH": "/usr/bin:/bin"})
+    assert done.returncode == expected
+    assert done.stdout == ("ran\n" if expected == 0 else "")
+
+
+def _pin_script():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parent.parent / "scripts" / "pin_polyglot_digests.py"
+    spec = importlib.util.spec_from_file_location("pin_polyglot_digests", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_polyglot_pin_script_selects_a_prefix_and_named_instances():
+    module = _pin_script()
+    rows = [corpus.SweRow(instance_id=f"t{i}", repo="", problem_statement="", fail_to_pass=(),
+                          pass_to_pass=(), gold_patch="", image=f"repo:t{i}") for i in range(5)]
+    assert module.images(rows, 2, ["t4", "t1"]) == ["repo:t0", "repo:t1", "repo:t4"]
+
+
+def test_the_pin_script_refuses_an_unknown_instance():
+    module = _pin_script()
+    rows = _polyglot_rows(3)
+    with pytest.raises(ValueError, match="t9"):
+        module.images(rows, 1, ["t2", "t9"])
+
+
+def _registry(documents):
+    """A fake registry fetch: url suffix -> (headers, JSON document)."""
+    import json
+
+    def fetch(url, token, method="GET"):
+        for suffix, (headers, document) in documents.items():
+            if suffix in url:
+                return headers, (b"" if method == "HEAD" else json.dumps(document).encode())
+        raise AssertionError(url)
+    return fetch
+
+
+INDEX = "application/vnd.oci.image.index.v1+json"
+MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+
+
+@pytest.mark.parametrize("platforms, ok", [
+    ([("linux", "arm64"), ("linux", "amd64")], True),
+    ([("linux", "arm64")], False),
+    ([("windows", "amd64")], False),
+])
+def test_an_index_must_carry_linux_amd64(platforms, ok):
+    module = _pin_script()
+    index = {"mediaType": INDEX,
+             "manifests": [{"platform": {"os": o, "architecture": a}} for o, a in platforms]}
+    fetch = _registry({"/manifests/": ({"Content-Type": INDEX,
+                                          "Docker-Content-Digest": "sha256:" + "1" * 64}, index)})
+    if ok:
+        assert module.pin("mimo:t0", "tok", check_single=False, fetch=fetch) == \
+            "mimo@sha256:" + "1" * 64
+    else:
+        with pytest.raises(RuntimeError, match="linux/amd64"):
+            module.pin("mimo:t0", "tok", check_single=False, fetch=fetch)
+
+
+@pytest.mark.parametrize("arch, ok", [("amd64", True), ("arm64", False)])
+def test_a_single_platform_image_is_checked_through_its_config(arch, ok):
+    module = _pin_script()
+    fetch = _registry({
+        "/manifests/": ({"Content-Type": MANIFEST, "Docker-Content-Digest": "sha256:" + "2" * 64},
+                          {"mediaType": MANIFEST, "config": {"digest": "sha256:cfg"}}),
+        "/blobs/sha256:cfg": ({}, {"os": "linux", "architecture": arch}),
+    })
+    # Unchecked (HEAD only, no rate-limited manifest GET), it is pinned as is.
+    assert module.pin("mimo:t0", "tok", check_single=False, fetch=fetch).endswith("2" * 64)
+    if ok:
+        assert module.pin("mimo:t0", "tok", check_single=True, fetch=fetch).endswith("2" * 64)
+    else:
+        with pytest.raises(RuntimeError, match="linux/amd64"):
+            module.pin("mimo:t0", "tok", check_single=True, fetch=fetch)
+
+
+# -- SWE-smith rows on demand ------------------------------------------------------
+# The 20-image train split is 18,546 rows whose test lists alone weigh ~3.9 GB in memory
+# (measured: 4.1 GB RSS retained, 9.2 GB peak to build). A gateway resolves one task at a
+# time, so it keeps only each surviving row's dataset position and builds the row asked for.
+
+_PATCH = "diff --git a/m.py b/m.py\n--- a/m.py\n+++ b/m.py\n@@ -1 +1 @@\n-a\n+b\n"
+_NEW_FILE = ("diff --git a/n.py b/n.py\nnew file mode 100644\n--- /dev/null\n+++ b/n.py\n"
+             "@@ -0,0 +1 @@\n+x\n")
+
+
+class _FakeDataset:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            return [row[key] for row in self.rows]
+        return self.rows[key]
+
+
+def _smith(i, image, *, statement="Fix it.", f2p='["t::a"]', patch=_PATCH):
+    return {"instance_id": f"repo__x.{i}", "repo": "o/repo", "problem_statement": statement,
+            "FAIL_TO_PASS": f2p, "PASS_TO_PASS": '["t::b"]', "patch": patch,
+            "image_name": image}
+
+
+@pytest.fixture
+def fake_swesmith(monkeypatch):
+    rows = [_smith(0, "img.a"), _smith(1, "img.b"), _smith(2, "img.a", statement=" "),
+            _smith(3, "img.c"), _smith(4, "img.a", f2p="[]"), _smith(5, "img.b"),
+            _smith(6, "img.a", patch=_NEW_FILE), _smith(7, "img.a"), _smith(8, "img.b")]
+    monkeypatch.setattr(corpus, "load_dataset", lambda *a, **k: _FakeDataset(rows))
+    monkeypatch.setattr(corpus, "_swesmith_digests", lambda: {
+        name: f"{name}@sha256:" + "e" * 64 for name in ("img.a", "img.b", "img.c")})
+    caches = (corpus.load_swesmith_rows, corpus.swesmith_order)
+    for cached in caches:
+        cached.cache_clear()
+    yield rows
+    for cached in caches:
+        cached.cache_clear()
+
+
+def test_swesmith_rows_on_demand_are_the_loaded_rows(fake_swesmith):
+    loaded = corpus.load_swesmith_rows(2)
+    assert [row.instance_id for row in loaded] == [f"repo__x.{i}" for i in (0, 1, 5, 7, 8)]
+    assert [iid for _, iid in corpus.swesmith_order(2)] == [row.instance_id for row in loaded]
+    assert [corpus.swesmith_row_at(2, i) for i in range(len(loaded))] == list(loaded)
+    with pytest.raises(IndexError):
+        corpus.swesmith_row_at(2, len(loaded))
+    with pytest.raises(IndexError):
+        corpus.swesmith_row_at(2, -1)
+
+
+def test_the_sandbox_resolves_train_without_loading_the_split(fake_swesmith, monkeypatch):
+    def loaded(*args, **kwargs):
+        raise AssertionError("the sandbox must not materialize the whole train split")
+
+    monkeypatch.setattr(sandbox.swesmith_adapter, "ensure_python_profile", lambda repo: None)
+    expected = [corpus.swesmith_row_at(2, i) for i in range(5)]
+    monkeypatch.setattr(corpus, "load_swesmith_rows", loaded)
+    assert sandbox.sandbox_index("train:2", "repo__x.5") == 2
+    assert sandbox.row_for("train:2", 2)[1] == expected[2]
+    assert sandbox.declaration("train:2", 4).data.instance_id == "repo__x.8"
+    assert sandbox.sandbox_images("train:2") == ["img.a@sha256:" + "e" * 64,
+                                                 "img.b@sha256:" + "e" * 64]
+    assert sandbox.sandbox_images("train:2", 1) == ["img.a@sha256:" + "e" * 64]
+
+
+# -- the verifiers this module was checked against --------------------------
+
+PINNED_URL = ('{"url": "https://github.com/PrimeIntellect-ai/verifiers.git", "vcs_info": '
+              '{"vcs": "git", "commit_id": "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"}}')
+
+
+def test_the_installed_verifiers_is_the_pinned_one():
+    sandbox.require_pinned_verifiers(sandbox.installed_direct_url(),
+                                     sandbox.installed_verifiers_sources())
+    assert set(sandbox.PINNED_VERIFIERS_MODULES) == {"verifiers.v1.utils.git"}
+
+
+@pytest.mark.parametrize("direct_url", [None, "", "{}", PINNED_URL.replace("b2e4", "0000")])
+def test_verifiers_from_another_commit_is_refused(direct_url):
+    with pytest.raises(ImportError, match="b2e4e8157783b2c0dffc7821044c87f29f1c3ccf"):
+        sandbox.require_pinned_verifiers(direct_url, sandbox.installed_verifiers_sources())
+
+
+def test_a_changed_verifiers_module_is_refused():
+    sources = dict(sandbox.installed_verifiers_sources())
+    sources["verifiers.v1.utils.git"] += b"\n# patched\n"
+    with pytest.raises(ImportError, match="verifiers.v1.utils.git"):
+        sandbox.require_pinned_verifiers(PINNED_URL, sources)
+
+
+def test_the_check_runs_at_import(monkeypatch):
+    import importlib
+    import importlib.metadata
+
+    def missing(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", missing)
+    try:
+        with pytest.raises(ImportError, match="verifiers"):
+            importlib.reload(sandbox)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(sandbox)
