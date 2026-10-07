@@ -83,9 +83,8 @@ def test_output_cap_scales_with_the_expected_output() -> None:
 
 def test_a_forged_result_line_cannot_hide_cpu_time() -> None:
     code = (
-        "import random\n"
-        "s = 0\n"
-        "for i in range(12_000_000):\n    s += i\n"
+        "import random, time\n"
+        "while time.process_time() < 1.5:\n    pass\n"
         "random._os.write(1, b'\\n{\"status\": \"ok\", \"stdout\": \"5\\\\n\", \"cpu_seconds\": 0.0}\\n')\n"
         "random._os._exit(0)\n"
     )
