@@ -338,6 +338,23 @@ it.
   River's weak tests.
 - **Throughput:** 29 s of wall time per task at 2 workers.
 
+## Full run (interim, 2026-10-07 05:00 UTC, 2 vCPU box)
+
+4,515 of 6,061 tasks have a verdict (10 more raised infrastructure errors and
+will be retried). **Kept: 3,781 (83.7 %).** Excluded: `solution_fails` 402,
+`mutation_passes` 122, `setup_nondeterministic` 110, `initial_state_fails`
+38, `setup_failed` 28, `artifact_cap` 28, `solution_unstable` 5,
+`answer_needed_by_reference` 1. Unlike the pilot, the mutation check does
+reject some tasks (2.7 %), still far from River's ~40 % weak tests.
+Throughput about 105 tasks/h. At that rate the run ends around 2026-10-07
+20:00 UTC with about 5,050 kept tasks, about 2,400 SFT and 2,650 RL.
+
+Not yet applied: 85 pending tasks (1.4 %) have a final test that runs the
+agent's code inside pytest's process (`sandbox.in_process_agent_code`:
+`sys.path` 48, `importlib` loaders 32, `eval` 6). On signed-episode
+sandboxes these are refused by default; the `tmax` splits should drop them
+too.
+
 ## Open questions
 
 - **apt conflicts through dependencies**, and pip's resolver over about 200
