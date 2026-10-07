@@ -21,6 +21,10 @@ def _rows():
         SourceRow("t", "4", "Print the sum. If there are several answers, print any of them.", TESTS, (SUM,)),
         SourceRow("t", "5", "Print a plus b, a newer problem.", TESTS, (SUM,), "2025-02-01"),
         SourceRow("t", "6", "Print the product of a and b given on a single line.", TESTS, ("print(0)",)),
+        SourceRow(
+            "t", "7", "Print a pair whose sum is n.\n\nInput\n4\n\nOutput\n1 3\n",
+            (TestCase("4\n", "2 2\n"),), ("print(2, 2)",),
+        ),
     ]
 
 
@@ -30,7 +34,8 @@ def test_build_applies_every_stage_and_reports_it() -> None:
     # larger (source, upstream_id): ("t", "1"). Row 2 brings no reference and
     # is not dropped for it, because duplicates pool references first.
     assert [c.origin["upstream_id"] for c in curated] == ["1"]
-    assert report["loaded"] == 6
+    assert report["loaded"] == 7
+    assert report["dropped_example_mismatch"] == 1
     assert report["dropped_date"] == 1
     assert report["dropped_contaminated"] == 1
     assert report["dropped_multi_answer"] == 1
@@ -80,3 +85,15 @@ def test_the_build_cli_refuses_an_overloaded_build(monkeypatch, tmp_path, capsys
     assert exited.value.code not in (0, None)
     assert "harness_overload" in str(exited.value.code) + capsys.readouterr().err
     assert not (tmp_path / "out" / "problems-train.parquet").exists()
+
+
+def test_a_disagreeing_example_drops_every_copy_of_the_problem() -> None:
+    # a029962b1a30a621: one copy's tests contradict the statement's example,
+    # another copy's tests never feed it; both copies are the same problem.
+    statement = "Print a number with k digits and digital root d.\n\nInput\n4 4\n\nOutput\n5881\n"
+    rows = [
+        SourceRow("p", "1", statement, (TestCase("4 4\n", "4000\n"),), ("print(4000)",)),
+        SourceRow("p", "2", statement.replace("Print a", "print   a"), (TestCase("1 0\n", "0\n"),), ("print(0)",)),
+    ]
+    curated, report = build(rows, HeldOutIndex([]), workers=1)
+    assert curated == [] and report["dropped_example_mismatch"] == 2
