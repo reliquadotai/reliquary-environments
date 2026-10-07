@@ -70,14 +70,17 @@ class TerminalConfig(HarborConfig):
     # the evaluation set.
     #
     # "tmax" is a second training corpus: TMax-15K's tasks that passed the
-    # selection manifest (`tmax_select`, docs/tmax.md).
-    split: Literal["eval", "train", "tmax"] | None = None
+    # selection manifest (`tmax_select`, docs/tmax.md). "tmax_sft" and
+    # "tmax_rl" are its two disjoint parts, one for the SFT corpus job and one
+    # for RL (manifest `part`, docs/tmax.md decision 10). A training source
+    # names one of the two; "tmax" is both, for validation and evaluation.
+    split: Literal["eval", "train", "tmax", "tmax_sft", "tmax_rl"] | None = None
     dataset: str = EVAL_DATASET
-    # Only read when split="tmax": the first N kept tasks in the manifest's
+    # Only read for the tmax splits: the first N kept tasks in the manifest's
     # fixed order (ascending sha256 of the task id, as reliquary-swe's
     # `r2e`), `None` for all of them.
     num_tasks: int | None = None
-    # Only read when split="tmax": a local `tasks.zip` (or its unpacked tree)
+    # Only read for the tmax splits: a local `tasks.zip` (or its unpacked tree)
     # to convert from instead of the pinned download. It must be the pinned
     # revision; a zip is checked against its sha256.
     tmax_source: Path | None = None
@@ -259,17 +262,21 @@ TMAX_CPUS = 2.0
 TMAX_MEMORY_GB = 4.0
 
 
+TMAX_SPLITS = {"tmax": None, "tmax_sft": "sft", "tmax_rl": "rl"}
+
+
 def tmax_tasks(
     num_tasks: int | None = None,
     manifest_path: Path | None = None,
+    part: str | None = None,
 ) -> tuple[str, list[tuple[str, dict]]]:
-    """The base image and the kept tasks of the manifest, in its fixed order,
-    the first `num_tasks` of them."""
+    """The base image and the kept tasks of the manifest (of `part` only, when
+    given), in its fixed order, the first `num_tasks` of them."""
     manifest_path = manifest_path or tmax_select.MANIFEST
     if num_tasks is not None and num_tasks < 1:
         raise ValueError(f"num_tasks must be >= 1 or None, got {num_tasks}")
     manifest = tmax_select.load_manifest(manifest_path)
-    kept = tmax_select.kept_tasks(manifest)
+    kept = tmax_select.kept_tasks(manifest, part)
     if not kept or not manifest.get("base_image"):
         raise ValueError(
             "reliquary-terminal: the tmax split has no validated tasks yet -- "
@@ -344,7 +351,7 @@ class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
             raise ValueError(
                 'reliquary-terminal: --taskset.split is required ("eval" for '
                 'Terminal-Bench 2.1, "train" for MiMo-V2.6\'s terminal tasks, '
-                '"tmax" for TMax-15K\'s) -- '
+                '"tmax_sft" or "tmax_rl" for a part of TMax-15K\'s, "tmax" for all of it) -- '
                 "it has no default so a training source cannot silently fall "
                 "back to the evaluation set"
             )
@@ -353,8 +360,8 @@ class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
                 if self.config.tasks is None or row["instance_id"] in self.config.tasks:
                     yield TerminalTask(train_data(row, idx, self.config), self.config.task)
             return
-        if self.config.split == "tmax":
-            base_image, kept = tmax_tasks(self.config.num_tasks)
+        if self.config.split in TMAX_SPLITS:
+            base_image, kept = tmax_tasks(self.config.num_tasks, part=TMAX_SPLITS[self.config.split])
             source = _tmax_source(self.config.tmax_source)
             for idx, (task_id, entry) in enumerate(kept):
                 if self.config.tasks is None or task_id in self.config.tasks:
@@ -377,4 +384,4 @@ class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
             yield TerminalTask(data, self.config.task)
 
 
-__all__ = ["EVAL_DATASET", "TerminalConfig", "TerminalTaskset", "image_workdir", "tmax_data", "tmax_tasks"]
+__all__ = ["EVAL_DATASET", "TMAX_SPLITS", "TerminalConfig", "TerminalTaskset", "image_workdir", "tmax_data", "tmax_tasks"]

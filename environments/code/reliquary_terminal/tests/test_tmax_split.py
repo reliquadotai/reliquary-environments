@@ -27,7 +27,10 @@ def tmax_env(tmp_path, monkeypatch):
     src = tmp_path / "src"
     for tid in IDS:
         make_task(src, tid)
-    tasks = {tid: {"status": "kept", "run": 0, "protected": ["/home/user/.truth.json"], "hidden": ["/home/user/.truth.json"]} for tid in IDS[:4]}
+    tasks = {
+        tid: {"status": "kept", "part": part, "run": 0, "protected": ["/home/user/.truth.json"], "hidden": ["/home/user/.truth.json"]}
+        for tid, part in zip(IDS[:4], ["sft", "rl", "rl", "sft"])
+    }
     tasks[IDS[4]] = {"status": "excluded", "reasons": ["mutation_passes"]}
     manifest = {"base_image": IMAGE, "counts": {"status": {"kept": 4, "excluded": 1}}, "tasks": tasks}
     path = tmp_path / "manifest.json"
@@ -69,6 +72,21 @@ def test_tmax_yields_the_kept_tasks_in_hash_order(tmax_env, tmp_path):
     assert box.image == IMAGE and box.workdir == "/" and box.env == t.data.env
 
 
+def test_tmax_sft_and_tmax_rl_are_the_two_disjoint_parts(tmax_env):
+    src, _ = tmax_env
+    sft = [t.data.name for t in _load_split(src, "tmax_sft")]
+    rl = [t.data.name for t in _load_split(src, "tmax_rl")]
+    assert sft == sorted([IDS[0], IDS[3]], key=tmax_select.order_key)
+    assert rl == sorted([IDS[1], IDS[2]], key=tmax_select.order_key)
+    assert sorted(sft + rl) == sorted(t.data.name for t in _load(src))
+    # num_tasks takes a prefix of the part, never a task of the other part.
+    assert [t.data.name for t in _load_split(src, "tmax_rl", num_tasks=1)] == rl[:1]
+
+
+def _load_split(src, split, **kwargs):
+    return list(vf.load_taskset(_config(split=split, tmax_source=src, **kwargs)))
+
+
 def test_tmax_refuses_a_manifest_with_nothing_validated(tmp_path, monkeypatch):
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps({"base_image": None, "counts": {"status": {"pending": 3}}, "tasks": {"t": {"status": "pending"}}}))
@@ -84,6 +102,7 @@ def test_the_shipped_manifest_has_no_kept_task_before_the_box_phase():
     assert manifest["base_image"] is None
     statuses = {e["status"] for e in manifest["tasks"].values()}
     assert statuses <= {"pending", "excluded"}
+    assert manifest["counts"]["part"]["sft"]["pending"] + manifest["counts"]["part"]["rl"]["pending"] == manifest["counts"]["status"]["pending"]
     for entry in manifest["tasks"].values():
         assert entry["status"] != "excluded" or entry["reasons"]
         assert all(r in tmax_select.STATIC_REASONS for r in entry.get("reasons", []))

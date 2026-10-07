@@ -197,7 +197,7 @@ def test_manifest_records_every_task_and_its_reasons(tmp_path):
     manifest, base = _manifest(tmp_path)
     tasks = manifest["tasks"]
     assert len(tasks) == 5
-    assert tasks["task_000001_aaaaaaaa"] == {"status": "pending"}
+    assert tasks["task_000001_aaaaaaaa"] == {"status": "pending", "part": tmax_select.part_of("task_000001_aaaaaaaa", None, {})}
     assert tasks["task_000002_bbbbbbbb"]["reasons"] == ["no_successful_run"]
     assert tasks["task_000003_cccccccc"]["reasons"] == ["setup_network"]
     assert tasks["task_000004_dddddddd"]["reasons"] == ["apt_unknown"]
@@ -226,6 +226,7 @@ def test_validation_turns_pending_into_kept_or_excluded(tmp_path):
     manifest, _ = _manifest(tmp_path, validation={"task_000001_aaaaaaaa": kept})
     assert manifest["tasks"]["task_000001_aaaaaaaa"] == {
         "status": "kept",
+        "part": tmax_select.part_of("task_000001_aaaaaaaa", None, {}),
         "run": 0,
         "protected": ["/home/user/.truth.json"],
         "hidden": [],
@@ -235,3 +236,75 @@ def test_validation_turns_pending_into_kept_or_excluded(tmp_path):
     rejected = {"reasons": ["mutation_passes"], "base_image": image}
     manifest, _ = _manifest(tmp_path / "again", validation={"task_000001_aaaaaaaa": rejected})
     assert manifest["tasks"]["task_000001_aaaaaaaa"] == {"status": "excluded", "reasons": ["mutation_passes"]}
+
+
+# --------------------------------------------------------------------------
+# The SFT and RL parts.
+# --------------------------------------------------------------------------
+
+
+def test_a_task_without_anchor_is_hashed_on_its_own_id():
+    import hashlib
+
+    ids = [f"task_{i:06d}_{i:08x}" for i in range(2000)]
+    parts = [tmax_select.part_of(t, None, {}) for t in ids]
+    for t, p in zip(ids, parts):
+        h = int.from_bytes(hashlib.sha256(f"{tmax_select.PART_SALT}\0task:{t}".encode()).digest(), "big")
+        assert p == ("sft" if h < 2**255 else "rl")
+    assert 900 < parts.count("sft") < 1100
+    assert {tmax_select.part_of(t, None, {}, sft_fraction=1.0) for t in ids} == {"sft"}
+    assert {tmax_select.part_of(t, None, {}, sft_fraction=0.0) for t in ids} == {"rl"}
+
+
+def test_an_anchor_puts_all_its_tasks_in_one_part():
+    anchors = {f"t{i}": ("deadlock", "data_querying") for i in range(30)}
+    anchors |= {f"u{i}": ("leaky scaler", "data_science") for i in range(20)}
+    anchors |= {f"v{i}": (None, "debugging") for i in range(5)}
+    parts = tmax_select.anchor_parts(anchors)
+    assert set(parts) == {"deadlock", "leaky scaler"}
+    assert {tmax_select.part_of(f"t{i}", "deadlock", parts) for i in range(30)} == {parts["deadlock"]}
+
+
+def test_anchors_are_dealt_to_balance_each_domain():
+    # Four anchors of one domain, equal sizes: two to each part, whatever the hashes.
+    anchors = {f"{a}{i}": (a, "security") for a in "abcd" for i in range(10)}
+    parts = tmax_select.anchor_parts(anchors)
+    assert sorted(parts.values()) == ["rl", "rl", "sft", "sft"]
+    assert set(tmax_select.anchor_parts(anchors, sft_fraction=1.0).values()) == {"sft"}
+    assert set(tmax_select.anchor_parts(anchors, sft_fraction=0.0).values()) == {"rl"}
+    # The deal does not depend on the order tasks are listed in.
+    assert tmax_select.anchor_parts(dict(reversed(list(anchors.items())))) == parts
+
+
+def test_kept_tasks_of_one_part():
+    manifest = {
+        "tasks": {
+            "a": {"status": "kept", "part": "sft"},
+            "b": {"status": "kept", "part": "rl"},
+            "c": {"status": "pending", "part": "sft"},
+            "d": {"status": "excluded", "reasons": ["setup_failed"]},
+        }
+    }
+    assert [t for t, _ in tmax_select.kept_tasks(manifest, "sft")] == ["a"]
+    assert [t for t, _ in tmax_select.kept_tasks(manifest, "rl")] == ["b"]
+    assert sorted(t for t, _ in tmax_select.kept_tasks(manifest)) == ["a", "b"]
+    with pytest.raises(ValueError, match="part must be"):
+        tmax_select.kept_tasks(manifest, "eval")
+
+
+def test_the_shipped_manifest_parts_follow_the_rule():
+    manifest = tmax_select.load_manifest()
+    assert manifest["parts"]["salt"] == tmax_select.PART_SALT
+    assert manifest["parts"]["sft_fraction"] == tmax_select.SFT_FRACTION
+    anchors = manifest["parts"]["anchors"]
+    assert len(anchors) == 38 and set(anchors.values()) == {"sft", "rl"}
+    for tid, entry in manifest["tasks"].items():
+        if entry["status"] == "excluded":
+            assert "part" not in entry
+            continue
+        assert entry["part"] in tmax_select.PARTS
+        # Tasks without an anchor: the hash of their id.
+        if entry["part"] != tmax_select.part_of(tid, None, {}):
+            assert entry["part"] in anchors.values()
+    by_part = manifest["counts"]["part"]
+    assert sum(sum(v.values()) for v in by_part.values()) == 14601 - manifest["counts"]["status"]["excluded"]
