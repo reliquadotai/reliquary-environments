@@ -53,9 +53,22 @@ Fix the issue by editing the repository's source. Do not edit the tests.
 # an unborn one -- `git rev-parse HEAD` fails, and `gc` no longer counts the
 # base commit as reachable. Confirmed on a real polyglot image. For a SHA or
 # an `origin/<id>~1` expression it changes nothing: those already detach.
+# Every `reset --hard` below is preceded by an index refresh. A box starts
+# from the image's index, whose stat data (inode, ctime) no longer match the
+# container's files; `reset --hard` takes every such entry for modified and
+# rewrites the file, so all of the repository gets a fresh mtime. A build
+# that rebuilds from mtimes then starts over: pandas' meson editable install
+# recompiled every C extension on the first `import pandas` of every box
+# (measured 2026-10-07 on grade-01: 2 466 files rewritten, pandas boxes 8x
+# longer than the others). Refreshed first, only files whose content differs
+# are rewritten. `|| true`: a refresh reports, and exits 1 on, files that do
+# differ, which is what the reset is for.
+_REFRESH = 'git -C "$WORKDIR" update-index -q --refresh >/dev/null 2>&1 || true'
+
 _CHECKOUT = " ; ".join(
     [
         "set -e",
+        _REFRESH,
         'git -C "$WORKDIR" reset --hard "$BASE_COMMIT"',
         'git -C "$WORKDIR" checkout -q --detach "$BASE_COMMIT"',
     ]
@@ -94,6 +107,7 @@ _TRAIN_GUARD_AND_REROOT = " ; ".join(
         'NEW_ROOT=$(git -C "$WORKDIR" -c user.name=reliquary-swe '
         "-c user.email=reliquary-swe@localhost "
         "commit-tree HEAD^{tree} -m base)",
+        _REFRESH,
         'git -C "$WORKDIR" reset --hard "$NEW_ROOT"',
     ]
 )
