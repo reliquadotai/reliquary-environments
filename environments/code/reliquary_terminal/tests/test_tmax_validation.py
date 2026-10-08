@@ -143,3 +143,17 @@ def test_the_box_script_refuses_to_run_without_the_explicit_opt_in(tmp_path):
     )
     assert run.returncode != 0 and "RELIQUARY_TMAX_I_HAVE_A_BOX" in run.stderr
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_validation_that_kept_raising_gets_a_stated_reason():
+    cap = "Traceback ...\nRuntimeError: artifact '/home/user' takes the collection over the 33554432 byte limit. The grading box ..."
+    timeout = "Traceback ...\n    raise TimeoutError from exc_val\nTimeoutError\n"
+    runc = "Traceback ...\nverifiers.v1.errors.SandboxError: docker run failed: OCI runtime create failed\n\nRun 'docker run --help' for more information\n"
+    assert V.error_reason(cap) == "artifact_cap"
+    assert V.error_reason(timeout) == "validation_timeout"
+    assert V.error_reason(runc) == "validation_error"
+    assert V.error_reason("") == "validation_error"
+    record = V.error_record("t", "sha256:" + "0" * 64, timeout, attempts=2)
+    assert record["reasons"] == ["validation_timeout"]
+    assert record["details"]["error_attempts"] == 2 and record["details"]["error_tail"].endswith("TimeoutError")
+    assert set(V.ERROR_REASONS) <= set(__import__("reliquary_terminal.tmax_select", fromlist=["x"]).BOX_REASONS)

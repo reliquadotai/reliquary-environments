@@ -7,6 +7,8 @@ from __future__ import annotations
 import io
 import json
 import tarfile
+import tomllib
+from pathlib import Path
 
 import pytest
 import verifiers.v1 as vf
@@ -95,18 +97,39 @@ def test_tmax_refuses_a_manifest_with_nothing_validated(tmp_path, monkeypatch):
         list(vf.load_taskset(_config(split="tmax")))
 
 
-def test_the_shipped_manifest_has_no_kept_task_before_the_box_phase():
+def test_the_shipped_manifest_is_the_validated_one():
+    """The counts of the 2026-10-05/08 box phase (docs/tmax.md, "Full run").
+    A change here means the manifest was regenerated: update docs/tmax.md,
+    environment.toml (`tmax_rows`) and the README with it."""
     manifest = tmax_select.load_manifest()
     assert manifest["source"]["revision"] == tmax.SOURCE_REVISION
-    assert manifest["counts"]["status"].get("kept", 0) == 0
-    assert manifest["base_image"] is None
-    statuses = {e["status"] for e in manifest["tasks"].values()}
-    assert statuses <= {"pending", "excluded"}
-    assert manifest["counts"]["part"]["sft"]["pending"] + manifest["counts"]["part"]["rl"]["pending"] == manifest["counts"]["status"]["pending"]
-    for entry in manifest["tasks"].values():
-        assert entry["status"] != "excluded" or entry["reasons"]
-        assert all(r in tmax_select.STATIC_REASONS for r in entry.get("reasons", []))
     assert len(manifest["tasks"]) == manifest["counts"]["tasks"] == 14601
+    assert manifest["counts"]["status"] == {"excluded": 9603, "kept": 4998}
+    assert manifest["counts"]["part"] == {"sft": {"kept": 2406}, "rl": {"kept": 2592}}
+    # Every task has a verdict: nothing is left pending.
+    assert {e["status"] for e in manifest["tasks"].values()} == {"kept", "excluded"}
+    # Validated on a local image id; `tmax_manifest.py --base-image` repins it
+    # once the image is in a registry (docs/tmax.md).
+    assert manifest["base_image"] == "sha256:3d10148ef334ddea2ad5c7f1ea5d541fe8aa7877fe97a35bd6f706238e253f15"
+    known = set(tmax_select.STATIC_REASONS) | set(tmax_select.BOX_REASONS)
+    for entry in manifest["tasks"].values():
+        if entry["status"] == "excluded":
+            assert entry["reasons"] and set(entry["reasons"]) <= known
+        else:
+            assert entry["part"] in tmax_select.PARTS and entry["run"] in (0, 1, 2)
+            assert set(entry["hidden"]) <= set(entry["protected"])
+
+
+def test_the_shipped_parts_are_disjoint_and_cover_the_kept_tasks():
+    manifest = tmax_select.load_manifest()
+    sft = [t for t, _ in tmax_select.kept_tasks(manifest, "sft")]
+    rl = [t for t, _ in tmax_select.kept_tasks(manifest, "rl")]
+    everything = [t for t, _ in tmax_select.kept_tasks(manifest)]
+    assert (len(sft), len(rl), len(everything)) == (2406, 2592, 4998)
+    assert not set(sft) & set(rl) and set(sft) | set(rl) == set(everything)
+    descriptor = tomllib.loads((Path(__file__).parent.parent / "environment.toml").read_text())
+    rows = [v for section in descriptor.values() if isinstance(section, dict) for k, v in section.items() if k == "tmax_rows"]
+    assert rows == [4998]
 
 
 def test_tmax_rejects_a_zip_that_is_not_the_pinned_one(tmp_path, monkeypatch, tmax_env):

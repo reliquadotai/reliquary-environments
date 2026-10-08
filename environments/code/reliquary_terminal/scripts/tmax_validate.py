@@ -1,5 +1,5 @@
 """The box phase of the `tmax` split (docs/tmax.md, section 9). It needs a
-Docker host. It has NOT been run yet.
+Docker host. It ran once, on 2026-10-05/07 (docs/tmax.md, "Full run").
 
 Two steps:
 
@@ -37,8 +37,13 @@ training rollout runs. All boxes have no network, 2 CPU and 4 GB.
 - mutation: the first solution's collected artifacts, with every changed file
   emptied ("zero") or perturbed ("perturb"), must score 0.
 
-A task's whole validation is about 12 short-lived containers. With
-`--workers 6`, expect around 10 s of wall time per task, which is unmeasured.
+A task's whole validation is about 12 short-lived containers. Measured on a
+2 vCPU host with `--workers 2 --resource-multiplier 0.5`: about 30 s of wall
+time per task.
+
+A task whose validation raises leaves `<id>.error` (the traceback) instead of
+a verdict; running the same command again retries it. Tasks that still raise
+are excluded by `tmax_manifest.py --errors DIR` for a stated reason.
 """
 
 from __future__ import annotations
@@ -287,7 +292,14 @@ async def validate(task_id: str, args, source, config, env: TerminalEnv, base: V
             visible = make_task(source, task_id, {"run": run_index, "protected": protected, "hidden": []}, config, args.image, root)
             retry = []
             for attempt in range(STABILITY):
-                reward, collected, _ = await episode(env, visible, solve=True)
+                try:
+                    reward, collected, _ = await episode(env, visible, solve=True)
+                except RuntimeError as e:
+                    if "byte limit" in str(e):
+                        # The hidden inputs, left in place, take the state over the cap.
+                        checks.artifact_over_cap = True
+                        break
+                    raise
                 retry.append(reward)
                 if attempt == 0:
                     first_artifacts = collected

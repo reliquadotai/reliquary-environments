@@ -62,6 +62,9 @@ BOX_REASONS = (
     "answer_needed_by_reference",
     "mutation_passes",
     "mutation_inconclusive",
+    # No verdict: the validation raised on every attempt (`tmax_validation.error_reason`).
+    "validation_timeout",
+    "validation_error",
 )
 
 # Packages every box needs whatever the tasks ask for: the test runner and

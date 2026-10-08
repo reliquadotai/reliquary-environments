@@ -259,6 +259,47 @@ def verdict(checks: Checks) -> tuple[list[str], list[str]]:
     return [], hidden
 
 
+# Reason codes for a task whose validation never produced a verdict: it
+# raised an infrastructure error on every attempt (`<id>.error`, the
+# traceback). `scripts/tmax_manifest.py --errors` turns the last traceback
+# into one of these, so such a task is excluded for a stated reason rather
+# than left pending.
+ERROR_REASONS = ("artifact_cap", "validation_timeout", "validation_error")
+
+
+def error_reason(traceback_text: str) -> str:
+    """The reason code for a validation that kept raising.
+
+    - the artifact collection went over verifiers' byte limit: the same
+      fact as `artifact_cap`, raised on a path the script did not catch;
+    - a step outlived its timeout (in the 2026-10 run, always the final
+      test: more than 600 s in the probe or in the grading box, on 1 CPU and
+      2 GB): `validation_timeout`. The scoring timeout of a training
+      rollout is the same 600 s, so such a task could not be graded anyway;
+    - anything else: `validation_error`."""
+    if "byte limit" in traceback_text:
+        return "artifact_cap"
+    last = traceback_text.strip().splitlines()[-1] if traceback_text.strip() else ""
+    if last.startswith(("TimeoutError", "asyncio.exceptions.TimeoutError")):
+        return "validation_timeout"
+    return "validation_error"
+
+
+def error_record(task_id: str, base_image: str, traceback_text: str, attempts: int) -> dict:
+    """What the manifest merges for a task that only ever raised."""
+    lines = traceback_text.strip().splitlines()
+    return {
+        "task_id": task_id,
+        "base_image": base_image,
+        "reasons": [error_reason(traceback_text)],
+        "run": 0,
+        "protected": [],
+        "hidden": [],
+        "checks": {},
+        "details": {"error_attempts": attempts, "error_tail": "\n".join(lines[-3:])[-1500:]},
+    }
+
+
 def result_record(task_id: str, base_image: str, run: int, protected: list[str], checks: Checks, details: dict) -> dict:
     reasons, hidden = verdict(checks)
     return {

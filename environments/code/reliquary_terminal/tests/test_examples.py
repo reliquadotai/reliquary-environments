@@ -22,7 +22,9 @@ def test_rl_toml_evaluates_on_terminal_bench():
 def test_train_sources_never_name_the_evaluation_split():
     sources = tomllib.loads((_EXAMPLES / "train-sources.toml").read_text())["source"]
     assert sources
-    assert all(s["env"]["taskset"]["split"] == "train" for s in sources)
+    # Never `eval` (held out), `tmax_sft` (the SFT corpus job's part) or
+    # `tmax` (both parts).
+    assert {s["env"]["taskset"]["split"] for s in sources} == {"train", "tmax_rl"}
 
 
 def test_every_source_runs_the_harness_with_a_command_timeout():

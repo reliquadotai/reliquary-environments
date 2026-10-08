@@ -1,10 +1,16 @@
 # The training corpus for rl.toml: `--orchestrator.train @ train-sources.toml`.
-# Only the `train` split -- MiMo-V2.6's 64 terminal tasks, graded in a fresh
-# box that receives only the agent's /app. Terminal-Bench 2.1 (`eval`) is
-# held out; tests/test_examples.py checks nothing here names it.
+# Two sources, both graded in a fresh box. Terminal-Bench 2.1 (`eval`) is
+# held out, and `tmax_sft` belongs to the SFT corpus job: tests/test_examples.py
+# checks nothing here names either.
 #
-# 64 tasks is a small corpus: expect it to be a component of a mix (see
-# reliquary-swe's train-sources.toml, and `ratio`), not a run on its own.
+# - `train`: MiMo-V2.6's 64 terminal tasks; the box receives the agent's /app.
+# - `tmax_rl`: the RL part of TMax-15K's kept tasks, 2,592 of 4,998
+#   (docs/tmax.md); the box receives /app and /home/user. Its base image is
+#   pinned by a local id until it is pushed to a registry, so this source
+#   only runs on a host that has that image (docs/tmax.md, "What is left").
+#
+# The ratios are placeholders, not measured: expect both to be components of
+# a mix (see reliquary-swe's train-sources.toml).
 
 [[source]]
 name = "reliquary-terminal-train"
@@ -12,6 +18,22 @@ ratio = 1.0
 env.taskset.id = "reliquary-terminal"
 env.taskset.split = "train"
 # `bash` with a per-command timeout (environment.toml, `command_timeout_seconds`).
+env.agent.harness.id = "reliquary-terminal"
+env.agent.harness.command_timeout = 180
+env.agent.runtime.type = "docker"
+env.agent.runtime.allow = []
+env.agent.max_turns = 40
+
+[source.curriculum.gates.zero_signal]
+type = "advantage_range"
+reject_min = 0.0
+reject_max = 0.0
+
+[[source]]
+name = "reliquary-terminal-tmax-rl"
+ratio = 1.0
+env.taskset.id = "reliquary-terminal"
+env.taskset.split = "tmax_rl"
 env.agent.harness.id = "reliquary-terminal"
 env.agent.harness.command_timeout = 180
 env.agent.runtime.type = "docker"

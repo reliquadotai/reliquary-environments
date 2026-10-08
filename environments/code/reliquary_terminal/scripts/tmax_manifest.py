@@ -8,7 +8,11 @@ results (one JSON per task, written by `scripts/tmax_validate.py`). Outputs:
 No container is involved; the network is used only to fetch the pinned
 inputs the first time.
 
-    uv run python scripts/tmax_manifest.py [--source tasks.zip] [--validation DIR]
+    uv run python scripts/tmax_manifest.py [--source tasks.zip] [--validation DIR [--errors DIR ...]]
+
+`--errors` names the directories of `<id>.error` tracebacks, one per attempt,
+oldest first, for the tasks whose validation raised every time. A task with a
+verdict in `--validation` is never read from them.
 """
 
 from __future__ import annotations
@@ -19,13 +23,18 @@ import sys
 import time
 from pathlib import Path
 
-from reliquary_terminal import tmax, tmax_select
+from reliquary_terminal import tmax, tmax_select, tmax_validation
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", type=Path, help="tasks.zip or its unpacked tree (default: download the pinned zip)")
     parser.add_argument("--validation", type=Path, help="directory of the box phase's per-task JSON results")
+    parser.add_argument(
+        "--errors", type=Path, nargs="*", default=[],
+        help="directories of <id>.error tracebacks, one per attempt, oldest first: a task that "
+        "has no verdict and raised in every one of them is excluded (validation_timeout, ...)",
+    )
     parser.add_argument(
         "--base-image",
         help="REPOSITORY@sha256:... of the pushed base image, when the box phase ran on a local "
@@ -46,6 +55,17 @@ def main() -> None:
         for path in sorted(args.validation.glob("*.json")):
             result = json.loads(path.read_text())
             validation[result["task_id"]] = result
+        images = {v["base_image"] for v in validation.values() if v.get("base_image")}
+        raised: dict[str, list[str]] = {}
+        for directory in args.errors:
+            for path in sorted(directory.glob("*.error")):
+                raised.setdefault(path.stem, []).append(path.read_text())
+        for task_id, tracebacks in sorted(raised.items()):
+            if task_id in validation:
+                continue  # a later attempt reached a verdict
+            if len(tracebacks) < len(args.errors) or len(images) != 1:
+                sys.exit(f"{task_id}: raised in {len(tracebacks)} of {len(args.errors)} attempts, with no verdict -- retry it first")
+            validation[task_id] = tmax_validation.error_record(task_id, next(iter(images)), tracebacks[-1], len(tracebacks))
     manifest, base = tmax_select.build_manifest(source, index, contamination, validation)
     if args.base_image:
         manifest = tmax_select.repin_base_image(manifest, args.base_image, args.validated_id)
