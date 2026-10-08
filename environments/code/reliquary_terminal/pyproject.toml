@@ -16,6 +16,10 @@ dependencies = [
   # task.toml through it, and its CLI downloads Terminal-Bench.
   "harbor==0.21.0",
   "datasets>=2.19",
+  # The `tmax` converter parses pip requirement strings (`tmax`, `tmax_select`).
+  "packaging>=23",
+  # The `tmax` split downloads TMax-15K's pinned `tasks.zip`.
+  "huggingface_hub>=0.23",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",

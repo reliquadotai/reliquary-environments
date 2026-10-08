@@ -1,8 +1,9 @@
 """Per-test results next to the binary reward.
 
-Every task of both splits grades with pytest through `pytest-json-ctrf`
-(`--ctrf /logs/verifier/ctrf.json`, in all 89 Terminal-Bench 2.1 `test.sh`
-and all 64 MiMo ones), then writes 1 or 0 to `reward.txt`. verifiers reads
+Every task of every split grades with pytest through `pytest-json-ctrf`
+(`--ctrf /logs/verifier/ctrf.json`, in all 89 Terminal-Bench 2.1 `test.sh`,
+all 64 MiMo ones and the one `tmax` generates), then writes 1 or 0 to
+`reward.txt`. verifiers reads
 `reward.txt` and discards the rest: `test.sh`'s exit code, its output, and the
 CTRF report that says which tests failed. `TerminalTask` keeps them, on the
 trace that gets the reward:
@@ -46,7 +47,8 @@ the agent's box, untrusted anyway (below).
 worked in, as Terminal-Bench ships it, and anything the agent left running
 there can write `/logs/verifier/ctrf.json` or the output this records. The
 per-test data is fit for debugging there, never for partial credit. In the
-`train` split it comes from a fresh grading box that received only `/app`.
+`train` split it comes from a fresh grading box that received only `/app`,
+and in `tmax` from one that received `/app` and `/home/user`.
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ from verifiers.v1.runtimes import DockerRuntime, Runtime
 from verifiers.v1.tasksets.harbor.taskset import HarborTask
 from verifiers.v1.trace import Trace
 
-from reliquary_terminal import containers
+from reliquary_terminal import containers, tmax
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +172,16 @@ class _Watched:
 
 class TerminalTask(HarborTask):
     """A Harbor task that records its containers (see `containers`) and keeps
-    its per-test results (see this module's docstring)."""
+    its per-test results (see this module's docstring).
+
+    A `tmax` task also carries a setup bundle (`<task_dir>/setup/`), which
+    generates the task's data in every box at start (docs/tmax.md, decisions
+    1 and 3). `setup_role` says which box this is: "agent", where the
+    bundle deletes the hidden inputs, or "grade", where it stashes the
+    protected ones for `test.sh` to put back. `TerminalEnv.finalize` sets
+    "grade" on the task it builds for the grading box."""
+
+    setup_role: str = "agent"
 
     async def setup(self, runtime: Runtime) -> None:
         if isinstance(runtime, DockerRuntime):
@@ -182,6 +193,9 @@ class TerminalTask(HarborTask):
                     runtime.name, exc_info=True,
                 )
         await super().setup(runtime)
+        bundle = Path(self.data.task_dir) / "setup" if self.data.task_dir else None
+        if bundle is not None and (bundle / "setup.sh").is_file():
+            await tmax.run_setup(runtime, bundle, self.setup_role)
 
     async def _graded(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         grading: dict = {"ctrf": None}
