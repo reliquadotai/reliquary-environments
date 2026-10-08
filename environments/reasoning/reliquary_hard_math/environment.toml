@@ -1,0 +1,75 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/hard-math"
+version = "0.1.0a1"
+taskset = "reliquary-hard-math"
+entrypoint = "reliquary_hard_math:HardMathTaskset"
+compatibility_entrypoint = "reliquary_hard_math:HardMathEnvironment"
+license = "MIT AND CC-BY-4.0"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["hard_math"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 1
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+components = ["equivalent_answer"]
+
+[data]
+train = "nemotron-math-v2-aops-hard:v1:train"
+eval = "nemotron-math-v2-aops-hard:v1:eval"
+qualification = "nemotron-math-v2-aops-hard:v1:qualification"
+# Shipped in the wheel: CC BY 4.0 allows redistribution with attribution, which
+# NOTICE and every record's `source` carry. `sha256` covers the decompressed
+# body of `data/problems.jsonl.gz`; `source_sha256` covers the prepared parquet
+# it was built from, so the derivation can be rerun and compared.
+redistributable = true
+license = "cc-by-4.0"
+source = "nvidia/Nemotron-Math-v2"
+source_revision = "8e793210"
+source_subset = "aops"
+source_url = "https://huggingface.co/datasets/nvidia/Nemotron-Math-v2"
+source_path = "hard_math_aops_v1.parquet"
+source_sha256 = "b18f49e317067c996eef3c2c5f3048d8de6e894f1c5c178164bf0ee6ea6c4b8b"
+rows = 24525
+ungradable = 70
+virtual_length = 24455
+sha256 = "38a31f2b4ce5d49b4c25b50f18e240eb4738dbd066d1524021f56c6e55857566"
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary-environments"
+upstream = "https://huggingface.co/datasets/nvidia/Nemotron-Math-v2"
+upstream_license = "CC-BY-4.0"
+port = "filtered-corpus"
+
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """
+Olympiad problems are the shape on which every reasoning model reports its
+largest gap between a chain of thought and a direct answer, and this corpus is
+the hard end of it: on two thirds of its problems, upstream measured
+gpt-oss-120b failing more often than not when it reasons briefly, and on the
+hardest sixteenth failing more often than not when it reasons at length.
+Nothing grades
+the reasoning — only the last box is read — so deliberation costs tokens and
+never costs reward. The corpus is meant for distilling a thinking teacher.
+"""
+max_new_tokens = 32768
+max_new_tokens_rationale = """
+Not yet measured on this corpus. Set to the ceiling `reliquary-dapo-math`
+measured for competition maths, where 24,576 still cut 41% of rollouts and
+32,768 cut 34%. These problems are harder than DAPO's on upstream's own
+pass rates, so this is a floor rather than a comfortable margin; a pilot is to
+measure the share of completions that reach the budget before a box.
+"""

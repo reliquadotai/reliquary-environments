@@ -1,0 +1,23 @@
+{
+  "schema": "reliquary/environment-artifact/v1",
+  "environment": "reliquary_hard_math_v1",
+  "contract": "reliquary/boxed-answer/v1",
+  "distribution": {
+    "name": "reliquary-hard-math",
+    "version": "0.1.0a1"
+  },
+  "entrypoints": {
+    "taskset": "reliquary_hard_math:HardMathTaskset",
+    "replay": "reliquary_hard_math:HardMathEnvironment"
+  },
+  "source_manifest_sha256": "f0bf13fa87ced984004f27fcf85de8d5bf9ec7b26d68d008e8a622d238acfa2d",
+  "files": {
+    "reliquary_hard_math/__init__.py": "87839d4b0a6f6ecbde7c211c09eb9bc896f803e42d709ffb08502c68df10c45b",
+    "reliquary_hard_math/corpus.py": "d0b22e08d99a35c711dfca092bf961ec70be63cb721302616ff306efc3992a16",
+    "reliquary_hard_math/data/problems.jsonl.gz": "8754e56609a825fc4aa3e348618c8bc5c241e4c4d62b616fc0a720f1088e374a",
+    "reliquary_hard_math/environment.py": "7b051a5a8a5de1504136b34bdc9b0b2d2a481d3a2f8cafedb65e030d003a0ebd",
+    "reliquary_hard_math/goldens/reference.jsonl": "30bd6e1c31d6713108f2c1ed4406da4d866f76fd2b23d5e7c48b2e00cdc70a31",
+    "reliquary_hard_math/grading.py": "833a48711580eb448a8c6fa926ad0dea5bdca0c062cfffe9d5898d238da4700c",
+    "reliquary_hard_math/taskset.py": "17adf115efb243a011894b01533312a23d6c2769dac5d3abf647f51b678dc5f0"
+  }
+}

@@ -1,0 +1,30 @@
+reliquary-hard-math
+
+The code in this package is MIT-licensed (see LICENSE).
+
+The problem corpus shipped in reliquary_hard_math/data/problems.jsonl.gz is
+derived from:
+
+  Nemotron-Math-v2, NVIDIA Corporation
+  https://huggingface.co/datasets/nvidia/Nemotron-Math-v2
+  revision 8e793210, AoPS subset
+  Licensed under the Creative Commons Attribution 4.0 International licence
+  (CC BY 4.0): https://creativecommons.org/licenses/by/4.0/
+
+whose problems were collected from the Art of Problem Solving community forums
+(https://artofproblemsolving.com/community).
+
+Changes made: problems kept only where the reference answer is a short closed
+form (no proofs, sets, inequalities, named functions or words); reference
+answers trusted only when the forum answer is confirmed by at least one of
+upstream's high-reasoning model solutions or is the answer of at least half of
+them; duplicates and near-duplicates removed; problems overlapping
+DAPO-Math-17k or the AIME, HMMT, BeyondAIME, MATH-500, AMC and Apex benchmarks
+removed; answers that would need decimal approximation, and 70 references this
+package's grader cannot read, removed; problem text whitespace-trimmed and an
+answer-format instruction appended at serving time; problems reordered by
+difficulty tier and split into train, eval and qualification. Upstream's
+solutions are not included.
+
+Every record carries its upstream source in its `source` field. The corpus is
+redistributed under CC BY 4.0; this attribution must be kept with it.
