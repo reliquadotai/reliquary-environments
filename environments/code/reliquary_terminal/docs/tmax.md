@@ -318,6 +318,54 @@ union, for validation and evaluation; a training source names a part.
 3. Merge the results: `scripts/tmax_manifest.py --validation <dir>
    [--errors <dir> ...]`.
 
+### 11. User separation in the grading box (2026-10)
+
+**What runs as whom.** `test.sh` runs as root: it writes `reward.txt` = 0,
+runs `relay`, then `exec`s `tmax_box.py run-tests`, which, as root:
+
+- refuses (0) a `/tests` that is not a real directory or holds an entry the
+  test uid owns (an upload that kept the uploader's uid could hand it the
+  test files), then makes `/tests` readable by all and writable by its
+  owner only;
+- hands `/app` and `/home/user` to the test uid (61000): every entry, the
+  root included, gets that owner (a link itself, never its target; a linked
+  root is not entered), directories `u+rwx` before they are listed, files
+  `u+rw` and `u+x` where any `x` bit was set, set-id bits dropped. A device
+  node goes to root with mode 0, and a file whose inode has links outside
+  the roots is left alone;
+- runs pytest as the test uid (`setgroups([])`, `setgid`, `setuid`) under
+  `/usr/bin/python3 -I`, from `/tests`, with the grading command's
+  environment (fixed PATH, loader variables cleared), a fresh HOME of its own
+  under `/tmp` (outside the roots) and `PYTHONNOUSERSITE=1`, writing its
+  report into a directory only it and root can reach;
+- kills every process of the test uid (from a child dropped to that uid:
+  `kill(-1, SIGKILL)`, repeated until `/proc` shows none alive; zombies do not
+  count);
+- then writes the verdict: `ctrf.json` copied from the report (a regular
+  file, not a link, opened non-blocking, at most 8 MiB), and `reward.txt` = 1
+  only for pytest exit 0, every process gone, and a report. `/logs/verifier`
+  is re-made root's (mode 0755) and any `reward.json` or `ctrf.json` it did
+  not write is removed. A surviving process makes the exit status 1.
+
+**Why.** Decision 6's `in_process_agent_code` excludes the tasks whose test
+loads the agent's code into pytest's process. The rest still start the
+agent's programs as subprocesses, and before this a process left behind ran
+as root: it could rewrite `reward.txt` after pytest. Now everything the test
+starts runs as the test uid, which cannot write `/logs/verifier`, and none of
+it is alive when root writes the verdict.
+
+**What it changes.** Every task's `test.sh`, so every task's hash. The tests
+read the agent's trees as their owner, not as root. pytest runs under `-I`, so
+`PYTHONPATH` and the other `PYTHON*` variables no longer reach the test
+process itself (they still reach what it starts). HOME is no longer `/root`:
+a test that relied on root's home or root's privileges fails.
+
+**What is left.** Code the test starts runs with the test process's uid, so
+where the kernel allows it can still tamper with that process (and so with
+pytest's exit status), and with any protected input it can reach. The verdict
+file and the reap are root's. Tasks are re-validated under this by a reference
+sweep: a sample now, every task at qualification.
+
 ## What the box phase must run
 
 On a dedicated container host, never grade-01 or another production box. The

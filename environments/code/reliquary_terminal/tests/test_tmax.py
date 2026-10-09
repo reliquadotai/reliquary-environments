@@ -204,11 +204,13 @@ def test_convert_refuses_what_the_static_stage_excludes(tmp_path):
 
 
 def test_the_test_script_runs_pytest_from_tests_only():
-    assert "cd /tests" in tmax.TEST_SH
-    assert "--confcutdir=/tests" in tmax.TEST_SH and "-c /tests/pytest.ini" in tmax.TEST_SH
-    assert "--ctrf /logs/verifier/ctrf.json" in tmax.TEST_SH
-    # The relay runs before pytest, and its failure scores 0.
-    assert tmax.TEST_SH.index("tmax_box.py relay") < tmax.TEST_SH.index("pytest")
+    from reliquary_terminal import tmax_box
+
+    argv = tmax_box.test_argv("/tmp/r/ctrf.json")
+    assert "--confcutdir=/tests" in argv and argv[argv.index("-c") + 1] == "/tests/pytest.ini"
+    assert "--rootdir=/tests" in argv
+    # The relay runs before the tests, and its failure scores 0.
+    assert tmax.TEST_SH.index("tmax_box.py relay") < tmax.TEST_SH.index("exec /usr/bin/python3")
     assert tmax.TEST_SH.index("echo 0 >") < tmax.TEST_SH.index("tmax_box.py relay")
 
 

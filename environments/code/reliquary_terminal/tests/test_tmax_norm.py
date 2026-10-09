@@ -470,10 +470,13 @@ def test_root_argv_unsets_every_loader_and_python_variable_off_the_allow_list():
 
 
 def test_the_tests_python_ignores_the_user_site(tmp_path):
-    """test.sh runs pytest with `-s` and its helper with `-I`: a usercustomize in the
-    home's user site is never imported."""
-    assert "python3 -s -m pytest" in tmax.TEST_SH
+    """test.sh runs its helper with `-I`, and the helper runs pytest with `-I`: a
+    usercustomize in the home's user site is never imported."""
+    from reliquary_terminal import tmax_box
+
+    assert tmax_box.test_argv("/r")[:2] == ["/usr/bin/python3", "-I"]
     assert "python3 -I /tests/tmax_box.py relay" in tmax.TEST_SH
+    assert "python3 -I /tests/tmax_box.py run-tests" in tmax.TEST_SH
     env = {"HOME": str(tmp_path), "PATH": tmax.BASE_PATH}
     site = subprocess.run(["/usr/bin/python3", "-c", "import site;print(site.getusersitepackages())"],
                           env=env, capture_output=True, text=True, check=True).stdout.strip()

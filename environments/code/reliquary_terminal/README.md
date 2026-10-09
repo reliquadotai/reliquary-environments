@@ -189,6 +189,11 @@ sandbox gateway (`episode_envs = {"reliquary-terminal": "reliquary_terminal.sand
   path, HOME outside the roots, PYTHONNOUSERSITE=1, and the loader variables (every `LD_*`
   and `PYTHON*` name off a small allow-list) unset unless the task's own value stays outside
   the roots.
+- In a `tmax` grading box the final-state test runs as its own uid (61000), not root:
+  `test.sh` hands `/app` and `/home/user` to that uid (never following a link), runs
+  pytest as it under `python3 -I` with a HOME outside the roots, kills every process of
+  that uid, and only then writes `reward.txt` as root. Decision 11 of
+  [docs/tmax.md](docs/tmax.md).
 - State handed to the grader: the artifact roots that exist (`/app`), through the sandbox's
   `archive`, framed with the list of present roots; a deleted root is graded, not an error.
   The grading box restores them once, then stages `/tests`.

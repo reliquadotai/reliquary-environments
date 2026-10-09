@@ -11,7 +11,8 @@ runs. This module turns one task into:
   helper (`tmax_box.py`). `TerminalTask.setup` runs it in every box at start,
   with no network;
 - `tests/`: `test.sh`, the final-state test, `pytest.ini`, and the helper,
-  which puts the protected inputs back before pytest runs;
+  which puts the protected inputs back, then runs the test as an unprivileged
+  uid and writes the verdict as root (docs/tmax.md, decision 11);
 - `solution/solve.sh`: a successful Gemini run's commands, replayed in one
   bash process from `/home/user`. The 2026-10-04 spike replayed 160/169.
 
@@ -793,22 +794,18 @@ def setup_script(task_id: str, files: list[tuple[str, str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-TEST_SH = f"""#!/bin/bash
+TEST_SH = """#!/bin/bash
 # reliquary-tmax grading. Puts the protected inputs back over the agent's
-# artifacts, then runs the final-state test from /tests, never from a
-# directory the agent wrote.
+# artifacts, then runs the final-state test from /tests as an unprivileged uid
+# (tmax_box.py run-tests): nothing the agent's code starts during the test can
+# write the verdict, which root writes once every process of that uid is gone.
 mkdir -p /logs/verifier
 echo 0 > /logs/verifier/reward.txt
-if ! python3 -I /tests/tmax_box.py relay; then
+if ! /usr/bin/python3 -I /tests/tmax_box.py relay; then
     echo "reliquary-tmax: protected inputs could not be restored; scoring 0"
     exit 1
 fi
-cd /tests
-python3 -s -m pytest -q -p no:cacheprovider -c /tests/pytest.ini --rootdir=/tests \\
-    --confcutdir=/tests --ctrf /logs/verifier/ctrf.json -rA /tests/{FINAL_TEST}
-rc=$?
-if [ "$rc" -eq 0 ]; then echo 1 > /logs/verifier/reward.txt; fi
-exit "$rc"
+exec /usr/bin/python3 -I /tests/tmax_box.py run-tests
 """
 
 PYTEST_INI = "[pytest]\naddopts =\n"
