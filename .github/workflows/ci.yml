@@ -261,6 +261,29 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/code/reliquary_code/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/code/reliquary_code/scripts/verify_wheel.py
 
+  reliquary-competitive-code:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/code/reliquary_competitive_code
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
+      - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
+      - run: uv run --no-sync pytest
+      - run: uv run --no-sync validate reliquary-competitive-code -n 3 --only-gold true --taskset.split eval --runtime.type docker --runtime.allow '[]' --rich false
+      - run: uv build --clear
+      - run: uv venv --python 3.12 .wheel-venv
+      - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_competitive_code-0.1.0a1-py3-none-any.whl
+      - name: Verify installed wheel and packaged goldens
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/environments/code/reliquary_competitive_code/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/code/reliquary_competitive_code/scripts/verify_wheel.py
+
   reliquary-swe:
     runs-on: ubuntu-22.04
     defaults:
