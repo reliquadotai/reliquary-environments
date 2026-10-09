@@ -12,17 +12,31 @@ strategy stops being welded to a single harness's quirks.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterator
-from typing import ClassVar, Literal
+from typing import Literal
 
 import verifiers.v1 as vf
 from pydantic import field_validator
-from verifiers.v1.utils.git import snapshot_untracked
+from verifiers.v1.utils.git import PATCH_CAP_BYTES, snapshot_untracked
 
 from reliquary_swe import corpus, swe_adapter, swesmith_adapter
 
 WORKDIR = "/testbed"
 PATCH_PATH = f"{vf.ARTIFACTS_DIR}/patch.diff"
+BASE_REF = "refs/reliquary/base"
+"""Where setup records the base the agent's diff is taken against: in the box, so no host
+memory outlives an episode (a gateway restarts; one Task serves concurrent episodes). The
+agent can move it: grading recomputes everything from the image and refuses what a forged
+diff could name, so the capture is never trusted."""
+UNTRACKED_FILE = ".git/reliquary-untracked"
+"""The image's untracked files at setup (NUL-separated, relative to the workdir), which
+finalize leaves out of the diff."""
+MAX_UNTRACKED_BYTES = 1024 * 1024
+MAX_PATCH_BYTES = PATCH_CAP_BYTES
+_RECORD_BASE = f' && git -C "$WORKDIR" update-ref {BASE_REF} HEAD'
+"""Appended with `&&`, never `;`: R2E's cleanup ends on a `test` list `set -e` does not
+exit on, so after a `;` a later command's success would hide a hidden-test leak."""
 
 PROMPT = """\
 You are working in a checked-out repository at {workdir}.
@@ -241,20 +255,25 @@ class SweData(vf.TaskData):
 
 class SweTask(vf.Task[SweData]):
     NEEDS_CONTAINER = True
-
-    # Keyed by id(runtime); set in setup, read in finalize. Host memory only:
-    # a base commit kept inside the box is one the agent can rewrite.
-    _heads: ClassVar[dict[int, str]] = {}
-    _untracked: ClassVar[dict[int, list[str]]] = {}
+    _graded_elsewhere: bool = False
 
     @property
     def key(self) -> str:
         return self.data.instance_id
 
+    def graded_elsewhere(self) -> SweTask:
+        """A copy whose reward records nothing here: `SweEnv` grades the patch in a box of
+        its own (verifiers' Harbor pattern)."""
+        clone = copy.copy(self)
+        clone._graded_elsewhere = True
+        return clone
+
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        cleanup = cleanup_script(self.data.split)
+        """The cleanup (`cleanup_script`), then the base ref and the image's untracked
+        list, both kept in the box: a Task keeps no per-episode state of its own."""
+        script = cleanup_script(self.data.split) + _RECORD_BASE
         result = await runtime.run(
-            ["sh", "-c", cleanup],
+            ["sh", "-c", script],
             {"BASE_COMMIT": self.data.base_commit, "WORKDIR": self.data.workdir},
         )
         if result.exit_code != 0:
@@ -263,37 +282,90 @@ class SweTask(vf.Task[SweData]):
                 f"(exit {result.exit_code}): "
                 f"{(result.stderr or result.stdout).strip()[-500:]}"
             )
-        self._heads[id(runtime)] = await vf.resolve_head(runtime)
-        self._untracked[id(runtime)] = await snapshot_untracked(runtime)
+        listed = "\0".join(await snapshot_untracked(runtime)).encode()
+        if len(listed) > MAX_UNTRACKED_BYTES:
+            # finalize reads at most this much back; a longer list would silently stop
+            # ignoring the image's files. An image this shape needs a closer look first.
+            raise RuntimeError(
+                f"environment preparation failed for {self.data.instance_id}: the image's "
+                f"untracked list is {len(listed)} bytes, over {MAX_UNTRACKED_BYTES}"
+            )
+        await runtime.write(f"{self.data.workdir}/{UNTRACKED_FILE}", listed)
 
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        """Snapshot the agent's diff while its box is still alive.
+        """The agent's diff against the base setup recorded in the box, without the
+        image's untracked files, written to PATCH_PATH (verifiers' artifact convention).
 
-        Diffed against the SHA recorded at setup rather than bare HEAD, so
-        commits the agent made are inside it. Edits to test files are captured
-        on purpose: grading discards them, and keeping them in the trace is
-        what makes reward hacking visible afterwards.
+        Diffed against that base rather than bare HEAD, so commits the agent made are
+        inside it. Edits to tests are captured on purpose: grading discards them, and
+        keeping them in the trace is what makes reward hacking visible afterwards. Only
+        box commands and file writes happen here (env norm): grading parses the patch,
+        never this. A base ref or an untracked list the agent removed or broke is its
+        own outcome: the diff is wider and fails to apply in the pristine box.
         """
+        await runtime.run(["rm", "-f", "--", PATCH_PATH], {})  # a planted patch never travels
+        head = await runtime.run(["git", "rev-parse", "--verify", "-q", BASE_REF], {})
+        base = head.stdout.strip() if head.exit_code == 0 else ""
         try:
-            head = self._heads.pop(id(runtime))
-        except KeyError:
-            # No `"" ` fallback: `capture_patch` turns a falsy `base_commit`
-            # into bare `HEAD` (see its own docstring), which misses any
-            # commit the agent made -- a silent, wrong zero, not a real one.
-            # `setup()` always records an entry before the agent runs; a
-            # missing one means it never ran for this runtime, which is a
-            # bug worth raising loudly, not papering over.
-            raise RuntimeError(
-                f"no base commit recorded for {self.data.instance_id}'s "
-                "runtime -- setup() must run before finalize()"
-            ) from None
-        await vf.capture_patch(
-            trace,
-            runtime,
-            base_commit=head,
-            ignore=self._untracked.pop(id(runtime), []),
-            write_path=PATCH_PATH,
-        )
+            listed = await runtime.read(
+                f"{self.data.workdir}/{UNTRACKED_FILE}", max_bytes=MAX_UNTRACKED_BYTES
+            )
+            ignore = [p for p in listed.decode("utf-8", "replace").split("\0") if p]
+        except TimeoutError:
+            raise  # the step deadline (an OSError subclass)
+        except (OSError, vf.SandboxError):
+            # Missing, not a regular file or inflated by the agent (verifiers' capped
+            # read raises SandboxError for all three): its diff carries more.
+            ignore = []
+        try:
+            await vf.capture_patch(
+                trace, runtime, base_commit=base, ignore=ignore, write_path=PATCH_PATH
+            )
+        except vf.SandboxError:
+            return  # the box stopped answering; a sandbox records its own fault first
+
+    async def grading_setup(self, runtime: vf.Runtime) -> None:
+        """Env norm: the pristine grading box, before the agent's patch reaches it (the
+        history strip, R2E's hidden tests set aside). A failure is about us or the image."""
+        from reliquary_swe import grading
+
+        await grading.prepare_box(runtime, self.data)
+
+    @vf.reward(weight=1.0)
+    async def patch_passes_tests(
+        self, runtime: vf.Runtime, trace: vf.Trace
+    ) -> float | dict[str, float]:
+        """Env norm: `runtime` is a pristine box of the image that `grading_setup`
+        prepared and that received only the declared artifacts (a signed-episode
+        sandbox's grading box). `SweEnv` grades elsewhere and records nothing here."""
+        from reliquary_swe import grading
+
+        if self._graded_elsewhere:
+            return {}
+        try:
+            raw = await runtime.read(PATCH_PATH, max_bytes=MAX_PATCH_BYTES)
+        except FileNotFoundError:
+            raw = b""  # finalize wrote none (git refused): graded as an empty patch
+        except TimeoutError:
+            raise
+        except OSError:  # over the cap, or not a regular file: nothing to apply
+            trace.record_metrics({"patch_unreadable": 1.0})
+            return 0.0
+        data = await grading.prepared_data(runtime, self.data)
+        report = await grading.grade_prepared(runtime, data, raw)
+        metrics = {
+            "applied": float(report.applied),
+            "restored": float(report.restored),
+            "fail_to_pass_passed": float(report.fail_to_pass_passed),
+            "fail_to_pass_total": float(len(self.data.fail_to_pass)),
+            "pass_to_pass_passed": float(report.pass_to_pass_passed),
+            "pass_to_pass_total": float(len(self.data.pass_to_pass)),
+            "results_parsed": float(report.results_parsed),
+        }
+        if report.test_command_exit_code is not None:
+            metrics["test_command_exit_code"] = float(report.test_command_exit_code)
+        trace.record_metrics(metrics)
+        return report.reward
 
 
 class SweTasksetConfig(vf.TasksetConfig):
@@ -397,10 +469,12 @@ class SweTasksetConfig(vf.TasksetConfig):
 # point, it closes only after setup, and there is no cross-rollout cache
 # (`_uv_interpreters` lives on the per-rollout Runtime). That second term
 # is the one that dominates this budget, and it has not been measured --
-# 900s is sized by analogy with the other three phases below, not derived
-# from it. If a pilot hits this ceiling anyway, `--env.agent.timeout.setup`
+# the budget is sized by analogy with the other three phases below, not
+# derived from it. If a pilot hits this ceiling anyway, `--env.agent.timeout.setup`
 # overrides the task value at run time without a code change.
-_SETUP_TIMEOUT_SECONDS = 900.0
+# Capped by signed-episode sandboxes: setup at most 600 s, each grading step at most
+# 810 s (their verification window).
+_SETUP_TIMEOUT_SECONDS = 600.0
 
 # The agent's solve attempt -- the phase Important 1 is actually about.
 # Running the repository's own tests is the most natural thing a repair
@@ -413,24 +487,28 @@ _AGENT_TIMEOUT_SECONDS = 3600.0
 
 # `finalize()`'s `git add -A` + `git diff --cached --binary` against
 # whatever the agent's box holds. Measured on the container host: a single
-# 573 MB novel file costs 35.2s combined -- roughly 60s/GB. 900s covers
-# ~15 GB of agent-authored content, far past any legitimate edit, while
-# still bounding a disk-filling pathology to a fixed ceiling.
-_FINALIZE_TIMEOUT_SECONDS = 900.0
+# 573 MB novel file costs 35.2s combined -- roughly 60s/GB. 600s covers
+# ~10 GB of agent-authored content (the disk the task declares), far past any
+# legitimate edit, while still bounding a disk-filling pathology to a fixed
+# ceiling.
+# Capped by signed-episode sandboxes: setup at most 600 s, each grading step at most
+# 810 s (their verification window).
+_FINALIZE_TIMEOUT_SECONDS = 600.0
 
 # `env.py`'s `_grade` wraps provisioning-through-grading in
 # `asyncio.timeout(task.data.timeout.scoring)`; left at `TaskData`'s default
 # (`None`) this is unbounded, so a reachable-but-HANGING box would never
-# raise and never score (see task-5-report.md's Important finding). 1800s
-# (30 minutes) is sized past the measured tail with headroom, not guessed --
-# full reasoning, the measured times it is checked against, and the p90/max
+# raise and never score. 810s (13.5 minutes) is sized past the measured
+# tail with headroom, not guessed -- full reasoning, the measured times it is checked against, and the p90/max
 # corpus figures (independently re-measured, not just quoted) live in the
 # package README's "Timeouts" section rather than here.
-_SCORING_TIMEOUT_SECONDS = 1800.0
+# Capped by signed-episode sandboxes: setup at most 600 s, each grading step at most
+# 810 s (their verification window).
+_SCORING_TIMEOUT_SECONDS = 810.0
 
 
 class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
-    def load(self) -> Iterator[SweTask]:
+    def _split(self) -> str:
         if self.config.split is None:
             raise ValueError(
                 "reliquary-swe: --taskset.split is required (\"eval\" for "
@@ -440,6 +518,41 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
                 "default so that an operator wiring a real training source "
                 "cannot silently fall back to the evaluation set"
             )
+        return self.config.split
+
+    def __len__(self) -> int:
+        split = self._split()
+        if split == "train":
+            return len(corpus.swesmith_order(self.config.num_images, self.config.max_test_count))
+        if split == "r2e":
+            size = len(corpus.r2e_instance_ids())
+            return size if self.config.num_tasks is None else min(size, self.config.num_tasks)
+        if split == "polyglot":
+            return len(corpus.load_polyglot_rows(self.config.num_tasks))
+        return len(corpus.load_rows(split))
+
+    def task_at(self, index: int) -> SweTask:
+        """Task `index` of the split, built alone (`load` builds them all: SWE-smith's
+        default split weighs about 4 GB as rows). Equal to the index-th task `load`
+        yields."""
+        if type(index) is not int or not 0 <= index < len(self):
+            raise IndexError(index)
+        split = self._split()
+        if split == "train":
+            row = corpus.swesmith_row_at(
+                self.config.num_images, index, self.config.max_test_count
+            )
+            swesmith_adapter.ensure_python_profile(row.repo)
+        elif split == "r2e":
+            row = corpus.r2e_row_at(index)
+        elif split == "polyglot":
+            row = corpus.load_polyglot_rows(self.config.num_tasks)[index]
+        else:
+            row = corpus.load_rows(split)[index]
+        return task_for(row, index, split, self.config.task)
+
+    def load(self) -> Iterator[SweTask]:
+        self._split()
         if self.config.split == "train":
             rows = corpus.load_swesmith_rows(
                 self.config.num_images, self.config.max_test_count
@@ -485,6 +598,9 @@ def task_for(row: corpus.SweRow, index: int, split: str, task_config=None) -> Sw
                 finalize=_FINALIZE_TIMEOUT_SECONDS,
                 scoring=_SCORING_TIMEOUT_SECONDS,
             ),
+            # Provisional: no SWE box declared any before (Docker's default is
+            # unlimited); a signed-episode sandbox enforces both.
+            resources=vf.TaskResources(memory=4.0, disk=10.0),
             instance_id=row.instance_id,
             repo=row.repo,
             base_commit=row.base_commit,
@@ -500,4 +616,14 @@ def task_for(row: corpus.SweRow, index: int, split: str, task_config=None) -> Sw
         task_config,
     )
 
-__all__ = ["SweData", "SweTask", "SweTasksetConfig", "SweTaskset", "cleanup_script", "task_for"]
+__all__ = [
+    "BASE_REF",
+    "PATCH_PATH",
+    "UNTRACKED_FILE",
+    "SweData",
+    "SweTask",
+    "SweTasksetConfig",
+    "SweTaskset",
+    "cleanup_script",
+    "task_for",
+]

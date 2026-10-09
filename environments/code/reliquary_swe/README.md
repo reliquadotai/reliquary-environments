@@ -89,7 +89,12 @@ is *policy-triggerable* — a rollout slot held for hours, on purpose or not.
 the four are sized past a real measurement, not guessed, reasoned about
 below. `setup` is the exception: see its own paragraph.
 
-**`setup`** (900s) covers `SweTask.setup`'s cleanup script — `git reset`,
+Three of them are capped by what a signed-episode sandbox accepts: setup at most 600s,
+and each grading step (finalize, then grading) at most 810s, the most its verification
+window admits. They were 900s, 900s and 1800s; the new values and their remaining
+headroom are given in each paragraph.
+
+**`setup`** (600s) covers `SweTask.setup`'s cleanup script — `git reset`,
 history truncation, `git gc --prune=now` — *and* the harness's own setup:
 `rollout.py` computes one setup-stage deadline and wraps both `task.setup`
 and `harness.setup(runtime)` in it, so the two share this single budget.
@@ -106,7 +111,7 @@ install inside the fresh container — `pip install -q -U --user uv`
 then `uv sync --script`, which fetches a managed CPython and the script's
 dependencies. Egress is still open at this point (it closes only after
 setup), and there is no cross-rollout cache — the uv interpreter cache
-lives on the per-rollout `Runtime`. 900s is sized by analogy with the
+lives on the per-rollout `Runtime`. The budget is sized by analogy with the
 other three phases below, not derived from a measurement of that install;
 an honest "unmeasured, sized by analogy" beats a fabricated derivation.
 `--env.agent.timeout.setup` overrides the task's value at run time, so a
@@ -133,17 +138,17 @@ finite failure. This is unmeasured against a real trajectory distribution,
 like `max_turns` and the per-turn token budget below it — revisit once a
 pilot exists.
 
-**`finalize`** (900s) covers `SweTask.finalize`'s `git add -A` + `git diff
+**`finalize`** (600s) covers `SweTask.finalize`'s `git add -A` + `git diff
 --cached --binary` against whatever the agent's box holds by the time it
 runs. Measured on the container host: a single 573 MB novel file costs
 18.5s (`add`) + 16.7s (`diff --binary`) = 35.2s combined, roughly 60s/GB.
-900s covers on the order of 15 GB of agent-authored content — far past any
-legitimate source edit — while still bounding a disk-filling pathology
+600s covers on the order of 10 GB of agent-authored content (the disk the task
+declares) — far past any legitimate source edit — while still bounding a disk-filling pathology
 (container disk quotas are advisory on Docker, per `TaskResources.disk`'s
 own docstring, not enforced) to a fixed ceiling instead of an unbounded
 hang.
 
-**`scoring`** (1800s, unchanged) bounds `env.py`'s `_grade`, which wraps
+**`scoring`** (810s) bounds `env.py`'s `_grade`, which wraps
 provisioning-through-grading in `asyncio.timeout(task.data.timeout.scoring)`.
 A `None` timeout here is unbounded: a box that is reachable but *hangs* — a
 wedged daemon, a stuck exec, a test process that loops instead of finishing —
@@ -160,10 +165,14 @@ taken on trust (`p90` by sorting all 500 counts and indexing
 `round(0.9 * 499)`; a different interpolation method gives 254, the same
 ballpark, and nothing here turns on the difference). The max is
 `matplotlib__matplotlib-25122`, unrunnable on the measurement box for the
-same subordinate-UID reason as above. 1800s gives roughly 8x headroom over
-the worst wall-clock time actually observed and roughly 3x headroom over the
+same subordinate-UID reason as above. 810s gives roughly 3.6x headroom over
+the worst wall-clock time actually observed but only roughly 1.4x over the
 pessimistic ~570s projection for the corpus's most test-heavy, unmeasured
-instance.
+instance. On a signed-episode sandbox the same 810s also covers preparing the
+pristine box (`grading_setup`, stopped 35s before the deadline so the restore
+and the reward still start) and runs under gVisor, which is slower than Docker:
+measure gold-patch grading per repository there before enabling a split, and
+exclude the rows over budget.
 
 ## Reward-hacking mitigation
 
@@ -495,6 +504,48 @@ uv run python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary
 
 The package exports `SweTaskset`, `SweEnv`, and `SweEnvConfig` for Verifiers.
 It imports no Reliquary code.
+
+## Signed-episode sandboxes (env norm)
+
+`SweTaskset`'s tasks follow the env norm, so a signed-episode sandbox serves them through
+its generic verifiers bridge (`verifiers:reliquary-swe==0.3.0`), one task at a time
+(`SweTaskset.task_at(index)`, equal to the index-th task `load()` yields; `len()` is the
+split's size).
+
+- `SweTask.setup` runs the cleanup, then keeps its state in the box, never on the host:
+  the base the agent's diff is taken against as `refs/reliquary/base`, and the image's
+  untracked files in `<workdir>/.git/reliquary-untracked` (NUL-separated, at most
+  1 MiB). One Task serves concurrent episodes, and a gateway may restart between setup
+  and finalize.
+- `SweTask.finalize` removes any `/logs/artifacts/patch.diff` the agent planted, then
+  writes the agent's diff there (verifiers' artifact convention; no declared artifact).
+  The agent can move the ref or edit the list: that only widens or narrows its own diff,
+  which grading never trusts.
+- `SweTask.grading_setup` prepares the pristine grading box from the image before the
+  patch reaches it (checkout, history strip, R2E's hidden tests set aside); a failure
+  there is ours, never a 0.
+- The reward, `patch_passes_tests`, reads the restored patch byte for byte (missing:
+  graded as an empty patch; over 2 MB or not a regular file: 0 with the metric
+  `patch_unreadable`) and grades it in that box. A patch carrying a binary file, a
+  symlink or a submodule grades 0 and is never applied; so do patches touching an
+  untracked or ignored path or `.venv/`. Metrics: `applied`, `restored`,
+  `fail_to_pass_passed`/`_total`, `pass_to_pass_passed`/`_total`, `results_parsed`,
+  `test_command_exit_code`.
+- `SweEnv` runs the agent on `task.graded_elsewhere()`: the task records no reward of its
+  own there, `SweEnv` grades in a box it provisions, as before.
+- Limits declared on every task: 4 GB memory, 10 GB disk; setup 600s, agent 3600s,
+  finalize 600s, scoring 810s (see "Timeouts").
+- `reliquary_swe.conformance_cases(split)` and `reliquary_swe.reference_calls(split,
+  index)` give the sandbox's conformance suite and reference sweep plain data, for the
+  splits `train`, `r2e` and `polyglot` (served under those names): the gold patch applied
+  through the `bash` tool, and declared attacks on each golden (the gold patch plus a
+  forced `.venv` path, a symlink or a binary file; the gold patch planted in
+  `/logs/artifacts` with the sources untouched; a root `conftest.py` forcing every test to
+  pass). A gold patch the norm refuses is no reference (8 R2E rows add a symlink). Polyglot
+  publishes no fix: its references are shipped under `reliquary_swe/references/` once
+  recovered from an image.
+- The images a sandbox may run are pinned by digest in
+  `reliquary_swe/sandbox-images.lock.json` (`scripts/pin_sandbox_lock.py`).
 
 ## Signed sandboxes
 
