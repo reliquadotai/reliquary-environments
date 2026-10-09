@@ -1,6 +1,6 @@
 schema = "reliquary/environment-source/v2"
 id = "reliquary/terminal"
-version = "0.2.0"
+version = "0.3.0"
 taskset = "reliquary-terminal"
 entrypoint = "reliquary_terminal:TerminalTaskset"
 license = "MIT"

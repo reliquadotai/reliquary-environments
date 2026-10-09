@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reliquary-terminal"
-version = "0.2.0"
+version = "0.3.0"
 description = "Terminal-Bench 2.1 for evaluation and MiMo-V2.6's terminal tasks for training, graded by each task's own tests"
 readme = "README.md"
 license = "MIT"

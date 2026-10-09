@@ -346,6 +346,33 @@ def tmax_data(
 # resolves a taskset's config type from its generic parameters, so a plain
 # subclass would still hand the CLI `HarborConfig`, without `split`.
 class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
+    def _source(self) -> tmax.Source:
+        source = getattr(self, "_tmax_source_cache", None)
+        if source is None:
+            source = self._tmax_source_cache = _tmax_source(self.config.tmax_source)
+        return source
+
+    def __len__(self) -> int:
+        split = self.config.split
+        if split in TMAX_SPLITS and self.config.tasks is None:
+            return len(tmax_tasks(self.config.num_tasks, part=TMAX_SPLITS[split])[1])
+        if split == "train" and self.config.tasks is None:
+            return len(load_train_rows())
+        raise TypeError(f"no cheap length for split {split!r} with this config")
+
+    def task_at(self, index: int) -> TerminalTask:
+        """Task `index` of a tmax split, converted alone (`load` converts every task):
+        the same task as the `index`-th of `load`."""
+        split = self.config.split
+        if split not in TMAX_SPLITS or self.config.tasks is not None:
+            raise ValueError("task_at serves the tmax splits without a tasks filter")
+        base_image, kept = tmax_tasks(self.config.num_tasks, part=TMAX_SPLITS[split])
+        if type(index) is not int or not 0 <= index < len(kept):
+            raise IndexError(index)
+        task_id, entry = kept[index]
+        data = tmax_data(self._source(), task_id, entry, index, self.config, base_image)
+        return TerminalTask(data, self.config.task)
+
     def load(self) -> Iterator[TerminalTask]:
         if self.config.split is None:
             raise ValueError(

@@ -55,13 +55,17 @@ from __future__ import annotations
 
 import ast
 import functools
+import hashlib
 import json
 import logging
 from collections import Counter
 from pathlib import Path
 
+import verifiers.v1 as vf
+from verifiers.v1.errors import TaskError
 from verifiers.v1.runtimes import DockerRuntime, Runtime
-from verifiers.v1.tasksets.harbor.taskset import HarborTask
+from verifiers.v1.task import task_key
+from verifiers.v1.tasksets.harbor.taskset import HarborTask, verifier_box_data
 from verifiers.v1.trace import Trace
 
 from reliquary_terminal import containers, tmax
@@ -77,6 +81,8 @@ MAX_MESSAGE_CHARS = 1000
 MAX_TESTS = 1000
 MAX_NAME_CHARS = 300
 MAX_STATUS_CHARS = 32
+SANDBOX_RUNTIME = "reliquary-sandbox"
+"""`runtime.config.type` of a signed-episode sandbox's boxes (the env norm)."""
 
 
 def summarize_ctrf(raw: bytes) -> dict:
@@ -153,6 +159,25 @@ def ctrf_incomplete(raw: bytes | None, expected: frozenset[tuple[str, ...]]) -> 
     return None
 
 
+def task_dir_digest(task_dir: str) -> str:
+    """What a task's files are, independent of where they were written: the `.content`
+    stamp `tmax.materialize` leaves (a digest of the converted files), else a sha256 over
+    the directory's relative paths and bytes."""
+    root = Path(task_dir)
+    stamp = root / ".content"
+    if stamp.is_file():
+        return stamp.read_text().strip()
+    digest = hashlib.sha256()
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode() + b"\0" + path.read_bytes()
+                      + b"\0")
+    return digest.hexdigest()
+
+
+def _on_sandbox(runtime) -> bool:
+    return getattr(getattr(runtime, "config", None), "type", None) == SANDBOX_RUNTIME
+
+
 class _Watched:
     """The runtime, recording the result of the run that executes `test.sh`."""
 
@@ -179,9 +204,25 @@ class TerminalTask(HarborTask):
     1 and 3). `setup_role` says which box this is: "agent", where the
     bundle deletes the hidden inputs, or "grade", where it stashes the
     protected ones for `test.sh` to put back. `TerminalEnv.finalize` sets
-    "grade" on the task it builds for the grading box."""
+    "grade" on the task it builds for the grading box.
+
+    On a signed-episode sandbox (env norm), `grading_setup` runs this setup in the
+    grade role in the pristine grading box before the agent's `/app` and `/home/user`
+    are restored there, and `solved` stages the tests and grades in that box; `finalize`
+    collects nothing (the sandbox archives the declared roots itself). prime-rl's
+    `TerminalEnv` keeps grading in a box of its own (`graded_elsewhere`). Every hook
+    acts only through the box it is given: nothing of an episode is kept on the task.
+    The task's hash leaves out where its files were written (`task_dir`), so every
+    machine computes the same one."""
 
     setup_role: str = "agent"
+
+    @property
+    def hash(self) -> str:
+        data = self.data.model_dump(mode="json", exclude_none=True)
+        if data.get("task_dir"):
+            data["task_dir"] = "sha256:" + task_dir_digest(data["task_dir"])
+        return task_key(data)
 
     async def setup(self, runtime: Runtime) -> None:
         if isinstance(runtime, DockerRuntime):
@@ -196,6 +237,37 @@ class TerminalTask(HarborTask):
         bundle = Path(self.data.task_dir) / "setup" if self.data.task_dir else None
         if bundle is not None and (bundle / "setup.sh").is_file():
             await tmax.run_setup(runtime, bundle, self.setup_role)
+
+    async def grading_setup(self, runtime: Runtime) -> None:
+        """Prepare a sandbox's pristine grading box: the setup of the verifier's box
+        (`verifier_box_data`), in the grade role, as `TerminalEnv` does for its own."""
+        if self.data.verifier is None:
+            return
+        grader = TerminalTask(verifier_box_data(self.data), self.config)
+        grader.setup_role = "grade"
+        await grader.setup(runtime)
+
+    async def finalize(self, trace: Trace, runtime: Runtime) -> None:
+        if not _on_sandbox(runtime):
+            await super().finalize(trace, runtime)
+            return
+        # The sandbox archives the declared roots itself and never reads what `collect`
+        # puts on the trace; running it would only run the agent box's own `tar`.
+        if self.data.collect:
+            raise TaskError(f"task {self.data.name!r}: collect hooks are not served on a "
+                            "signed-episode sandbox")
+
+    @vf.reward(weight=1.0)
+    async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
+        if self._graded_elsewhere or self.data.verifier is None or not _on_sandbox(runtime):
+            # verifiers' own: nothing when graded elsewhere, the agent's box for a shared
+            # verifier, and a refusal for a separate one anywhere but a sandbox's grading
+            # box (it would be the agent's own box).
+            return await super().solved(runtime, trace)
+        # Env norm: `runtime` is the pristine grading box `grading_setup` prepared, with
+        # only the agent's declared artifacts restored.
+        await self._stage_tests(runtime, wipe=True)
+        return await self._graded(runtime, trace)
 
     async def _graded(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         grading: dict = {"ctrf": None}
@@ -261,4 +333,5 @@ class TerminalTask(HarborTask):
         return None
 
 
-__all__ = ["CTRF", "TerminalTask", "collected_tests", "ctrf_incomplete", "summarize_ctrf"]
+__all__ = ["CTRF", "SANDBOX_RUNTIME", "TerminalTask", "collected_tests", "ctrf_incomplete",
+           "summarize_ctrf", "task_dir_digest"]
