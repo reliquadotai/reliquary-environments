@@ -41,6 +41,7 @@ STATIC_REASONS = (
     "setup_network",
     "docker_in_test",
     "in_process_agent_code",
+    "environment_in_artifact_roots",
     "pip_pin_conflict",
     "apt_unknown",
     "apt_conflict",
@@ -48,7 +49,7 @@ STATIC_REASONS = (
 )
 # Static reasons added after the base image was built (2026-10-05): they
 # exclude a task but leave its packages in the base.
-POST_BASE_REASONS = frozenset({"in_process_agent_code"})
+POST_BASE_REASONS = frozenset({"in_process_agent_code", "environment_in_artifact_roots"})
 # Reason codes the box phase adds (`scripts/tmax_validate.py`).
 BOX_REASONS = (
     "base_missing_package",
@@ -110,6 +111,12 @@ def task_facts(source: tmax.Source, task_id: str) -> TaskFacts:
         facts.reasons["unsupported_section"] = ", ".join(definition.other_sections)
     if tmax.parse_environment(definition.environment) is None:
         facts.reasons["environment_unparsed"] = definition.environment.strip().splitlines()[0][:300]
+    else:
+        pointing = tmax.env_in_artifact_roots(tmax.parse_environment(definition.environment))
+        if pointing:
+            # PATH, a loader or Python variable naming the agent's files: a grading
+            # command would run what the agent left there.
+            facts.reasons["environment_in_artifact_roots"] = ", ".join(pointing)
     if tmax.resolve_files(task_id, definition.files, source.files(task_id)) is None:
         facts.reasons["files_unresolved"] = str(definition.files)[:300]
     test = source.text(task_id, tmax.FINAL_TEST)

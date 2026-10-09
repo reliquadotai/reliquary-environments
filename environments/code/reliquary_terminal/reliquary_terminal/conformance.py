@@ -1,21 +1,19 @@
-"""reliquary-terminal's conformance cases and reference solutions (tmax splits), as plain
-data, for a signed-episode sandbox's env conformance suite (`conformance_cases(split)`) and
-reference sweep (`reference_calls(split, index)`). Split names are the taskset's own
-(`tmax`, `tmax_rl`, `tmax_sft`); a sandbox must serve each under that name. Nothing here
-imports a sandbox.
+"""reliquary-terminal's conformance cases and reference solutions, as plain data, for a
+signed-episode sandbox's env conformance suite (`conformance_cases(split)`) and reference
+sweep (`reference_calls(split, index)`). Only the `tmax` split is served on a sandbox;
+every other split answers nothing. Nothing here imports a sandbox.
 
 A reference replays the task's recorded solution (`solution/solve.sh`) through the `bash`
-tool, uploaded in base64 chunks (one tool call's arguments are bounded). Attacks on each
-reference task, expected to grade 0: a `conftest.py` forcing every test to pass in
-/home/user and /app (pytest's rootdir and confcutdir are /tests: never loaded); a
-`usercustomize.py` in /home/user's user site and a `sitecustomize.py` in /app (loaded by
-every Python the tests start with that home or path) that fork a process rewriting
-/logs/verifier/reward.txt (bites once the grading box runs the tests as a uid that cannot
-write there and kills its processes before the verdict). The cases cover task 0 and the
-first task whose final-state test runs programs (`subprocess`), where the last two
-attacks bite.
+tool, uploaded in base64 chunks (one tool call's arguments are bounded). The other cases
+are canaries: each leaves files where a grading command could pick them up -- a
+`conftest.py` in /home/user and /app, a `usercustomize.py` in /home/user's user site, a
+`sitecustomize.py` in /app, `bash` and `python3` in /home/user/.local/bin (first on PATH
+for a task that put it there) -- and each file, if executed, only creates a marker under
+/tmp. A case expects 0 and lists its markers under `absent`: the suite checks, in the
+grading box after scoring, that none exists (the grader never ran the agent's files). The
+cases cover task 0 and the first task whose final-state test runs programs (`subprocess`).
 
-Indices are those of a split served with the taskset's defaults (no `num_tasks` that
+Indices are those of the split served with the taskset's defaults (no `num_tasks` that
 excludes them, no `tasks` filter). A split served otherwise names other tasks under these
 indices: its reference case then fails.
 """
@@ -28,7 +26,7 @@ from pathlib import Path
 
 import verifiers.v1 as vf
 
-SPLITS = ("tmax", "tmax_rl", "tmax_sft")
+SPLITS = ("tmax",)
 CHUNK = 60_000
 """base64 characters per shell call."""
 STAGE = "/tmp/reliquary-reference.b64"
@@ -38,25 +36,25 @@ SCAN_LIMIT = 500
 TMAX_SOURCE: Path | None = None
 """The TMax source the cases load (None: the pinned download); tests point it elsewhere."""
 
-VERDICT_WRITER = (
-    "import os\n"
-    "if os.fork() == 0:\n"
-    "    os.setsid()\n"
-    "    import time\n"
-    "    for _ in range(3000):\n"
-    "        try:\n"
-    "            with open('/logs/verifier/reward.txt', 'w') as handle:\n"
-    "                handle.write('1\\n')\n"
-    "        except OSError:\n"
-    "            pass\n"
-    "        time.sleep(0.1)\n"
-    "    os._exit(0)\n")
-FORCING_CONFTEST = (
-    "import pytest\n\n\n"
-    "@pytest.hookimpl(hookwrapper=True)\n"
-    "def pytest_runtest_makereport(item, call):\n"
-    "    outcome = yield\n"
-    "    outcome.get_result().outcome = 'passed'\n")
+CANARY_DIR = "/tmp"
+"""Where a canary leaves its marker: outside the artifact roots, so a marker in the
+grading box was made there."""
+USER_SITES = tuple(f"/home/user/.local/lib/python3.{minor}/site-packages"
+                   for minor in range(8, 13))
+
+
+def marker(case: str) -> str:
+    return f"{CANARY_DIR}/.canary-{case}"
+
+
+def python_canary(path: str) -> bytes:
+    """Python that, imported, only creates the marker at `path`."""
+    return f"open({path!r}, 'a').close()\n".encode()
+
+
+def program_canary(path: str) -> bytes:
+    """An executable that, run, only creates the marker at `path`."""
+    return f"#!/bin/sh\n: >> '{path}'\n".encode()
 
 
 def _bash(command: str) -> list:
@@ -78,22 +76,34 @@ def run_script_calls(script: bytes) -> list:
             _bash(f"bash {SCRIPT}; rc=$?; rm -f {SCRIPT}; exit $rc")]
 
 
+def _canary(name: str, index: int, files: list[tuple[str, bytes]],
+            executable: bool = False) -> dict:
+    calls = [call for path, content in files for call in upload_calls(content, path)]
+    if executable:
+        calls.append(_bash("chmod 755 " + " ".join(path for path, _ in files)))
+    return {"name": f"{name}_{index}", "index": index, "expect": 0.0, "calls": calls,
+            "absent": [marker(f"{name}_{index}")]}
+
+
 def task_cases(index: int, solve: bytes) -> list[dict]:
-    user_sites = [f"/home/user/.local/lib/python3.{minor}/site-packages/usercustomize.py"
-                  for minor in range(8, 13)]
-    usercustomize = [call for path in user_sites
-                     for call in upload_calls(VERDICT_WRITER.encode(), path)]
-    conftests = [call for path in ("/home/user/conftest.py", "/app/conftest.py")
-                 for call in upload_calls(FORCING_CONFTEST.encode(), path)]
+    def mark(name):
+        return marker(f"{name}_{index}")
+
+    conftest = python_canary(mark("conftest_in_the_roots"))
+    usercustomize = python_canary(mark("usercustomize_in_the_user_site"))
+    program = program_canary(mark("programs_in_the_user_bin"))
     return [
         {"name": f"reference_{index}", "index": index, "expect": 1.0,
          "calls": run_script_calls(solve)},
-        {"name": f"conftest_in_the_roots_{index}", "index": index, "expect": 0.0,
-         "calls": conftests},
-        {"name": f"usercustomize_verdict_writer_{index}", "index": index, "expect": 0.0,
-         "calls": usercustomize},
-        {"name": f"sitecustomize_in_app_{index}", "index": index, "expect": 0.0,
-         "calls": upload_calls(VERDICT_WRITER.encode(), "/app/sitecustomize.py")},
+        _canary("conftest_in_the_roots", index,
+                [("/home/user/conftest.py", conftest), ("/app/conftest.py", conftest)]),
+        _canary("usercustomize_in_the_user_site", index,
+                [(f"{site}/usercustomize.py", usercustomize) for site in USER_SITES]),
+        _canary("sitecustomize_in_app", index,
+                [("/app/sitecustomize.py", python_canary(mark("sitecustomize_in_app")))]),
+        _canary("programs_in_the_user_bin", index,
+                [("/home/user/.local/bin/bash", program),
+                 ("/home/user/.local/bin/python3", program)], executable=True),
     ]
 
 

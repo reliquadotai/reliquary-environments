@@ -55,7 +55,6 @@ from __future__ import annotations
 
 import ast
 import functools
-import hashlib
 import json
 import logging
 from collections import Counter
@@ -161,17 +160,16 @@ def ctrf_incomplete(raw: bytes | None, expected: frozenset[tuple[str, ...]]) -> 
 
 def task_dir_digest(task_dir: str) -> str:
     """What a task's files are, independent of where they were written: the `.content`
-    stamp `tmax.materialize` leaves (a digest of the converted files), else a sha256 over
-    the directory's relative paths and bytes."""
+    stamp `tmax.materialize` leaves once the files are checked against it (once per
+    process), else a sha256 over the directory's relative paths and bytes. Raises when
+    the directory is missing or its files no longer match its stamp."""
     root = Path(task_dir)
-    stamp = root / ".content"
-    if stamp.is_file():
-        return stamp.read_text().strip()
-    digest = hashlib.sha256()
-    for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        digest.update(path.relative_to(root).as_posix().encode() + b"\0" + path.read_bytes()
-                      + b"\0")
-    return digest.hexdigest()
+    if not (root / ".content").is_file():
+        return tmax.tree_digest(root)
+    stamp = tmax.stamp_of(root)
+    if stamp is None:
+        raise ValueError(f"{root}: the files do not match the .content stamp")
+    return stamp
 
 
 def _on_sandbox(runtime) -> bool:
@@ -195,6 +193,24 @@ class _Watched:
         return getattr(self._runtime, name)
 
 
+class _RootCommands:
+    """The runtime of a grading box, running each command as `tmax.root_argv` says:
+    `sh`/`bash` by absolute path, PATH fixed and the loader variables unset unless the
+    task's own value stays outside the artifact roots. A program the agent left in
+    `/home/user/.local/bin` or `/app` is never what a grading command runs."""
+
+    def __init__(self, runtime: Runtime, env: dict[str, str]) -> None:
+        self._runtime = runtime
+        self._env = dict(env)
+
+    async def run(self, argv, env):
+        applied = {**self._env, **(getattr(self._runtime, "env", None) or {}), **env}
+        return await self._runtime.run(tmax.root_argv(list(argv), applied), env)
+
+    def __getattr__(self, name):
+        return getattr(self._runtime, name)
+
+
 class TerminalTask(HarborTask):
     """A Harbor task that records its containers (see `containers`) and keeps
     its per-test results (see this module's docstring).
@@ -208,7 +224,8 @@ class TerminalTask(HarborTask):
 
     On a signed-episode sandbox (env norm), `grading_setup` runs this setup in the
     grade role in the pristine grading box before the agent's `/app` and `/home/user`
-    are restored there, and `solved` stages the tests and grades in that box; `finalize`
+    are restored there, and `solved` stages the tests and grades in that box, every root
+    command through `_RootCommands`; `finalize`
     collects nothing (the sandbox archives the declared roots itself). prime-rl's
     `TerminalEnv` keeps grading in a box of its own (`graded_elsewhere`). Every hook
     acts only through the box it is given: nothing of an episode is kept on the task.
@@ -245,7 +262,7 @@ class TerminalTask(HarborTask):
             return
         grader = TerminalTask(verifier_box_data(self.data), self.config)
         grader.setup_role = "grade"
-        await grader.setup(runtime)
+        await grader.setup(_RootCommands(runtime, grader.data.env))
 
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         if not _on_sandbox(runtime):
@@ -266,8 +283,9 @@ class TerminalTask(HarborTask):
             return await super().solved(runtime, trace)
         # Env norm: `runtime` is the pristine grading box `grading_setup` prepared, with
         # only the agent's declared artifacts restored.
-        await self._stage_tests(runtime, wipe=True)
-        return await self._graded(runtime, trace)
+        box = _RootCommands(runtime, {**self.data.env, **self.data.verifier.env})
+        await self._stage_tests(box, wipe=True)
+        return await self._graded(box, trace)
 
     async def _graded(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         grading: dict = {"ctrf": None}

@@ -178,7 +178,14 @@ sandbox gateway (`episode_envs = {"reliquary-terminal": "reliquary_terminal.sand
 
 - Served: `train` rows only, 17 of the 64. Refused: `eval` (graded in the agent's box by
   design), rows that need the network, three rows that put `/app` on `PYTHONPATH`, and rows
-  whose tests run agent code inside pytest (`in_process_agent_code`). tmax is not served yet.
+  whose tests run agent code inside pytest (`in_process_agent_code`).
+- `tmax` is served on the env norm (`TerminalTask.grading_setup` and `solved`; split `tmax`
+  only, `tmax_sft`/`tmax_rl` are not served). 201 TMax tasks are excluded statically as
+  `in_process_agent_code` (their final test loads the agent's code into pytest's process),
+  and tasks whose `%environment` points PATH, `LD_*`, `BASH_ENV`, `ENV` or `PYTHON*` at
+  `/app` or `/home/user` are refused (`environment_in_artifact_roots`). Every root command
+  of the grading box runs through `/usr/bin/env` with a fixed PATH, `sh`/`bash` by absolute
+  path and those variables unset unless the task's own value stays outside the roots.
 - State handed to the grader: the artifact roots that exist (`/app`), through the sandbox's
   `archive`, framed with the list of present roots; a deleted root is graded, not an error.
   The grading box restores them once, then stages `/tests`.
