@@ -327,22 +327,33 @@ runs `relay`, then `exec`s `tmax_box.py run-tests`, which, as root:
   test uid owns (an upload that kept the uploader's uid could hand it the
   test files), then makes `/tests` readable by all and writable by its
   owner only;
+- refuses (0, with the reason on stderr) a box where `/logs` is not a real
+  directory owned by root and writable by root only, where
+  `/proc/sys/kernel/yama/ptrace_scope` is absent or 0 (code the test starts
+  could then ptrace pytest, below), or where the test uid already runs a
+  process;
 - hands `/app` and `/home/user` to the test uid (61000): every entry, the
   root included, gets that owner (a link itself, never its target; a linked
   root is not entered), directories `u+rwx` before they are listed, files
   `u+rw` and `u+x` where any `x` bit was set, set-id bits dropped. A device
   node goes to root with mode 0, and a file whose inode has links outside
   the roots is left alone;
-- runs pytest as the test uid (`setgroups([])`, `setgid`, `setuid`) under
+- names the test uid in `/etc/passwd` and `/etc/group` (`reliquary-test`,
+  HOME as below, shell `/usr/sbin/nologin`) when no entry has that id: the
+  grading box is disposable, and lookups of the test's own user then work;
+- runs pytest as the test uid (`setgroups([])`, `setgid`, `setuid`, then
+  `PR_SET_NO_NEW_PRIVS`, so no set-id binary or file capability in the image
+  raises what it executes; if either fails nothing runs) under
   `/usr/bin/python3 -I`, from `/tests`, with the grading command's
   environment (fixed PATH, loader variables cleared), a fresh HOME of its own
   under `/tmp` (outside the roots) and `PYTHONNOUSERSITE=1`, writing its
   report into a directory only it and root can reach;
 - kills every process of the test uid (from a child dropped to that uid:
   `kill(-1, SIGKILL)`, repeated until `/proc` shows none alive; zombies do not
-  count);
+  count; the pids of survivors go to stderr);
 - then writes the verdict: `ctrf.json` copied from the report (a regular
-  file, not a link, opened non-blocking, at most 8 MiB), and `reward.txt` = 1
+  file owned by the test uid with no other name, not a link, opened
+  non-blocking, at most 8 MiB), and `reward.txt` = 1
   only for pytest exit 0, every process gone, and a report. `/logs/verifier`
   is re-made root's (mode 0755) and any `reward.json` or `ctrf.json` it did
   not write is removed. A surviving process makes the exit status 1.
@@ -360,11 +371,17 @@ read the agent's trees as their owner, not as root. pytest runs under `-I`, so
 process itself (they still reach what it starts). HOME is no longer `/root`:
 a test that relied on root's home or root's privileges fails.
 
-**What is left.** Code the test starts runs with the test process's uid, so
-where the kernel allows it can still tamper with that process (and so with
-pytest's exit status), and with any protected input it can reach. The verdict
-file and the reap are root's. Tasks are re-validated under this by a reference
-sweep: a sample now, every task at qualification.
+**What is left.** The verdict is root's view of pytest's exit status. The
+CTRF report is not: pytest writes it as the test uid, so code the test
+starts can rewrite it before the reap, and root only copies it. Code the test
+starts runs with pytest's uid, so without Yama it could ptrace pytest (or
+write its memory through `/proc`) and change the exit status. With
+`ptrace_scope` >= 1 a process may attach only to its own descendants, and
+every process of the test uid descends from pytest (none ran before it);
+hence the refusals. It can still tamper with any protected
+input it can reach. The verdict file and the reap are root's. Tasks are
+re-validated under this by a reference sweep: a sample now, every task at
+qualification.
 
 ## What the box phase must run
 

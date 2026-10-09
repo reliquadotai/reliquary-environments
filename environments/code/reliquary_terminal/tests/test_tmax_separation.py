@@ -112,12 +112,54 @@ def test_reap_with_nothing_left_never_signals(tmp_path, monkeypatch):
     assert tmax_box.reap(61000, proc=str(tmp_path)) is True
 
 
+def test_reap_names_the_processes_that_survived(tmp_path, monkeypatch, capsys):
+    (tmp_path / "4321").mkdir()
+    (tmp_path / "4321" / "status").write_text("State:\tS (sleeping)\nUid:\t61000\t61000\t0\t0\n")
+    monkeypatch.setattr(tmax_box.os, "fork", lambda: 99999)
+    monkeypatch.setattr(tmax_box.os, "waitpid", lambda pid, flags: (pid, 0))
+    monkeypatch.setattr(tmax_box.time, "sleep", lambda s: None)
+    assert tmax_box.reap(61000, proc=str(tmp_path), rounds=2) is False
+    assert "4321" in capsys.readouterr().err
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="as root the drop succeeds")
 def test_a_failed_drop_never_runs_the_command(tmp_path):
     mark = tmp_path / "ran"
     rc = tmax_box.run_as(61000, ["/bin/sh", "-c", f"touch {mark}"], {"PATH": "/usr/bin:/bin"},
                          cwd=str(tmp_path))
     assert rc == 127 and not mark.exists()
+
+
+def test_the_test_command_runs_with_no_new_privs(tmp_path, monkeypatch):
+    monkeypatch.setattr(tmax_box, "_drop", lambda uid: None)
+    mark = tmp_path / "status"
+    rc = tmax_box.run_as(61000, ["/bin/sh", "-c", f"grep NoNewPrivs /proc/self/status > {mark}"],
+                         {"PATH": "/usr/bin:/bin"}, cwd=str(tmp_path))
+    assert rc == 0 and mark.read_text().split() == ["NoNewPrivs:", "1"]
+
+
+def test_a_failed_no_new_privs_never_runs_the_command(tmp_path, monkeypatch):
+    monkeypatch.setattr(tmax_box, "_drop", lambda uid: None)
+
+    def refuse():
+        raise OSError("prctl refused")
+
+    monkeypatch.setattr(tmax_box, "_no_new_privs", refuse)
+    mark = tmp_path / "ran"
+    rc = tmax_box.run_as(61000, ["/bin/sh", "-c", f"touch {mark}"], {"PATH": "/usr/bin:/bin"},
+                         cwd=str(tmp_path))
+    assert rc == 127 and not mark.exists()
+
+
+def test_no_new_privs_raises_when_prctl_refuses(monkeypatch):
+    class Libc:
+        def prctl(self, *args):
+            assert args == (38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS
+            return -1
+
+    monkeypatch.setattr(tmax_box.ctypes, "CDLL", lambda *a, **k: Libc())
+    with pytest.raises(OSError):
+        tmax_box._no_new_privs()
 
 
 def report_in(tmp_path, content=b'{"results": {"tests": []}}'):
@@ -127,18 +169,31 @@ def report_in(tmp_path, content=b'{"results": {"tests": []}}'):
     return str(out / "ctrf.json"), tmp_path / "logs" / "verifier"
 
 
+ME = os.geteuid()  # owns what these tests write: it stands for the test uid in `finish`
+
+
 def test_one_needs_a_clean_exit_a_complete_reap_and_a_report(tmp_path):
     report, verifier = report_in(tmp_path)
-    assert tmax_box.finish(0, report, str(verifier), True) == 0
+    assert tmax_box.finish(0, report, str(verifier), True, ME) == 0
     assert (verifier / "reward.txt").read_text() == "1\n"
     assert (verifier / "ctrf.json").read_bytes() == b'{"results": {"tests": []}}'
-    assert tmax_box.finish(0, report, str(verifier), False) == 1
+    assert tmax_box.finish(0, report, str(verifier), False, ME) == 1
     assert (verifier / "reward.txt").read_text() == "0\n"
     assert not (verifier / "ctrf.json").exists()
-    assert tmax_box.finish(2, report, str(verifier), True) == 2
+    assert tmax_box.finish(2, report, str(verifier), True, ME) == 2
     assert (verifier / "reward.txt").read_text() == "0\n"
     os.unlink(report)
-    assert tmax_box.finish(0, report, str(verifier), True) == 0
+    assert tmax_box.finish(0, report, str(verifier), True, ME) == 0
+    assert (verifier / "reward.txt").read_text() == "0\n"
+
+
+def test_a_report_the_test_uid_does_not_own_or_that_has_other_links_is_never_read(tmp_path):
+    report, verifier = report_in(tmp_path)
+    assert tmax_box.finish(0, report, str(verifier), True, ME + 1) == 0
+    assert (verifier / "reward.txt").read_text() == "0\n"
+    assert not (verifier / "ctrf.json").exists()
+    os.link(report, tmp_path / "elsewhere.json")  # a second name the test uid could rewrite
+    assert tmax_box.finish(0, report, str(verifier), True, ME) == 0
     assert (verifier / "reward.txt").read_text() == "0\n"
 
 
@@ -148,15 +203,15 @@ def test_a_report_that_is_a_link_a_fifo_or_too_large_is_never_read(tmp_path):
     (tmp_path / "elsewhere.json").write_text("{}")
     (out / "ctrf.json").symlink_to(tmp_path / "elsewhere.json")
     verifier = tmp_path / "logs" / "verifier"
-    tmax_box.finish(0, str(out / "ctrf.json"), str(verifier), True)
+    tmax_box.finish(0, str(out / "ctrf.json"), str(verifier), True, ME)
     assert not (verifier / "ctrf.json").exists()
     assert (verifier / "reward.txt").read_text() == "0\n"
     (tmp_path / "b").mkdir()
     big, verifier2 = report_in(tmp_path / "b", b"x" * (tmax_box.MAX_CTRF_BYTES + 1))
-    tmax_box.finish(0, big, str(verifier2), True)
+    tmax_box.finish(0, big, str(verifier2), True, ME)
     assert (verifier2 / "reward.txt").read_text() == "0\n"
     os.mkfifo(tmp_path / "fifo")  # no writer: a blocking open would hang the grader
-    tmax_box.finish(0, str(tmp_path / "fifo"), str(verifier2), True)
+    tmax_box.finish(0, str(tmp_path / "fifo"), str(verifier2), True, ME)
     assert (verifier2 / "reward.txt").read_text() == "0\n"
 
 
@@ -166,15 +221,15 @@ def test_finish_clears_what_it_did_not_write_and_replaces_a_verifier_link(tmp_pa
     decoy = tmp_path / "decoy"
     decoy.mkdir()
     verifier.symlink_to(decoy)
-    tmax_box.finish(1, report, str(verifier), True)
+    tmax_box.finish(1, report, str(verifier), True, ME)
     assert verifier.is_dir() and not verifier.is_symlink()
     assert not list(decoy.iterdir())
     (verifier / "reward.json").write_text('{"reward": 1}')
     (verifier / "ctrf.json").write_text("{}")
-    tmax_box.finish(1, str(tmp_path / "no-report"), str(verifier), True)
+    tmax_box.finish(1, str(tmp_path / "no-report"), str(verifier), True, ME)
     assert sorted(p.name for p in verifier.iterdir()) == ["reward.txt"]
     assert mode_of(verifier) == 0o755
-    tmax_box.finish(1, report, str(verifier), True)  # a failing run's report is kept
+    tmax_box.finish(1, report, str(verifier), True, ME)  # a failing run's report is kept
     assert sorted(p.name for p in verifier.iterdir()) == ["ctrf.json", "reward.txt"]
 
 
@@ -200,7 +255,26 @@ def _box(tmp_path, tests_mode=0o700, file_mode=0o600):
     (tmp_path / "tmp").mkdir()
     (tmp_path / "proc").mkdir()
     (tmp_path / "app").mkdir()
+    yama = tmp_path / "proc/sys/kernel/yama"
+    yama.mkdir(parents=True)
+    (yama / "ptrace_scope").write_text("1\n")
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs").chmod(0o755)
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+    (tmp_path / "etc/group").write_text("root:x:0:\n")
     return tests
+
+
+def _never_runs(monkeypatch):
+    monkeypatch.setattr(tmax_box, "hand_over", lambda *a: pytest.fail("handed over"))
+    monkeypatch.setattr(tmax_box, "run_as", lambda *a, **k: pytest.fail("ran"))
+
+
+def _refused(tmp_path, capsys, why):
+    assert tmax_box.run_tests(uid=61000, root=str(tmp_path)) == 1
+    assert (tmp_path / "logs/verifier/reward.txt").read_text() == "0\n"
+    assert why in capsys.readouterr().err
 
 
 def test_run_tests_hands_over_runs_reaps_then_scores(tmp_path, monkeypatch):
@@ -216,8 +290,15 @@ def test_run_tests_hands_over_runs_reaps_then_scores(tmp_path, monkeypatch):
         Path(argv[argv.index("--ctrf") + 1]).write_text('{"results": {}}')
         return 0
 
+    report = tmax_box._report
+
+    def report_owned_by_me(path, owner):
+        seen["owner"] = owner
+        return report(path, os.geteuid())
+
     monkeypatch.setattr(tmax_box, "run_as", run_as)
     monkeypatch.setattr(tmax_box, "reap", lambda uid, proc: seen.setdefault("reaped", proc))
+    monkeypatch.setattr(tmax_box, "_report", report_owned_by_me)
     monkeypatch.setenv("HOME", "/root")
     assert tmax_box.run_tests(uid=61000, root=str(tmp_path)) == 0
     assert (tmp_path / "logs/verifier/reward.txt").read_text() == "1\n"
@@ -228,17 +309,71 @@ def test_run_tests_hands_over_runs_reaps_then_scores(tmp_path, monkeypatch):
     home = seen["env"]["HOME"]
     assert home.startswith(str(tmp_path / "tmp") + "/") and not tmax._under_roots(home)
     assert seen["env"]["PYTHONNOUSERSITE"] == "1"
+    assert seen["owner"] == 61000
+    assert (tmp_path / "etc/passwd").read_text().splitlines()[1:] == [
+        f"reliquary-test:x:61000:61000::{home}:/usr/sbin/nologin"]
+    assert (tmp_path / "etc/group").read_text().splitlines()[1:] == ["reliquary-test:x:61000:"]
     # /tests is readable by the test uid and writable by nobody but its owner.
     assert mode_of(tests) == 0o755 and mode_of(tests / tmax.FINAL_TEST) == 0o644
     assert not list((tmp_path / "tmp").iterdir())  # the run's directory is cleaned up
 
 
-def test_run_tests_refuses_tests_the_test_uid_owns(tmp_path, monkeypatch):
+def test_run_tests_refuses_tests_the_test_uid_owns(tmp_path, monkeypatch, capsys):
     _box(tmp_path)
-    monkeypatch.setattr(tmax_box, "hand_over", lambda *a: pytest.fail("handed over"))
-    monkeypatch.setattr(tmax_box, "run_as", lambda *a, **k: pytest.fail("ran"))
+    _never_runs(monkeypatch)
     assert tmax_box.run_tests(uid=os.geteuid(), root=str(tmp_path)) == 1
     assert (tmp_path / "logs/verifier/reward.txt").read_text() == "0\n"
+    assert "owned by the test uid" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("scope", [None, "0\n", "x\n"])
+def test_run_tests_refuses_a_box_where_the_test_could_ptrace_pytest(tmp_path, monkeypatch,
+                                                                     capsys, scope):
+    _box(tmp_path)
+    path = tmp_path / "proc/sys/kernel/yama/ptrace_scope"
+    if scope is None:
+        path.unlink()
+    else:
+        path.write_text(scope)
+    _never_runs(monkeypatch)
+    _refused(tmp_path, capsys, "ptrace_scope")
+
+
+@pytest.mark.parametrize("how", ["writable", "link"])
+def test_run_tests_refuses_logs_the_test_uid_could_write(tmp_path, monkeypatch, capsys, how):
+    _box(tmp_path)
+    if how == "writable":
+        (tmp_path / "logs").chmod(0o777)
+    else:
+        (tmp_path / "logs").rmdir()
+        (tmp_path / "elsewhere").mkdir()
+        (tmp_path / "logs").symlink_to(tmp_path / "elsewhere")
+    _never_runs(monkeypatch)
+    assert tmax_box.run_tests(uid=61000, root=str(tmp_path)) == 1
+    assert "/logs" in capsys.readouterr().err
+
+
+def test_run_tests_refuses_when_the_test_uid_already_runs_something(tmp_path, monkeypatch,
+                                                                    capsys):
+    _box(tmp_path)
+    (tmp_path / "proc/777").mkdir()
+    (tmp_path / "proc/777/status").write_text("State:\tS (sleeping)\nUid:\t61000\t61000\t0\t0\n")
+    _never_runs(monkeypatch)
+    _refused(tmp_path, capsys, "777")
+
+
+def test_the_test_account_is_added_once(tmp_path):
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash")  # no final newline
+    tmax_box.ensure_account(61000, "/tmp/h", root=str(tmp_path))
+    tmax_box.ensure_account(61000, "/tmp/other", root=str(tmp_path))
+    assert (tmp_path / "etc/passwd").read_text() == (
+        "root:x:0:0:root:/root:/bin/bash\n"
+        "reliquary-test:x:61000:61000::/tmp/h:/usr/sbin/nologin\n")
+    assert (tmp_path / "etc/group").read_text() == "reliquary-test:x:61000:\n"
+    (tmp_path / "etc/passwd").write_text("someone:x:61000:61000::/x:/bin/sh")  # no final newline
+    tmax_box.ensure_account(61000, "/tmp/h", root=str(tmp_path))
+    assert (tmp_path / "etc/passwd").read_text() == "someone:x:61000:61000::/x:/bin/sh"
 
 
 def test_run_tests_scores_zero_when_a_process_survives(tmp_path, monkeypatch):
@@ -263,6 +398,6 @@ def test_the_helper_stays_python_3_10_and_stdlib():
                 if isinstance(node, ast.Import) for alias in node.names}
     imported |= {node.module.split(".")[0] for node in ast.walk(tree)
                  if isinstance(node, ast.ImportFrom) and node.module}
-    assert imported <= {"__future__", "hashlib", "json", "os", "shutil", "signal", "stat",
-                        "sys", "tempfile", "time"}
+    assert imported <= {"__future__", "ctypes", "hashlib", "json", "os", "shutil", "signal",
+                        "stat", "sys", "tempfile", "time"}
     assert os.access(tmax_box.__file__, os.R_OK)

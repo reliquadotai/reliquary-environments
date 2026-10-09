@@ -15,12 +15,15 @@ This module is copied into each box and run by `python3` from the base image
   directory in the way, at the path or at any parent, is replaced rather than
   followed, so a symlinked input cannot redirect the restore into the
   agent's own output. It exits non-zero if the stash is missing.
-- `run-tests`: run by `test.sh` after `relay`, as root. Hands the agent's
-  restored trees to an unprivileged uid (`TEST_UID`), runs the final-state
-  test as that uid under `python3 -I`, with a HOME of its own outside the
-  roots and PYTHONNOUSERSITE, kills every process of that uid, then writes
-  the verdict as root: 1 only for a clean exit with every process gone and a
-  report. Nothing the agent's code starts during the test can write
+- `run-tests`: run by `test.sh` after `relay`, as root. Refuses (score 0) a
+  box where the test could ptrace pytest (no Yama `ptrace_scope` >= 1), a
+  `/logs` the test uid could write, or a test uid that already runs
+  something. Hands the agent's restored trees to an unprivileged uid
+  (`TEST_UID`), runs the final-state test as that uid under `python3 -I`
+  with no_new_privs, a HOME of its own outside the roots and
+  PYTHONNOUSERSITE, kills every process of that uid, then writes the verdict
+  as root: 1 only for a clean exit with every process gone and a report.
+  Nothing the agent's code starts during the test can write
   `/logs/verifier`, which stays root's.
 
 `root` lets the tests run all of this under a temporary directory.
@@ -28,6 +31,7 @@ This module is copied into each box and run by `python3` from the base image
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -133,6 +137,9 @@ VERIFIER_DIR = "logs/verifier"
 MAX_CTRF_BYTES = 8 * 1024 * 1024
 FINAL_TEST = "test_final_state.py"
 PYTHON = "/usr/bin/python3"
+ACCOUNT = "reliquary-test"
+PTRACE_SCOPE = "proc/sys/kernel/yama/ptrace_scope"
+_PR_SET_NO_NEW_PRIVS = 38
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
@@ -196,11 +203,21 @@ def _drop(uid: int) -> None:
     os.setuid(uid)
 
 
+def _no_new_privs() -> None:
+    """No set-id binary or file capability raises the privileges of what this process
+    executes from here on."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "prctl(PR_SET_NO_NEW_PRIVS)")
+
+
 def run_as(uid: int, argv: list, env: dict, cwd: str = "/tests") -> int:
+    """Run `argv` as `uid` with no_new_privs; 127 if either cannot be set."""
     pid = os.fork()
     if pid == 0:
         try:
             _drop(uid)
+            _no_new_privs()
             os.chdir(cwd)
             os.execve(argv[0], argv, env)
         finally:
@@ -242,7 +259,10 @@ def reap(uid: int, proc: str = "/proc", rounds: int = 50) -> bool:
                 os._exit(0)
         os.waitpid(pid, 0)
         time.sleep(0.05)
-    return not processes_of(uid, proc)
+    survivors = processes_of(uid, proc)
+    if survivors:
+        print(f"reliquary-tmax: processes of uid {uid} survived: {survivors}", file=sys.stderr)
+    return not survivors
 
 
 def _remove(path: str) -> None:
@@ -271,28 +291,30 @@ def _write(path: str, data: bytes) -> None:
     os.replace(partial, path)
 
 
-def _report(path: str):
-    """The report's bytes: a regular file, not a link, at most MAX_CTRF_BYTES; else None.
-    Opened non-blocking, so a FIFO left in its place cannot hang the grader."""
+def _report(path: str, owner: int):
+    """The report's bytes: a regular file of `owner` with no other name, not a link, at
+    most MAX_CTRF_BYTES; else None. Opened non-blocking, so a FIFO left in its place
+    cannot hang the grader. Root only copies it: what it says is the test uid's word."""
     try:
         fd = os.open(path, os.O_RDONLY | _NOFOLLOW | getattr(os, "O_NONBLOCK", 0))
     except OSError:
         return None
     with os.fdopen(fd, "rb") as handle:
         info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_CTRF_BYTES:
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner or info.st_nlink != 1
+                or info.st_size > MAX_CTRF_BYTES):
             return None
         data = handle.read(MAX_CTRF_BYTES + 1)
     return data if len(data) <= MAX_CTRF_BYTES else None
 
 
-def finish(rc: int, report: str, verifier_dir: str, reaped: bool) -> int:
+def finish(rc: int, report: str, verifier_dir: str, reaped: bool, uid: int) -> int:
     """Write the verdict: `reward.txt` is 1 only for `rc == 0`, every process reaped and a
-    report copied to `ctrf.json`. Returns `rc`, or 1 if a process survived."""
+    report of `uid` copied to `ctrf.json`. Returns `rc`, or 1 if a process survived."""
     _verifier_dir(verifier_dir)
     for name in ("reward.json", "ctrf.json"):
         _remove(os.path.join(verifier_dir, name))
-    data = _report(report) if reaped else None
+    data = _report(report, uid) if reaped else None
     if data is not None:
         _write(os.path.join(verifier_dir, "ctrf.json"), data)
     passed = rc == 0 and reaped and data is not None
@@ -320,6 +342,53 @@ def _tests_ready(tests: str, uid: int):
     return None
 
 
+def _box_refusal(uid: int, root: str):
+    """Why this box cannot grade safely: `/logs` the test uid could write, code of the
+    test uid able to ptrace pytest (Yama off or absent), or a process of the test uid
+    already running. None if it can."""
+    logs = _under(root, "logs")
+    info = os.lstat(logs)
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_uid == uid
+            or stat.S_IMODE(info.st_mode) & 0o022):
+        return "/logs is not a root directory only root can write"
+    try:
+        with open(_under(root, PTRACE_SCOPE)) as handle:
+            scope = handle.read().strip()
+    except OSError:
+        scope = ""
+    if not scope.isdigit() or int(scope) < 1:
+        return f"kernel.yama.ptrace_scope is {scope or 'absent'}: the test could ptrace pytest"
+    running = processes_of(uid, _under(root, "proc"))
+    if running:
+        return f"uid {uid} already runs processes {running}"
+    return None
+
+
+def _has_id(path: str, uid: int) -> bool:
+    try:
+        with open(path) as handle:
+            return any(line.split(":")[2:3] == [str(uid)] for line in handle)
+    except FileNotFoundError:
+        return False
+
+
+def _append(path: str, line: str) -> None:
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND | _NOFOLLOW, 0o644)
+    with os.fdopen(fd, "r+") as handle:
+        content = handle.read()
+        handle.write(("\n" if content and not content.endswith("\n") else "") + line + "\n")
+
+
+def ensure_account(uid: int, home: str, root: str = "/") -> None:
+    """Name `uid` in /etc/passwd and /etc/group (the grading box is disposable), so that
+    lookups of the test's own user work. An existing entry for `uid` is kept."""
+    passwd, group = _under(root, "etc/passwd"), _under(root, "etc/group")
+    if not _has_id(passwd, uid):
+        _append(passwd, f"{ACCOUNT}:x:{uid}:{uid}::{home}:/usr/sbin/nologin")
+    if not _has_id(group, uid):
+        _append(group, f"{ACCOUNT}:x:{uid}:")
+
+
 def run_tests(uid: int = TEST_UID, root: str = "/") -> int:
     verifier = _under(root, VERIFIER_DIR)
     _verifier_dir(verifier)
@@ -327,7 +396,7 @@ def run_tests(uid: int = TEST_UID, root: str = "/") -> int:
         _remove(os.path.join(verifier, name))
     _write(os.path.join(verifier, "reward.txt"), b"0\n")
     tests = _under(root, "tests")
-    refused = _tests_ready(tests, uid)
+    refused = _tests_ready(tests, uid) or _box_refusal(uid, root)
     if refused is not None:
         print(f"reliquary-tmax: {refused}; scoring 0", file=sys.stderr)
         return 1
@@ -340,12 +409,13 @@ def run_tests(uid: int = TEST_UID, root: str = "/") -> int:
         for path in (run, home):
             os.mkdir(path, 0o700)
             os.chown(path, uid, uid)
+        ensure_account(uid, home, root)
         report = os.path.join(run, "ctrf.json")
         sys.stdout.flush()
         sys.stderr.flush()
         rc = run_as(uid, test_argv(report), test_env(os.environ, home), cwd=tests)
         reaped = reap(uid, _under(root, "proc"))
-        return finish(rc, report, verifier, reaped)
+        return finish(rc, report, verifier, reaped, uid)
     finally:
         shutil.rmtree(out, ignore_errors=True)
 
