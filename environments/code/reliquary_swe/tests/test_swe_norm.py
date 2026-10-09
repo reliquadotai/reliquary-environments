@@ -436,6 +436,15 @@ def commands(case):
     return [call[1]["command"] for call in case["calls"]]
 
 
+def test_the_forced_venv_path_is_un_ignored_so_the_capture_carries_it():
+    # An image whose .venv ignores itself (R2E: `.venv/.gitignore` = `*`) would keep a
+    # merely force-added file out of the capture: the gold alone would travel, scoring 1.
+    cases = {c["name"]: c for c in conformance.golden_cases(0, b"G", "/testbed", python=False)}
+    forced = commands(cases["gold_with_forced_ignored_path_0"])[-1]
+    assert "echo '!zz_reliquary.pth' >> .venv/.gitignore" in forced
+    assert forced.index(".venv/.gitignore") < forced.index("git add -f .venv/zz_reliquary.pth")
+
+
 def test_the_planted_patch_cases_break_or_arm_the_agents_git():
     cases = {c["name"]: c for c in conformance.golden_cases(0, b"G", "/testbed", python=False)}
     assert "touch /testbed/.git/index.lock" in commands(cases["patch_planted_in_artifacts_0"])

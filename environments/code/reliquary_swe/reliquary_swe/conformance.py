@@ -7,16 +7,16 @@ that name. Nothing here imports a sandbox.
 A reference applies the task's gold patch through the `bash` tool, in base64 chunks (one
 tool call's arguments are bounded). A gold patch the env norm refuses (a binary file, a
 symlink or a submodule: 8 R2E rows add a symlink) is no reference: the task has none.
-Attacks on a golden task, each expected to grade 0: the gold patch plus a forced path
-under `.venv` (refused path), plus a symlink, plus a binary file (refused shapes); the
-gold patch planted in the artifact directory with the sources untouched (finalize
-replaces it), with a stale `index.lock` beside it, with git settings that would plant it
-during the capture (a required clean filter, fsmonitor, hooks, an external diff: the
-capture runs none of them), and with the repository gone (no capture: finalize removes
-it); a root conftest.py that reports every test as passed (restored from the image by
-grading; both R2E goldens expect every test PASSED, so forcing passes would otherwise
-score 1); on `train`, the fail-to-pass tests overridden to pass in their own files (test
-files are restored by grading).
+Attacks on a golden task, each expected to grade 0: the gold patch plus a path under
+`.venv`, un-ignored and force-added so the capture carries it (refused path), plus a
+symlink, plus a binary file (refused shapes); the gold patch planted in the artifact
+directory with the sources untouched (finalize replaces it), with a stale `index.lock`
+beside it, with git settings that would plant it during the capture (a required clean
+filter, fsmonitor, hooks, an external diff: the capture runs none of them), and with the
+repository gone (no capture: finalize removes it); a root conftest.py that reports every
+test as passed (restored from the image by grading; both R2E goldens expect every test
+PASSED, so forcing passes would otherwise score 1); on `train`, the fail-to-pass tests
+overridden to pass in their own files (test files are restored by grading).
 
 Indices are those of a split served with the taskset's defaults (`train`:
 `num_images` = `corpus.DEFAULT_SWESMITH_IMAGES`, no `max_test_count`; `r2e` and
@@ -116,9 +116,12 @@ def golden_cases(index: int, gold: bytes, workdir: str, *, python: bool,
             "expect": 0.0,
             "calls": [
                 *solve,
+                # Un-ignored first: R2E's `.venv/.gitignore` (`*`) would keep the file
+                # out of the capture, and the gold alone would rightly score 1.
                 _bash(
                     f"cd {q} && mkdir -p .venv && echo 'import os' > "
-                    ".venv/zz_reliquary.pth && git add -f .venv/zz_reliquary.pth"
+                    ".venv/zz_reliquary.pth && echo '!zz_reliquary.pth' >> .venv/.gitignore"
+                    " && git add -f .venv/zz_reliquary.pth"
                 ),
             ],
         },
