@@ -11,11 +11,14 @@ from reliquary_swe import grading
 from reliquary_swe.taskset import SweData
 
 
-def data(split="r2e", base_commit="HEAD"):
+SHA = "b" * 40
+
+
+def data(split="r2e", base_commit=SHA):
     return SweData(idx=0, prompt="p", image="r@sha256:" + "a" * 64, workdir="/testbed",
                    instance_id="i", repo="r", base_commit=base_commit, version="1",
                    fail_to_pass=("t.py::a",), pass_to_pass=(), gold_patch="", test_patch="",
-                   split=split)
+                   split=split, test_command="bash t.sh")
 
 
 class Box:
@@ -28,11 +31,15 @@ class Box:
         self._answers.append((predicate, SimpleNamespace(exit_code=exit_code, stdout=stdout,
                                                          stderr=stderr)))
 
+    def on_call(self, predicate, answer):
+        """`answer(argv)` gives the result."""
+        self._answers.append((predicate, answer))
+
     async def run(self, argv, env):
         self.runs.append(list(argv))
         for predicate, result in self._answers:
             if predicate(list(argv)):
-                return result
+                return result(list(argv)) if callable(result) else result
         return SimpleNamespace(exit_code=0, stdout="", stderr="")
 
     async def write(self, path, data_):
@@ -110,7 +117,8 @@ async def test_a_refused_shape_grades_zero_without_applying_anything():
     raw = b"diff --git a/x.bin b/x.bin\nnew file mode 100644\nGIT binary patch\nliteral 3\n"
     report = await grading.grade_prepared(box, data(), raw)
     assert report.reward == 0.0 and report.applied is False
-    assert "binary" in report.test_output_tail
+    assert report.test_output_tail == (
+        "patch refused (env norm: no binary, symlink or submodule): binary")
     assert not any(argv[:2] == ["git", "apply"] for argv in box.runs)
 
 
@@ -180,3 +188,133 @@ async def test_prepared_data_refuses_a_box_whose_head_does_not_resolve():
     box.on(lambda argv: argv == ["git", "rev-parse", "HEAD"], exit_code=128, stderr="bad")
     with pytest.raises(grading.PristineBoxError):
         await grading.prepared_data(box, data("train"))
+
+
+# -- The paths a patch reads or writes: no symlink, no gitlink, UTF-8 names ----------------
+#
+# A patch's header can say nothing about a mode (a modeless hunk on a tracked symlink, a
+# copy or a rename whose source is one, sides with differing names): git then reads the
+# preimage through the link and keeps its mode. `git apply --numstat` names only the
+# written path, so the sources come from `git apply --check -v`.
+
+
+def _shaped_box(numstat, checking, symlinks=(), index=(), special_exit=0):
+    """A box whose `git apply --numstat` prints `numstat`, `--check -v` prints `checking`,
+    where `symlinks` are links in the worktree and `index` maps tracked paths to modes."""
+    box = Box()
+    box.on(lambda argv: argv[:3] == ["git", "apply", "--numstat"], stdout=numstat)
+    box.on(lambda argv: argv[0] == "sh" and "--check -v" in argv[2], stdout=checking)
+
+    def special(argv):
+        paths = argv[4:]
+        out = "".join(f"symlink {p}\0" for p in paths if p in symlinks)
+        out += "".join(f"{index[p]} {'c' * 40} 0\t{p}\0" for p in paths if p in index)
+        return SimpleNamespace(exit_code=special_exit, stdout=out, stderr="")
+
+    box.on_call(lambda argv: argv[0] == "sh" and "[ -L" in argv[2], special)
+    return box
+
+
+MODELESS = b"diff --git a/l b/l\n--- a/l\n+++ b/l\n@@ -1 +1 @@\n-a\n+b\n"
+COPY = b"diff --git a/l b/m\nsimilarity index 100%\ncopy from l\ncopy to m\n"
+RENAME = b"diff --git a/l b/m\nsimilarity index 100%\nrename from l\nrename to m\n"
+
+
+def _never_applied(box):
+    return not any(argv[:3] == ["git", "apply", "-v"] for argv in box.runs)
+
+
+@pytest.mark.parametrize("raw, numstat, checking", [
+    (MODELESS, "1\t1\tl\0", "Checking patch l...\n"),
+    (COPY, "0\t0\tm\0", "Checking patch l => m...\n"),
+    (RENAME, "0\t0\tm\0", "Checking patch l => m...\n"),
+])
+async def test_a_patch_reading_or_writing_a_tracked_symlink_grades_zero(raw, numstat, checking):
+    assert grading.patch_shape_violations(raw) == []  # nothing in the header says link
+    box = _shaped_box(numstat, checking, symlinks={"l"}, index={"l": "120000", "a": "100644"})
+    report = await grading.grade_prepared(box, data(), raw)
+    assert report.reward == 0.0 and report.applied is False
+    assert "l (symlink)" in report.test_output_tail
+    assert _never_applied(box)
+
+
+async def test_a_symlink_only_in_the_index_is_refused_too():
+    box = _shaped_box("1\t1\tl\0", "Checking patch l...\n", index={"l": "120000"})
+    report = await grading.grade_prepared(box, data(), MODELESS)
+    assert report.reward == 0.0 and "l (symlink)" in report.test_output_tail
+    assert _never_applied(box)
+
+
+async def test_a_patch_into_a_gitlink_grades_zero():
+    box = _shaped_box("1\t1\tsub\0", "Checking patch sub...\n", index={"sub": "160000"})
+    report = await grading.grade_prepared(box, data(), MODELESS.replace(b"/l", b"/sub"))
+    assert report.reward == 0.0 and "sub (submodule)" in report.test_output_tail
+    assert _never_applied(box)
+
+
+async def test_a_box_that_cannot_say_what_a_path_is_refuses_the_patch():
+    box = _shaped_box("1\t1\tl\0", "Checking patch l...\n", special_exit=128)
+    report = await grading.grade_prepared(box, data(), MODELESS)
+    assert report.reward == 0.0 and report.applied is False
+    assert _never_applied(box)
+
+
+async def test_a_path_that_is_not_utf8_is_refused():
+    box = _shaped_box("1\t1\tcaf\ufffd.py\0", "Checking patch caf\ufffd.py...\n")
+    report = await grading.grade_prepared(box, data(), MODELESS)
+    assert report.reward == 0.0 and report.applied is False
+    assert _never_applied(box)
+    assert not any(argv[0] == "sh" and "[ -L" in argv[2] for argv in box.runs)
+
+
+async def test_regular_files_pass_the_path_checks_and_are_applied():
+    box = _shaped_box("1\t1\tm\0", "Checking patch a => m...\n", symlinks={"l"},
+                      index={"a": "100644", "l": "120000"})
+    box.on(lambda argv: argv[:3] == ["git", "apply", "-v"], exit_code=1)
+    await grading.grade_prepared(box, data(), MODELESS)
+    special = next(argv for argv in box.runs if argv[0] == "sh" and "[ -L" in argv[2])
+    assert {"a", "m"} <= set(special[4:])  # the source too, not only what numstat names
+    assert not _never_applied(box)
+
+
+def test_every_name_git_checks_is_read_including_quoted_and_ambiguous_ones():
+    output = ('Checking patch "caf\\303\\251\\tx" => b...\n'
+              "Checking patch x => y => z...\nerror: Checking patch q...\n")
+    names = set(grading._checked_patch_names(output))
+    assert {"caf\u00e9\tx", "b", "x", "y => z", "x => y", "z"} <= names
+    assert "q" not in names
+
+
+# -- grade_prepared trusts only a base prepare_box resolved ---------------------------------
+
+
+@pytest.mark.parametrize("split", ["train", "polyglot", "r2e"])
+@pytest.mark.parametrize("base", ["HEAD", "origin/x~1", "b" * 39, "B" * 40, "b" * 41, ""])
+async def test_grade_prepared_refuses_a_base_that_is_not_a_resolved_commit(split, base):
+    box = Box()
+    with pytest.raises(grading.PristineBoxError):
+        await grading.grade_prepared(box, data(split, base), TEXT)
+    assert box.runs == [] and box.files == {}
+
+
+async def test_a_verified_base_is_not_held_to_the_resolved_form():
+    box = Box()
+    report = await grading.grade_prepared(box, data("eval", "c0ffee"),
+                                          b"diff --git a/x b/x\nGIT binary patch\n")
+    assert report.reward == 0.0
+
+
+# -- A box restoration did not confirm runs nothing, on every split -------------------------
+
+
+@pytest.mark.parametrize("split", ["train", "polyglot", "r2e", "eval"])
+async def test_a_failed_restoration_scores_zero_and_runs_nothing(split, monkeypatch):
+    async def not_restored(runtime, d):
+        return False
+
+    monkeypatch.setattr(grading, "_restore_strategy_for", lambda d: not_restored)
+    box = Box()  # every command would succeed: a test run would pass
+    report = await grading.grade_prepared(box, data(split, "c0ffee" if split == "eval" else SHA),
+                                          "")
+    assert report.reward == 0.0 and report.restored is False
+    assert box.runs == []

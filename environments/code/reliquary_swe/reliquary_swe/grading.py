@@ -69,6 +69,7 @@ from reliquary_swe.taskset import (
     SweData,
 )
 
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
 _DIFF_TARGET = re.compile(r"^\+\+\+ b/(.+)$", re.MULTILINE)
 
 # Every filename pytest's own `locate_config` treats as a config file
@@ -724,16 +725,109 @@ def _forbidden_patch_paths(
     ]
 
 
+_CHECKING_PATCH = "Checking patch "
+_C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+_OCTAL_ESCAPE = re.compile(r"[0-3][0-7]{2}")
+
+
+def _unquote_c(name: str) -> str:
+    """A name as git's `quote_c_style` printed it, unquoted (bytes that are not
+    UTF-8 come back as U+FFFD, which `_patch_violations` refuses)."""
+    if len(name) < 2 or name[0] != '"' or name[-1] != '"':
+        return name
+    body, out, i = name[1:-1], bytearray(), 0
+    while i < len(body):
+        if body[i] == "\\" and _OCTAL_ESCAPE.match(body, i + 1):
+            out.append(int(body[i + 1 : i + 4], 8))
+            i += 4
+        elif body[i] == "\\" and body[i + 1 : i + 2] in _C_ESCAPES:
+            out.append(_C_ESCAPES[body[i + 1]])
+            i += 2
+        else:
+            out += body[i].encode()
+            i += 1
+    return out.decode("utf-8", "replace")
+
+
+def _checked_patch_names(output: str) -> list[str]:
+    """Every name git reads or writes for a patch, from the `Checking patch`
+    lines of `git apply --check -v`: `old => new` for a rename, a copy, or a
+    hunk whose two sides name different files (git reads the old one and
+    keeps its mode), the bare name otherwise. `--numstat` names only the
+    written side. An unquoted name may itself hold ` => `, so every split is
+    kept: a superset, never a miss."""
+    names: list[str] = []
+    for line in output.split("\n"):
+        if not line.startswith(_CHECKING_PATCH) or not line.endswith("..."):
+            continue
+        body = line[len(_CHECKING_PATCH) : -3]
+        names.append(_unquote_c(body))
+        at = body.find(" => ")
+        while at >= 0:
+            names += [_unquote_c(body[:at]), _unquote_c(body[at + 4 :])]
+            at = body.find(" => ", at + 1)
+    return names
+
+
+# One shell over every path a patch names: a symlink in the box's worktree,
+# then the index entry of each (git's own mode: 120000 link, 160000 gitlink).
+_SPECIAL_PATHS_SH = (
+    'for p; do if [ -L "$p" ]; then printf "symlink %s\\0" "$p"; fi; done; '
+    'exec git --literal-pathspecs ls-files -s -z -- "$@"'
+)
+
+
+def _special_paths(output: str) -> list[str]:
+    """`_SPECIAL_PATHS_SH`'s output, as refusals: every symlink and gitlink."""
+    found: list[str] = []
+    for record in output.split("\0"):
+        if record.startswith("symlink "):
+            found.append(f"{record[len('symlink '):]} (symlink)")
+            continue
+        meta, tab, path = record.partition("\t")
+        mode = meta.split(" ", 1)[0]
+        if tab and mode == "120000":
+            found.append(f"{path} (symlink)")
+        elif tab and mode == "160000":
+            found.append(f"{path} (submodule)")
+    return list(dict.fromkeys(found))
+
+
 async def _patch_violations(runtime: vf.Runtime, data: SweData) -> list[str]:
     """`_forbidden_patch_paths` for the patch at /tmp/agent.diff, asked of
-    this box before the patch is applied. A patch git cannot parse yields
-    no paths here and fails to apply right after, scoring 0 there."""
+    this box before the patch is applied, after refusing any path it reads
+    or writes that is not UTF-8, is a symlink (worktree or index) or a
+    gitlink. A patch header need not say a mode: a modeless hunk on a
+    tracked link, or a copy or rename from one, makes git read through the
+    link and keep its mode -- `patch_shape_violations` cannot see those.
+    A patch git cannot parse yields no paths here and fails to apply right
+    after, scoring 0 there."""
     numstat = await runtime.run(["git", "apply", "--numstat", "-z", "/tmp/agent.diff"], {})
     if numstat.exit_code != 0:
         return []
-    paths = _numstat_paths(numstat.stdout or "")
+    checked = await runtime.run(
+        ["sh", "-c", "LC_ALL=C git apply --check -v /tmp/agent.diff 2>&1"], {}
+    )
+    paths = list(
+        dict.fromkeys(
+            [
+                *_numstat_paths(numstat.stdout or ""),
+                *_checked_patch_names((checked.stdout or "") + (checked.stderr or "")),
+            ]
+        )
+    )
     if not paths:
         return []
+    undecodable = [path for path in paths if "\ufffd" in path]
+    if undecodable:
+        return [f"{path} (not UTF-8)" for path in undecodable]
+    special = await runtime.run(["sh", "-c", _SPECIAL_PATHS_SH, "sh", *paths], {})
+    if special.exit_code != 0:
+        detail = (special.stderr or special.stdout).strip()[-200:]
+        return [f"{path} (mode check exit {special.exit_code}: {detail})" for path in paths]
+    found = _special_paths(special.stdout or "")
+    if found:
+        return found
     others = await runtime.run(["git", "ls-files", "-z", "--others", "--directory"], {})
     if others.exit_code != 0:
         raise PristineBoxError(
@@ -1039,6 +1133,13 @@ async def grade_prepared(runtime: vf.Runtime, data: SweData, patch: str | bytes)
     non-UTF-8 source file must apply as captured. A patch whose shape the env
     norm refuses (`patch_shape_violations`) scores 0 and is never applied.
     """
+    if data.split in ("train", "polyglot", "r2e") and not _FULL_SHA.fullmatch(data.base_commit):
+        # Restoration checks paths out of `base_commit`: only the commit
+        # `prepare_box` resolved names the box's base, never a ref.
+        raise PristineBoxError(
+            f"base_commit {data.base_commit!r} for {data.instance_id} is not the full "
+            "commit prepare_box resolved"
+        )
     raw = patch if isinstance(patch, bytes) else patch.encode()
     applied = True
     if raw.strip():
@@ -1051,7 +1152,7 @@ async def grade_prepared(runtime: vf.Runtime, data: SweData, patch: str | bytes)
                 0,
                 0,
                 {},
-                test_output_tail="patch refused (no binary, symlink or submodule): "
+                test_output_tail="patch refused (env norm: no binary, symlink or submodule): "
                 + ", ".join(shape),
             )
         await runtime.write("/tmp/agent.diff", raw)
@@ -1066,8 +1167,8 @@ async def grade_prepared(runtime: vf.Runtime, data: SweData, patch: str | bytes)
                 0,
                 0,
                 {},
-                test_output_tail="patch touches paths outside the tracked tree: "
-                + ", ".join(violations)[:1900],
+                test_output_tail="patch refused (env norm: no path outside the tracked tree, "
+                "no symlink, submodule or non-UTF-8 name): " + ", ".join(violations)[:1900],
             )
         result = await runtime.run(["git", "apply", "-v", "/tmp/agent.diff"], {})
         applied = result.exit_code == 0
@@ -1083,6 +1184,18 @@ async def grade_prepared(runtime: vf.Runtime, data: SweData, patch: str | bytes)
     # error attributed to us rather than a result attributed to the patch.
     # `restored` carries the signal instead -- see Report.restored.
     restored = await _restore_strategy_for(data)(runtime, data)
+    if not restored:
+        # Any restoration failure leaves a box whose verdict could be the
+        # patch's, on every split: score it 0 and run nothing.
+        return Report(
+            0.0,
+            applied,
+            False,
+            0,
+            0,
+            {},
+            test_output_tail="restoration failed; nothing was run",
+        )
 
     # A canary check -- one injected test that must FAIL and one that must
     # PASS, at a path the agent cannot predict -- would slot in here, after
@@ -1105,19 +1218,6 @@ async def grade_prepared(runtime: vf.Runtime, data: SweData, patch: str | bytes)
             test_output_tail=((run.stdout or "") + (run.stderr or ""))[-2000:],
         )
 
-    if data.split == "r2e" and not restored:
-        # Any restoration failure -- the hidden tests, the root entries, the
-        # root conftest/config files -- leaves a box whose verdict could be
-        # the patch's: score it 0 and run nothing.
-        return Report(
-            0.0,
-            applied,
-            False,
-            0,
-            0,
-            {},
-            test_output_tail="restoration failed; nothing was run",
-        )
     if data.split == "r2e":
         # Run nothing unless the hidden tests and their runner are exactly
         # where `_restore_r2e` put them: whatever else sits at run_tests.sh
