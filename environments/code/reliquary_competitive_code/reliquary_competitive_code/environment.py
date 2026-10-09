@@ -13,7 +13,7 @@ from typing import Any
 
 from reliquary_competitive_code.corpus import Corpus, pinned_corpus
 from reliquary_competitive_code.extraction import extract_program
-from reliquary_competitive_code.judge import judge
+from reliquary_competitive_code.judge import judge, output_cap
 from reliquary_competitive_code.judge.guest import ALLOWED_IMPORT_ROOTS
 from reliquary_competitive_code.judge.runner import HARNESS_OVERLOAD
 from reliquary_competitive_code.layout import SPLITS, use_of
@@ -109,6 +109,28 @@ class CompetitiveCodeEnvironment:
 
     def replay(self, index: int, completion: str) -> dict[str, Any]:
         return {"reward": self.grade(index, completion)}
+
+    def admission_reward_cases(self, index: int) -> list[dict[str, Any]]:
+        """The hidden tests, handed over instead of run.
+
+        `grade` runs the program in a local subprocess, which is no containment
+        boundary. A validator takes the tests instead and runs `judge.guest.run`
+        in its own sandbox, comparing with `outputs_match` on its trusted side.
+        Fresh dicts: the caller may mutate them and the corpus is cached.
+        """
+        position, problem = self._problem(index)
+        tests = self._corpus.tests(self.split, position)
+        if not tests:
+            raise RuntimeError(f"problem {problem.problem_id} has no tests")
+        return [
+            {
+                "stdin": test.stdin,
+                "stdout": test.stdout,
+                "time_limit_s": problem.time_limit_s,
+                "output_cap": output_cap(test.stdout),
+            }
+            for test in tests
+        ]
 
     def reference_completion(self, index: int) -> str:
         _, problem = self._problem(index)

@@ -201,3 +201,24 @@ def test_the_sft_share_is_sixty_percent_of_the_id_space() -> None:
 
     assert use_of("0" * 16) == "sft" and use_of("f" * 16) == "rl"
     assert use_of("9999999999999998") == "sft" and use_of("999999999999999a") == "rl"
+
+
+def test_admission_reward_cases_hand_over_the_tests_without_running_them(corpus, monkeypatch) -> None:
+    import reliquary_competitive_code.environment as module
+    from reliquary_competitive_code.judge import output_cap
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("handing over the tests must not run a program")
+
+    monkeypatch.setattr(module, "judge", refuse)
+    environment = CompetitiveCodeEnvironment("train", corpus=corpus)
+    position = 7 + len(environment)  # wraps like every other accessor
+    problem = corpus.problems("train")[7]
+    cases = environment.admission_reward_cases(position)
+    assert cases == [
+        {"stdin": t.stdin, "stdout": t.stdout, "time_limit_s": problem.time_limit_s,
+         "output_cap": output_cap(t.stdout)}
+        for t in corpus.tests("train", 7)
+    ]
+    cases[0]["stdout"] = "tampered"
+    assert environment.admission_reward_cases(7)[0]["stdout"] != "tampered"

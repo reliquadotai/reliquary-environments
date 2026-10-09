@@ -6,12 +6,14 @@ completions per task, and `artifact.json` pins the digest of every file the
 wheel ships, `environment.toml` included through `source_manifest_sha256`.
 
     uv run python scripts/write_goldens.py
+    uv run python scripts/write_goldens.py --artifact-only  # re-pin, keep goldens
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 from reliquary_competitive_code.layout import SPLITS
@@ -110,6 +112,12 @@ def discrimination(split: str, count: int) -> list[dict[str, object]]:
 
 
 def main() -> None:
+    if "--artifact-only" not in sys.argv[1:]:
+        write_goldens()
+    write_artifact()
+
+
+def write_goldens() -> None:
     goldens = [golden(split) for split in SPLITS]
     (PACKAGE / "goldens").mkdir(exist_ok=True)
     (PACKAGE / "goldens/reference.jsonl").write_text(
@@ -123,6 +131,10 @@ def main() -> None:
         "".join(json.dumps(item, sort_keys=True) + "\n" for item in discriminating),
         encoding="utf-8",
     )
+    print(json.dumps({"goldens": len(goldens), "discrimination": len(discriminating)}))
+
+
+def write_artifact() -> None:
     # Every shipped file is pinned, `build/` and `sources/` included.
     files = {
         path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -146,7 +158,7 @@ def main() -> None:
         "files": files,
     }
     (PACKAGE / "artifact.json").write_text(json.dumps(artifact, indent=2) + "\n")
-    print(json.dumps({"goldens": len(goldens), "discrimination": len(discriminating), "files": len(files)}))
+    print(json.dumps({"files": len(files)}))
 
 
 if __name__ == "__main__":

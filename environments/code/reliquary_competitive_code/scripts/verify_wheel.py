@@ -59,6 +59,10 @@ for item in discriminating:
             f"{item['problem_id']} {case['name']}: {graded['status']} {graded['reward']}"
         )
 
+# The relay a validator grades through: it takes the tests and runs the program
+# in its own sandbox rather than in this package's subprocess.
+assert callable(getattr(CompetitiveCodeEnvironment, "admission_reward_cases", None))
+
 # environment.toml sits beside the package in the source tree (the CI job runs
 # this script by absolute path from the checkout) and is pinned by
 # `source_manifest_sha256`; `[data].virtual_length` is the number of tasks served.
