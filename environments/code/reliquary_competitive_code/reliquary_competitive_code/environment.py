@@ -16,7 +16,7 @@ from reliquary_competitive_code.extraction import extract_program
 from reliquary_competitive_code.judge import judge
 from reliquary_competitive_code.judge.guest import ALLOWED_IMPORT_ROOTS
 from reliquary_competitive_code.judge.runner import HARNESS_OVERLOAD
-from reliquary_competitive_code.layout import SPLITS
+from reliquary_competitive_code.layout import SPLITS, use_of
 
 ENVIRONMENT = "reliquary_competitive_code_v1"
 TASK_FAMILY = "competitive_programming_stdio_v1"
@@ -72,6 +72,7 @@ class CompetitiveCodeEnvironment:
                 "judge_version": JUDGE_VERSION,
                 "time_limit_s": problem.time_limit_s,
                 "split": self.split,
+                **({"use": use_of(problem.problem_id)} if self.split == "train" else {}),
             },
         }
 

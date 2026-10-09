@@ -26,6 +26,21 @@ minimum = 0.0
 maximum = 1.0
 components = ["passes_all_tests"]
 
+[data]
+train = "hf:ReliquaryForge/competitive-code-curated@1f6e4f1268c840ddfd6f20c3a9b0045078664b77#problems-train.parquet"
+eval = "hf:ReliquaryForge/competitive-code-curated@1f6e4f1268c840ddfd6f20c3a9b0045078664b77#problems-eval.parquet"
+qualification = "hf:ReliquaryForge/competitive-code-curated@1f6e4f1268c840ddfd6f20c3a9b0045078664b77#problems-qualification.parquet"
+redistributable = true
+license = "MIT (DeepCoder-Preview-Dataset); problem statements inherit their original judges' terms"
+rows = 8509
+virtual_length = 7273
+# Train is shared by problem identity (layout.use_of): SFT first, then RL, each
+# one contiguous range of the split, so a corpus job is [start, start + count).
+train_sft_start = 0
+train_sft_count = 4181
+train_rl_start = 4181
+train_rl_count = 2718
+
 [provenance]
 source_repository = "https://github.com/reliquadotai/reliquary-environments"
 upstream = "https://huggingface.co/datasets/agentica-org/DeepCoder-Preview-Dataset"

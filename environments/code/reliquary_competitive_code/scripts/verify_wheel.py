@@ -45,6 +45,20 @@ for golden in goldens:
         reward = environment.grade(golden["index"], golden[field])["reward"]
         assert reward == expected, f"{golden['split']}: {field} scored {reward}"
 
+discriminating = [
+    json.loads(line)
+    for line in root.joinpath("goldens/discrimination.jsonl").read_text().splitlines()
+]
+assert len(discriminating) >= 30, f"{len(discriminating)} discrimination goldens"
+for item in discriminating:
+    environment = CompetitiveCodeEnvironment(item["split"])
+    assert environment.task(item["index"])["id"] == item["task_id"], item["problem_id"]
+    for case in item["cases"]:
+        graded = environment.grade(item["index"], case["completion"])
+        assert (graded["reward"], graded["status"]) == (case["reward"], case["status"]), (
+            f"{item['problem_id']} {case['name']}: {graded['status']} {graded['reward']}"
+        )
+
 # environment.toml sits beside the package in the source tree (the CI job runs
 # this script by absolute path from the checkout) and is pinned by
 # `source_manifest_sha256`; `[data].virtual_length` is the number of tasks served.
@@ -56,6 +70,14 @@ assert (
 data = tomllib.loads(declared.read_text())["data"]
 served = sum(len(CompetitiveCodeEnvironment(split)) for split in SPLITS)
 assert served == data["virtual_length"], f"{served} tasks served, declared {data['virtual_length']}"
+
+# The SFT and RL shares of train: the contiguous ranges environment.toml declares.
+from reliquary_competitive_code.corpus import pinned_corpus
+
+for use in ("sft", "rl"):
+    span = pinned_corpus().use_range(use)
+    declared_span = (data[f"train_{use}_start"], data[f"train_{use}_count"])
+    assert (span.start, len(span)) == declared_span, f"{use}: served {span}, declared {declared_span}"
 
 prompts = {
     CompetitiveCodeEnvironment(split).task(index)["prompt"]

@@ -18,7 +18,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from reliquary_competitive_code.judge import TestCase
-from reliquary_competitive_code.layout import REFERENCES_FILE, SPLITS, problems_file
+from reliquary_competitive_code.layout import REFERENCES_FILE, SPLITS, USES, problems_file, use_of
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +28,18 @@ class DatasetPin:
     files: dict[str, str]
 
 
-PINNED: DatasetPin | None = None
+# ReliquaryForge/competitive-code-curated, built 2026-10-09 from
+# DeepCoder-Preview-Dataset @177913a7 (see the dataset's build_report.json).
+PINNED: DatasetPin | None = DatasetPin(
+    repository="ReliquaryForge/competitive-code-curated",
+    revision="1f6e4f1268c840ddfd6f20c3a9b0045078664b77",
+    files={
+        "problems-train.parquet": "e9efae4c77d31a6b2c4150553dce797b342f3a38bdf212cf339eb311550bd248",
+        "problems-eval.parquet": "c6188cbb32d4eeae233470ac7061511b4e89953508da6506686845d1331e85f2",
+        "problems-qualification.parquet": "a6b4edd4534d299772870970c9de856e2f690ea5504f6112ead0505d1a2deb6e",
+        "references.parquet": "da4fe91e3edafdb374411f88051ccc739d8c7a6488925f6ba427dcd816d87aa7",
+    },
+)
 _CACHED_ROW_GROUPS = 4
 
 
@@ -82,6 +93,17 @@ class Corpus:
 
     def problems(self, split: str) -> list[Problem]:
         return self._problems[split]
+
+    def use_range(self, use: str) -> range:
+        """The indices of train that serve `use` ("sft" or "rl"): one
+        contiguous range, since train is sorted by problem id."""
+        if use not in USES:
+            raise ValueError(f"use must be one of {USES}")
+        uses = [use_of(p.problem_id) for p in self._problems["train"]]
+        if uses != sorted(uses, key=USES.index):
+            raise RuntimeError("train is not ordered sft then rl")
+        start = uses.index(use) if use in uses else (len(uses) if use == "rl" else 0)
+        return range(start, start + uses.count(use))
 
     def tests(self, split: str, index: int) -> tuple[TestCase, ...]:
         starts = self._row_groups[split]

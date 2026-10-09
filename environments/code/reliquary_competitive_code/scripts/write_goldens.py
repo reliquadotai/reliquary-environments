@@ -31,10 +31,10 @@ def golden(split: str) -> dict[str, object]:
     environment = CompetitiveCodeEnvironment(split)
     task = environment.task(index)
     completion = environment.reference_completion(index)
-    graded = environment.grade(index, completion)
+    graded = _grade(environment, index, completion)
     assert graded["reward"] == 1.0, f"{split}: the reference scored {graded}"
-    assert environment.grade(index, WRONG)["reward"] == 0.0
-    assert environment.grade(index, NO_CODE)["reward"] == 0.0
+    assert _grade(environment, index, WRONG)["reward"] == 0.0
+    assert _grade(environment, index, NO_CODE)["reward"] == 0.0
     return {
         "completion": completion,
         "index": index,
@@ -48,11 +48,79 @@ def golden(split: str) -> dict[str, object]:
     }
 
 
+# Discrimination goldens: ~30 real problems strided across the splits, each
+# frozen with four completions and the status the judge must give them.
+DISCRIMINATION_PER_SPLIT = {"train": 18, "eval": 6, "qualification": 6}
+LOOP = "```python\nwhile True:\n    pass\n```"
+FORBIDDEN = "```python\nimport os\nprint(os.getpid())\n```"
+
+
+def _wrong(reference: str) -> str:
+    """The reference with one extra token in its output. Printed first, so a
+    reference that exits early cannot skip it; last only when the reference
+    starts with a `__future__` import, which must stay first."""
+    extra = "print('reliquary-wrong')"
+    body = f"{reference}\n{extra}" if "__future__" in reference else f"{extra}\n{reference}"
+    return f"```python\n{body}\n```"
+
+
+def _grade(environment, index: int, completion: str) -> dict[str, object]:
+    """Grade, retrying when a starved host gave no verdict (harness_overload
+    raises; it never becomes a reward)."""
+    for attempt in range(6):
+        try:
+            return environment.grade(index, completion)
+        except RuntimeError as error:
+            if "harness_overload" not in str(error) or attempt == 5:
+                raise
+    raise AssertionError("unreachable")
+
+
+def discrimination(split: str, count: int) -> list[dict[str, object]]:
+    environment = CompetitiveCodeEnvironment(split)
+    stride = max(1, len(environment) // count)
+    items = []
+    for index in range(stride // 2, len(environment), stride):
+        if len(items) == count:
+            break
+        task = environment.task(index)
+        reference = environment._corpus.reference(task["metadata"]["problem_id"])
+        cases = {
+            "reference": (f"```python\n{reference}\n```", 1.0, "ok"),
+            "wrong": (_wrong(reference), 0.0, "wrong_answer"),
+            "loop": (LOOP, 0.0, "timeout"),
+            "forbidden": (FORBIDDEN, 0.0, "forbidden_import"),
+        }
+        graded = {name: _grade(environment, index, completion) for name, (completion, _, _) in cases.items()}
+        if any((graded[n]["reward"], graded[n]["status"]) != (r, st) for n, (_, r, st) in cases.items()):
+            print(f"skip {split}#{index}: {[(n, g['status']) for n, g in graded.items()]}")
+            continue
+        items.append({
+            "split": split,
+            "index": index,
+            "problem_id": task["metadata"]["problem_id"],
+            "task_id": task["id"],
+            "cases": [
+                {"name": n, "completion": c, "reward": r, "status": st}
+                for n, (c, r, st) in cases.items()
+            ],
+        })
+    assert len(items) == count, f"{split}: {len(items)} discrimination goldens, wanted {count}"
+    return items
+
+
 def main() -> None:
     goldens = [golden(split) for split in SPLITS]
     (PACKAGE / "goldens").mkdir(exist_ok=True)
     (PACKAGE / "goldens/reference.jsonl").write_text(
         "".join(json.dumps(item, sort_keys=True) + "\n" for item in goldens),
+        encoding="utf-8",
+    )
+    discriminating = [
+        item for split in SPLITS for item in discrimination(split, DISCRIMINATION_PER_SPLIT[split])
+    ]
+    (PACKAGE / "goldens/discrimination.jsonl").write_text(
+        "".join(json.dumps(item, sort_keys=True) + "\n" for item in discriminating),
         encoding="utf-8",
     )
     # Every shipped file is pinned, `build/` and `sources/` included.
@@ -78,7 +146,7 @@ def main() -> None:
         "files": files,
     }
     (PACKAGE / "artifact.json").write_text(json.dumps(artifact, indent=2) + "\n")
-    print(json.dumps({"goldens": len(goldens), "files": len(files)}))
+    print(json.dumps({"goldens": len(goldens), "discrimination": len(discriminating), "files": len(files)}))
 
 
 if __name__ == "__main__":

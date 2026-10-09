@@ -170,3 +170,34 @@ def test_the_pinned_corpus_loads_once_under_concurrent_first_use(monkeypatch, co
     for thread in threads:
         thread.join()
     assert len(calls) == 1 and all(r is corpus for r in results) and len(results) == 8
+
+
+def test_train_splits_into_one_sft_range_then_one_rl_range(tmp_path) -> None:
+    from reliquary_competitive_code.layout import use_of
+
+    # Ids spread over the whole 64-bit space, so both uses are present.
+    spread = [
+        Curated(f"{i * (2**64 // 40):016x}", "train", f"Problem {i}.", (TestCase("1\n", "1\n"),) * 5, 1.0, SUM, {})
+        for i in range(40)
+    ]
+    write_dataset(spread, tmp_path)
+    corpus = Corpus(tmp_path)
+    train = corpus.problems("train")
+    sft, rl = corpus.use_range("sft"), corpus.use_range("rl")
+    assert sft.start == 0 and sft.stop == rl.start and rl.stop == len(train)
+    assert 0 < len(sft) and 0 < len(rl)
+    assert all(use_of(train[i].problem_id) == "sft" for i in sft)
+    assert all(use_of(train[i].problem_id) == "rl" for i in rl)
+    environment = CompetitiveCodeEnvironment("train", corpus=corpus)
+    assert environment.task(sft.start)["metadata"]["use"] == "sft"
+    assert environment.task(rl.start)["metadata"]["use"] == "rl"
+    assert len(sft) == 25
+    with pytest.raises(ValueError):
+        corpus.use_range("train")
+
+
+def test_the_sft_share_is_sixty_percent_of_the_id_space() -> None:
+    from reliquary_competitive_code.layout import use_of
+
+    assert use_of("0" * 16) == "sft" and use_of("f" * 16) == "rl"
+    assert use_of("9999999999999998") == "sft" and use_of("999999999999999a") == "rl"

@@ -35,7 +35,38 @@ least 16 GB of RAM.
 
 ## Published revision
 
-Drop counts: filled in with the published revision.
+`ReliquaryForge/competitive-code-curated@1f6e4f12` (public), pinned in
+`corpus.PINNED` with the sha256 of its four files. Built 2026-10-09 from
+DeepCoder-Preview-Dataset @`177913a7` (taco + primeintellect) on 32 cores in
+1 h 10 min, harness_overload 0:
+
+| step | count |
+| --- | --- |
+| loaded | 21,294 |
+| dropped: several answers (statement) | 2,180 |
+| dropped: tests contradict a statement example | 388 |
+| dropped: overlaps LiveCodeBench | 37 |
+| problems after dedup | 8,509 |
+| dropped: no passing Python 3 reference | 1,150 |
+| dropped: reference too slow | 46 |
+| dropped: references disagree | 35 |
+| dropped: too few tests | 5 |
+| curated | 7,273: train 6,899, eval 166, qualification 208 |
+
+Spot checks: ten curated references replayed by `judge` all pass; of sixty
+sampled rejections, most `no passing reference` are primeintellect problems
+whose upstream solutions are Python 2 (`print x`, `raw_input`), 1,143 of the
+3,100 primeintellect problems. Three of the 276 problems of the 300-row smoke
+are absent because dedup merged them with their primeintellect copies.
+
+## SFT and RL shares of train
+
+A train problem is for SFT when its id falls in the first 60% of the 64-bit id
+space (`layout.use_of`), otherwise for RL. Train is sorted by id, so each use
+is one contiguous range, declared in `environment.toml` and served by
+`Corpus.use_range`: SFT `[0, 4181)`, RL `[4181, 6899)`. A task's metadata
+carries its `use`. The rule depends only on the problem, so a rebuild keeps
+every problem on its side.
 
 ## Grading rules
 
