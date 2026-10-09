@@ -519,14 +519,20 @@ split's size).
 - `SweTask.setup` runs the cleanup, then keeps its state in the box, never on the host:
   the base the agent's diff is taken against as `refs/reliquary/base`, and the image's
   untracked files in `<workdir>/.git/reliquary-untracked` (NUL-separated, at most
-  1 MiB). One Task serves concurrent episodes, and a gateway may restart between setup
-  and finalize.
+  1 MiB), listed under the capture's own ignore rules (`.gitignore` files and
+  `.git/info/exclude`, no global or system config). It then captures the untouched box
+  as finalize would and fails, as ours, unless the patch is empty: an image its own git
+  reads as clean but the capture does not (`core.filemode`, `core.autocrlf`, a filter
+  defined outside the repository) would otherwise grade every agent 0. One Task serves
+  concurrent episodes, and a gateway may restart between setup and finalize.
 - `SweTask.finalize` removes any `/logs/artifacts/patch.diff` the agent planted, then
   writes the agent's diff there (verifiers' artifact convention; no declared artifact).
   The diff is taken in a scratch repository of its own over the agent's work tree, with
   the agent's objects as a read-only alternate and no system, global or XDG config: no
   git setting, hook, attribute driver, fsmonitor, include, replace ref or redirected work
-  tree the agent left runs or applies. Whenever no patch is written (git refused, no base
+  tree the agent left runs or applies. The base is looked up in the agent's repository
+  without reading any object and peeled in the scratch repository, which has no remote:
+  a missing object is never lazily fetched. Whenever no patch is written (git refused, no base
   resolves, a `.git` that is not the repository), the path is removed again and checked
   gone: a removal that fails fails the extract (0). A box that stops answering raises.
   The agent can move the ref or edit the list: that only widens or narrows its own diff,

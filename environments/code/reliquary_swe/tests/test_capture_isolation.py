@@ -201,8 +201,10 @@ async def test_a_worktree_redirected_by_config_is_ignored(world):
     assert_honest(world, await finalize(world))
 
 
-async def test_a_replace_ref_does_not_move_the_base(world):
-    # Replacing the base commit by an empty one would put every file in the diff.
+async def test_a_replace_ref_in_the_agents_repository_does_not_reach_the_capture(world):
+    # Replacing the base commit by an empty one would put every file in the diff. The
+    # scratch repository has no refs of the agent's, replace refs included: this checks
+    # that design, not GIT_NO_REPLACE_OBJECTS (which only guards the base lookup).
     empty = subprocess.run(["git", "commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
                             "-m", "x"], cwd=world.w, capture_output=True, text=True,
                            env={"PATH": os.environ["PATH"], "GIT_AUTHOR_NAME": "t",
@@ -277,3 +279,145 @@ async def test_the_capture_leaves_no_scratch_repository_behind(world, monkeypatc
     await finalize(world)
     scratch = {d for d in seen if d.startswith("/tmp/reliquary-capture-")}
     assert scratch and not any(Path(d).exists() for d in scratch)
+
+
+async def test_a_base_on_a_missing_object_of_a_promisor_remote_fetches_nothing(world):
+    # Peeling a missing object in a partial clone lazily fetches it from the agent's
+    # remote, through a transport command of the agent's (here core.sshCommand). The base
+    # is looked up without reading any object; the scratch repository, which has no
+    # remote, peels it: the capture fails closed and nothing planted travels.
+    config(world, "[core]\n\trepositoryformatversion = 1\n"
+                  f"\tsshCommand = {world.plant}\n"
+                  "[extensions]\n\tpartialClone = origin\n"
+                  '[remote "origin"]\n\turl = ssh://somewhere/repo\n\tpromisor = true\n')
+    (world.w / ".git" / "refs" / "reliquary" / "base").write_text("1" * 40 + "\n")
+    world.patch.parent.mkdir()
+    world.patch.write_bytes(b"PLANTED before")
+    t = await finalize(world)
+    assert not world.mark.exists(), world.mark.read_text()
+    assert not world.patch.exists() and "patch" not in t.info and t.info["patch_error"]
+
+
+def isolated_git(cwd, home, *args):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd,
+                   check=True, capture_output=True,
+                   env={"PATH": os.environ["PATH"], "HOME": str(home),
+                        "GIT_CONFIG_NOSYSTEM": "1"})
+
+
+@pytest.fixture
+def image(tmp_path, monkeypatch):
+    """An image's repository before setup: its base commit and a file it ships untracked.
+    setup's cleanup is left out (`true`): only the base ref, the untracked list and the
+    check of an untouched box run."""
+    w, home = tmp_path / "repo", tmp_path / "home"
+    w.mkdir()
+    home.mkdir()
+    monkeypatch.setattr(taskset, "cleanup_script", lambda split: "true")
+    isolated_git(w, home, "init", "-q")
+    (w / "a.py").write_text("hi\n")
+    isolated_git(w, home, "add", "a.py")
+    isolated_git(w, home, "commit", "-qm", "base")
+    (w / "shipped.txt").write_text("from the image\n")
+    row = dataclasses.replace(
+        corpus.SweRow(instance_id="i", repo="o/r", problem_statement="p", fail_to_pass=(),
+                      pass_to_pass=(), gold_patch="g", base_commit="HEAD",
+                      image="r@sha256:" + "a" * 64),
+        workdir=str(w))
+    task = task_for(row, 0, "train")
+    return SimpleNamespace(w=w, home=home, task=task, box=LocalBox(w, home), tmp=tmp_path)
+
+
+async def setup(image):
+    await image.task.setup(trace(image.task), image.box)
+
+
+async def test_setup_of_an_untouched_image_captures_an_empty_patch(image, monkeypatch):
+    patch = image.tmp / "artifacts" / "patch.diff"
+    monkeypatch.setattr(taskset, "PATCH_PATH", str(patch))
+    await setup(image)
+    assert (image.w / UNTRACKED_FILE).read_bytes() == b"shipped.txt"
+    t = trace(image.task)
+    await image.task.finalize(t, image.box)
+    assert t.info["patch"] == "" and patch.read_bytes() == b""
+
+
+@pytest.mark.parametrize("where", ["global", "local"])
+async def test_an_excludes_file_outside_the_capture_neither_hides_nor_widens(image, where,
+                                                                             monkeypatch):
+    # An excludes file the capture never reads (a global one, or the repository's own
+    # core.excludesFile) hid the image's build.log from the untracked list, and the
+    # capture then credited it to the agent: an honest agent graded 0. setup lists under
+    # the capture's own ignore rules.
+    (image.w / "build.log").write_text("image build output\n")
+    (image.tmp / "ignore").write_text("*.log\n")
+    if where == "global":
+        (image.home / ".gitconfig").write_text(f"[core]\n\texcludesFile = {image.tmp}/ignore\n")
+    else:
+        with open(image.w / ".git" / "config", "a") as f:
+            f.write(f"[core]\n\texcludesFile = {image.tmp}/ignore\n")
+    patch = image.tmp / "artifacts" / "patch.diff"
+    monkeypatch.setattr(taskset, "PATCH_PATH", str(patch))
+    await setup(image)
+    assert set((image.w / UNTRACKED_FILE).read_bytes().split(b"\0")) == {
+        b"build.log", b"shipped.txt"}
+    t = trace(image.task)
+    await image.task.finalize(t, image.box)
+    assert t.info["patch"] == ""
+
+
+def _filemode(image):
+    with open(image.w / ".git" / "config", "a") as f:
+        f.write("[core]\n\tfilemode = false\n")
+    (image.w / "a.py").chmod(0o755)
+
+
+def _autocrlf(image):
+    with open(image.w / ".git" / "config", "a") as f:
+        f.write("[core]\n\tautocrlf = true\n")
+    (image.w / "a.py").unlink()
+    isolated_git(image.w, image.home, "checkout", "--", "a.py")
+    assert (image.w / "a.py").read_bytes() == b"hi\r\n"
+
+
+def _lfs_outside_the_repository(image):
+    # A filter defined in the global config (where `git lfs install` puts it): the
+    # committed blob is the pointer, the work tree holds the content.
+    (image.home / ".gitconfig").write_text(
+        '[filter "lfs"]\n\tclean = sed s/CONTENT/POINTER/\n'
+        "\tsmudge = sed s/POINTER/CONTENT/\n\trequired = true\n")
+    (image.w / ".gitattributes").write_text("*.bin filter=lfs\n")
+    (image.w / "big.bin").write_text("CONTENT\n")
+    isolated_git(image.w, image.home, "add", ".gitattributes", "big.bin")
+    isolated_git(image.w, image.home, "commit", "-qm", "lfs")
+
+
+@pytest.mark.parametrize("arm", [_filemode, _autocrlf, _lfs_outside_the_repository],
+                         ids=["filemode", "autocrlf", "lfs"])
+async def test_an_image_the_capture_sees_differently_fails_setup(image, arm):
+    # The image's own git reads its box as clean, the capture (no config of the image's)
+    # does not: every honest agent would carry that difference and grade 0. setup finds
+    # it on the untouched box and fails as ours.
+    arm(image)
+    status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                            cwd=image.w, capture_output=True, text=True, check=True,
+                            env={"PATH": os.environ["PATH"], "HOME": str(image.home),
+                                 "GIT_CONFIG_NOSYSTEM": "1"}).stdout
+    assert status == ""
+    with pytest.raises(RuntimeError, match="untouched box"):
+        await setup(image)
+
+
+async def test_an_exclude_file_that_is_a_fifo_does_not_hang_the_capture(world):
+    exclude = world.w / ".git" / "info" / "exclude"
+    exclude.parent.mkdir(exist_ok=True)
+    exclude.unlink(missing_ok=True)
+    os.mkfifo(exclude)
+    try:
+        t = await asyncio.wait_for(finalize(world), 30)
+    finally:
+        try:  # a git still blocked on the FIFO reads EOF and exits
+            os.close(os.open(exclude, os.O_WRONLY | os.O_NONBLOCK))
+        except OSError:
+            pass
+    assert_honest(world, t)

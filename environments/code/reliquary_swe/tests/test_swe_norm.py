@@ -48,7 +48,7 @@ class Box:
         if argv[:2] == ["git", "rev-parse"]:
             out = self.base if BASE_REF in argv[-1] else self.head
             return SimpleNamespace(exit_code=0 if out else 1, stdout=out, stderr="")
-        if argv[:2] == ["sh", "-c"] and "git ls-files --others" in argv[2]:
+        if argv[:2] == ["sh", "-c"] and "ls-files --others" in argv[2]:
             return SimpleNamespace(exit_code=0, stdout="build/\0run_tests.sh\0", stderr="")
         if argv[:2] == ["sh", "-c"] and "git add -A" in argv[2]:
             if self.capture_raises:
@@ -81,11 +81,53 @@ def trace(task):
 
 
 async def test_setup_keeps_the_base_ref_and_the_untracked_list_in_the_box():
-    task, box = a_task(), Box()
+    task, box = a_task(), Box(captured=b"")
     await task.setup(trace(task), box)
     script = box.runs[0][0][2]
     assert script.endswith(f'&& git -C "$WORKDIR" update-ref {BASE_REF} HEAD')
     assert box.files[f"/testbed/{UNTRACKED_FILE}"] == b"build/\0run_tests.sh"
+
+
+async def test_setup_lists_untracked_files_under_the_captures_ignore_rules():
+    # Same excludes file as the capture (`info/exclude`, regular files only), no global
+    # or system config (real git: test_capture_isolation.py).
+    task, box = a_task(), Box(captured=b"")
+    await task.setup(trace(task), box)
+    argv, env = next((a, e) for a, e in box.runs if a[:2] == ["sh", "-c"]
+                     and "ls-files --others" in a[2])
+    assert argv[-1] == "/testbed" and '-c core.excludesFile="$x"' in argv[2]
+    assert '[ -f "$x" ] && [ ! -L "$x" ]' in argv[2]
+    assert env["GIT_CONFIG_NOSYSTEM"] == "1" and env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+    assert env["HOME"].startswith("/tmp/reliquary-no-home-")
+
+
+async def test_setup_captures_the_untouched_box_with_the_list_it_wrote():
+    task, box = a_task(), Box(captured=b"")
+    await task.setup(trace(task), box)
+    argv, env = capture_of(box)
+    assert argv[-2:] == ["build/", "run_tests.sh"]
+    assert env["GIT_DIR"].startswith("/tmp/reliquary-capture-")
+    assert not any(path.startswith("/logs/") for path in box.files)  # no patch written
+
+
+@pytest.mark.parametrize("broken", ["diff", "refused"])
+async def test_setup_fails_as_ours_when_the_untouched_box_does_not_capture_empty(broken):
+    task, box = a_task(), Box(captured=b"diff --git a/x b/x\nold mode 100644\n")
+    box.fail_capture = broken == "refused"
+    with pytest.raises(RuntimeError, match="untouched box does not capture as an empty"):
+        await task.setup(trace(task), box)
+
+
+async def test_setup_fails_when_the_untracked_list_cannot_be_taken():
+    class NoList(Box):
+        async def run(self, argv, env):
+            if argv[:2] == ["sh", "-c"] and "ls-files --others" in argv[2]:
+                return SimpleNamespace(exit_code=128, stdout="", stderr="not a repo")
+            return await super().run(argv, env)
+
+    task = a_task()
+    with pytest.raises(RuntimeError, match="untracked files"):
+        await task.setup(trace(task), NoList(captured=b""))
 
 
 async def test_finalize_captures_against_the_base_in_the_box():
@@ -109,13 +151,29 @@ async def test_finalize_captures_in_a_scratch_repository_of_its_own():
     assert env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] == "/testbed/.git/objects"
     assert env["GIT_CONFIG_NOSYSTEM"] == "1" and env["GIT_CONFIG_GLOBAL"] == "/dev/null"
     assert env["HOME"] == scratch and env["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert env["GIT_NO_LAZY_FETCH"] == "1"
     prepare = next(argv for argv, _ in box.runs if argv[:2] == ["sh", "-c"]
                    and "git init" in argv[2])
     assert prepare[-3:] == [scratch, "/testbed", "b45e"] and "--template=" in prepare[2]
+    assert '"$3^{commit}"' in prepare[2]  # peeled in the scratch repository, no remote
     assert ["rm", "-rf", "--", scratch] in [argv for argv, _ in box.runs]
     second = Box()
     await task.finalize(trace(task), second)
     assert capture_of(second)[1]["GIT_DIR"] != scratch  # a host nonce per capture
+
+
+async def test_the_base_lookup_reads_no_object_and_fetches_nothing():
+    # Peeling in the agent's repository would read the object, and a missing one in a
+    # partial clone is fetched through the agent's remote (real git:
+    # test_capture_isolation.py); HOME is neither the scratch repository nor created.
+    task, box = a_task(), Box()
+    await task.finalize(trace(task), box)
+    lookups = [(argv, env) for argv, env in box.runs if argv[:2] == ["git", "rev-parse"]]
+    assert lookups and all(argv[-1] in (BASE_REF, "HEAD") for argv, _ in lookups)
+    scratch = capture_of(box)[1]["GIT_DIR"]
+    for _, env in lookups:
+        assert env["GIT_NO_LAZY_FETCH"] == "1" and env["GIT_DIR"] == "/testbed/.git"
+        assert env["HOME"].startswith("/tmp/reliquary-no-home-") and env["HOME"] != scratch
 
 
 async def test_finalize_without_a_base_ref_captures_against_head():
@@ -249,7 +307,9 @@ async def test_a_missing_patch_is_graded_as_an_empty_one(monkeypatch):
 
 
 @pytest.mark.parametrize("box_type", ["docker", "subprocess", None])
-async def test_the_reward_never_grades_outside_a_sandbox_grading_box(monkeypatch, box_type):
+async def test_the_reward_never_grades_outside_a_sandbox_runtime(monkeypatch, box_type):
+    # The runtime type separates a signed-episode sandbox from any other runtime (the
+    # sandbox itself calls the reward only in its grading box).
     async def must_not_run(*args):
         raise AssertionError("graded outside a sandbox")
 
