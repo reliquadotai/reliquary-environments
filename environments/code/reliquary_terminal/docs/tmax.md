@@ -176,7 +176,7 @@ run.
 | `setup_network` | 630 | 78 | the data half still fetches something (curl/wget to a URL, `git clone`, rustup, `go get/install`, npm/yarn, `cargo install/fetch`, `pip download`, `add-apt-repository`, `apt-key`, ...) |
 | `docker_in_test` | 12 | 0 | the final test calls docker |
 | `in_process_agent_code` | 201 | 85 | the final test loads the agent's code into pytest's process (`sys.path`, `importlib` loaders, `eval`; `sandbox.in_process_agent_code`): that code could write a passing report and exit. Added 2026-10-07, after the base was built: these tasks' packages stay in the base |
-| `environment_in_artifact_roots` | not yet counted | not yet counted | `%environment` points PATH, `LD_*`, `BASH_ENV`, `ENV` or `PYTHON*` at `/app` or `/home/user` (or at a relative entry): a grading command would run or load the agent's files. Added 2026-10-09, after the base was built; also refused at load |
+| `environment_in_artifact_roots` | not yet counted | not yet counted | `%environment` points PATH, `LD_*`, `BASH_ENV`, `ENV`, `PYTHON*`, `HOME`, `XDG_*`, `GIT_*`, `NODE_*`, `PERL5*`, `RUBY*`, `JAVA_*`, `CLASSPATH` or `*_OPTIONS` at `/app` or `/home/user` (or at a relative entry): a grading command would run or load the agent's files. Added 2026-10-09, after the base was built; also refused at load |
 | `pip_pin_conflict`, `apt_unknown`, `apt_conflict` | 0 | 0 | see 5 |
 | `decontaminated` | 4 | 1 | overlaps Terminal-Bench 2.0 or 2.1 (see 7) |
 

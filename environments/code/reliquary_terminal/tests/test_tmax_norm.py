@@ -451,6 +451,24 @@ def test_root_argv_keeps_a_tasks_own_safe_values():
     assert f"PATH={tmax.BASE_PATH}" in tmax.root_argv(["sh"], {})
 
 
+def test_root_argv_pins_home_and_the_user_site():
+    for env in ({}, {"HOME": "/home/user"}, {"HOME": "/app/h", "PATH": "/opt/x/bin"}):
+        argv = tmax.root_argv(["bash", "/tests/test.sh"], env)
+        assert f"HOME={tmax.GRADE_HOME}" in argv and "PYTHONNOUSERSITE=1" in argv, env
+        assert not [a for a in argv if a.startswith("HOME=") and a != f"HOME={tmax.GRADE_HOME}"]
+    assert not tmax._under_roots(tmax.GRADE_HOME)
+
+
+def test_root_argv_unsets_every_loader_and_python_variable_off_the_allow_list():
+    env = {"LD_AUDIT": "/lib/a.so", "LD_DEBUG": "all", "PYTHONINSPECT": "1",
+           "PYTHONWARNINGS": "x", "PYTHONUNBUFFERED": "1", "PYTHONHASHSEED": "0",
+           "LC_ALL": "C"}
+    argv = tmax.root_argv(["sh", "-c", "true"], env)
+    unset = {argv[i + 1] for i, a in enumerate(argv) if a == "-u"}
+    assert {"LD_AUDIT", "LD_DEBUG", "PYTHONINSPECT", "PYTHONWARNINGS"} <= unset
+    assert not unset & {"PYTHONUNBUFFERED", "PYTHONHASHSEED", "LC_ALL", "PYTHONNOUSERSITE"}
+
+
 def test_the_tests_python_ignores_the_user_site(tmp_path):
     """test.sh runs pytest with `-s` and its helper with `-I`: a usercustomize in the
     home's user site is never imported."""
@@ -485,7 +503,8 @@ async def test_grading_runs_every_root_command_through_the_guard(tmax_env, monke
     assert len(box.runs) >= 4
     for argv in box.runs:
         assert argv[0] == "/usr/bin/env" and f"PATH={tmax.BASE_PATH}" in argv, argv
-        program = argv[argv.index(f"PATH={tmax.BASE_PATH}") + 1]
+        assert f"HOME={tmax.GRADE_HOME}" in argv and "PYTHONNOUSERSITE=1" in argv, argv
+        program = argv[argv.index("PYTHONNOUSERSITE=1") + 1]
         assert program.startswith("/"), argv
     assert any(argv[-2:] == ["/bin/bash", "/tests/test.sh"] for argv in box.runs)
 
@@ -522,6 +541,17 @@ def test_env_in_artifact_roots():
         "PYTHONUSERBASE": "/home/user/.local", "BASH_ENV": "/usr/../home/user/rc",
         "PYTHONPATH": "src", "ENV": "/etc/shrc"}) == [
         "BASH_ENV", "LD_PRELOAD", "PATH", "PYTHONPATH", "PYTHONUSERBASE"]
+
+
+def test_env_in_artifact_roots_covers_the_tool_search_variables():
+    env = {"HOME": "/home/user", "XDG_CONFIG_HOME": "/app/.config", "GIT_CONFIG_GLOBAL": "/app/g",
+           "NODE_OPTIONS": "--require /app/x.js", "NODE_PATH": "/home/user/n",
+           "PERL5LIB": "/app/p", "RUBYOPT": "-r/app/x", "JAVA_TOOL_OPTIONS": "-javaagent:/app/a",
+           "CLASSPATH": "/lib/a.jar:/app/b.jar", "MALLOC_OPTIONS": "/app/m"}
+    assert tmax.env_in_artifact_roots(env) == sorted(env)
+    assert tmax.env_in_artifact_roots({
+        "HOME": "/root", "XDG_CACHE_HOME": "/var/cache", "NODE_OPTIONS": "--max-old-space-size=4096",
+        "CLASSPATH": "/opt/j.jar", "GIT_AUTHOR_NAME": "x", "JAVA_HOME": "/usr/lib/jvm"}) == []
 
 
 def test_a_task_with_collect_hooks_is_refused_at_load():

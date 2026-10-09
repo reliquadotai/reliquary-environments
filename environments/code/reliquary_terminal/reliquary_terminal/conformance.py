@@ -10,8 +10,15 @@ are canaries: each leaves files where a grading command could pick them up -- a
 `sitecustomize.py` in /app, `bash` and `python3` in /home/user/.local/bin (first on PATH
 for a task that put it there) -- and each file, if executed, only creates a marker under
 /tmp. A case expects 0 and lists its markers under `absent`: the suite checks, in the
-grading box after scoring, that none exists (the grader never ran the agent's files). The
-cases cover task 0 and the first task whose final-state test runs programs (`subprocess`).
+grading box after scoring, that none exists (the grader never ran the agent's files).
+
+Which canaries can fire: the `usercustomize.py` one only by construction -- a root command
+whose HOME is the agent's home would import it; grading pins HOME outside the artifact roots
+and PYTHONNOUSERSITE, so it checks that pinning. The conftest, sitecustomize and
+`.local/bin` program canaries are defence in depth: pytest's rootdir, `python3 -s`/`-I` and
+the fixed PATH already keep them out, so a clean run proves little by itself.
+
+The cases cover task 0 and the first task whose final-state test runs programs (`subprocess`).
 
 Indices are those of the split served with the taskset's defaults (no `num_tasks` that
 excludes them, no `tasks` filter). A split served otherwise names other tasks under these

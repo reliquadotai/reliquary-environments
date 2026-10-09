@@ -58,6 +58,16 @@ BASE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # value does not (`environment_in_artifact_roots`).
 GUARDED_ENV = ("PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "BASH_ENV", "ENV", "PYTHONHOME",
                "PYTHONSTARTUP", "PYTHONPATH")
+# HOME of every root grading command: outside the artifact roots, so no user-level
+# config, site or tool directory of the agent's is ever searched.
+GRADE_HOME = "/root"
+# LD_* / PYTHON* names a root command may keep (when present); every other one is unset.
+SAFE_LOADER_ENV = frozenset({"PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED",
+                             "PYTHONIOENCODING", "PYTHONUTF8"})
+# Other variables that make a tool read files from a directory they name: a task whose
+# value points under an artifact root is refused (`environment_in_artifact_roots`).
+SEARCH_ENV_PREFIXES = ("XDG_", "GIT_", "NODE_", "PERL5", "RUBY", "JAVA_")
+SEARCH_ENV_NAMES = ("HOME", "CLASSPATH")
 _ABSOLUTE = {"sh": "/bin/sh", "bash": "/bin/bash", "rm": "/bin/rm"}
 # Fixed so that a repository the setup creates gets the same commit hashes in
 # the agent's box and the grading box (the spike saw replays fail on hashes
@@ -264,8 +274,9 @@ def env_in_artifact_roots(env: dict[str, str]) -> list[str]:
         if name in GUARDED_ENV:
             if _guarded_value_unsafe(value):
                 found.append(name)
-        elif name.startswith(("LD_", "PYTHON")):
-            if any(e.startswith("/") and _under_roots(e) for e in re.split(r"[:\s]+", value)):
+        elif (name.startswith(("LD_", "PYTHON") + SEARCH_ENV_PREFIXES)
+              or name in SEARCH_ENV_NAMES or name.endswith("_OPTIONS")):
+            if any(_under_roots(e) for e in re.findall(r"/[^\s:=,;'\"]*", value)):
                 found.append(name)
     return found
 
@@ -285,6 +296,11 @@ def root_argv(argv: list[str], env: dict[str, str]) -> list[str]:
             assign.append(f"{name}={value}")
         else:
             unset += ["-u", name]
+    for name in sorted(env):
+        if (name.startswith(("LD_", "PYTHON")) and name not in GUARDED_ENV
+                and name not in SAFE_LOADER_ENV and name != "PYTHONNOUSERSITE"):
+            unset += ["-u", name]
+    assign += [f"HOME={GRADE_HOME}", "PYTHONNOUSERSITE=1"]
     head = _ABSOLUTE.get(argv[0], argv[0])
     return ["/usr/bin/env", *unset, *assign, head, *argv[1:]]
 
