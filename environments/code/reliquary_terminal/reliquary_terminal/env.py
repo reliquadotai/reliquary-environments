@@ -31,6 +31,7 @@ class TerminalEnv(HarborEnv):
         if not solution.ok:
             return
         grader = TerminalTask(verifier_box_data(task.data))
+        grader.setup_role = "grade"
         scores = await self._grade(self._verifier_config(task), grader, solution)
         items = scores.items() if isinstance(scores, dict) else [("solved", scores)]
         for name, value in items:

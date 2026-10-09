@@ -1,7 +1,7 @@
 # reliquary-terminal
 
 Terminal tasks: a policy gets a container, an instruction and a shell, and
-is rewarded when the task's own tests pass. Two splits, graded differently
+is rewarded when the task's own tests pass. Three corpora, graded differently
 on purpose (design spec `docs/superpowers/specs/2026-09-23-reliquary-terminal-env-design.md`,
 section 4, option C):
 
@@ -9,6 +9,7 @@ section 4, option C):
 | --- | --- | --- | --- |
 | `eval` | Terminal-Bench 2.1, 89 tasks, pinned by digest | in the agent's own box, as it ships | the number stays comparable to published results |
 | `train` | MiMo-V2.6-RL-oss's 64 Terminal-Bench-format tasks | in a fresh box that receives only the agent's `/app` | a training reward must not be reachable by editing the grader |
+| `tmax` | TMax-15K, converted; the 4,998 kept tasks of `tmax_manifest.json`; `tmax_sft` (2,406) and `tmax_rl` (2,592) are its two disjoint parts | in a fresh box that receives `/app` and `/home/user`, with the task's inputs put back | the same; TMax's work lives in `/home/user` |
 
 `--taskset.split` has no default, so a training source cannot fall back to
 the evaluation set by omission.
@@ -36,7 +37,7 @@ still selects the upstream harness, without the timeout.
 
 ## Grading detail
 
-Every task of both splits runs pytest with `--ctrf /logs/verifier/ctrf.json`
+Every task of every split runs pytest with `--ctrf /logs/verifier/ctrf.json`
 before writing 1 or 0 to `reward.txt`. The reward is still `reward.txt`; the
 trace that carries it also gets `info["grading"]` -- `test.sh`'s exit code,
 the tail of its output (where `anti_hack_guard.py` explains a rejection),
@@ -125,6 +126,32 @@ through the whole separate-box path. Whether the other 63 are solvable is
 unmeasured, and so are the turn and token budgets — as for `reliquary-swe`,
 that is what a first pilot measures.
 
+## `tmax`: TMax-15K, converted
+
+`allenai/TMax-15K` at `e3ded940…` ships Apptainer definitions, not images, and
+no reference solutions, only recorded Gemini runs. Its tasks are converted
+when loaded: each `%post` is split into an install half, which goes into one
+shared base image (`reliquary_terminal/tmax_base/`), and a data half. The data
+half runs in every box at setup, with no network. The grading box regenerates
+the task's inputs the same way, and puts back any input the agent edited
+before the tests run. Inputs the instruction never names, such as answers and
+oracles, are deleted from the agent's box. All of this, with the reasons each
+task is kept or left out, is in [docs/tmax.md](docs/tmax.md).
+
+- `scripts/tmax_manifest.py` recomputes the selection manifest and the base
+  image files from pinned inputs. This is the static stage, with no
+  container. Of 14,601 tasks, 5,976 pass it.
+- `scripts/tmax_validate.py` is the box phase. It builds the base image, then
+  checks each pending task in containers: no-op 0, reference 1 in a separate
+  box ×3, mutants 0, deterministic setup. It ran on 2026-10-05/08 and keeps
+  **4,998** tasks.
+- `--taskset.split tmax_sft` (2,406 tasks) and `tmax_rl` (2,592) are two
+  disjoint parts, for an SFT corpus job and for RL. `tmax` is both, for
+  validation. `--taskset.num-tasks N` takes the first N of the split.
+- **Not ready to train on yet:** the base image (10.3 GB) is pinned by the
+  local id it was validated on and is in no registry, so the split only runs
+  on a host that has it. See "What is left" in docs/tmax.md.
+
 ## Test
 
 ```bash
@@ -139,9 +166,10 @@ Container tests are marked `@pytest.mark.docker` and run only with
 ## Train
 
 See `examples/prime_rl/`: `rl.toml` evaluates on Terminal-Bench 2.1 and
-carries no train source; `train-sources.toml` supplies the `train` split.
-Sixty-four tasks is small — meant as one component of a mix (e.g. with
-`reliquary-swe`'s sources, weighted by `ratio`), not a run on its own.
+carries no train source; `train-sources.toml` supplies the `train` split
+and `tmax_rl`. Sixty-four tasks is small, and `tmax_rl` needs its base image
+on the host — both are meant as components of a mix (e.g. with
+`reliquary-swe`'s sources, weighted by `ratio`), not a run on their own.
 
 ## Signed sandboxes
 
