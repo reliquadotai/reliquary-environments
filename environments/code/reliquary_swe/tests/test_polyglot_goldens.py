@@ -14,7 +14,7 @@ import verifiers.v1 as vf
 from conftest import _trace, provisioned_runtime, run_gold_episode
 
 from reliquary_swe import grading
-from reliquary_swe.taskset import SweTask
+from reliquary_swe.taskset import BASE_REF, SweTask
 
 docker = pytest.mark.docker
 
@@ -71,8 +71,9 @@ async def test_setup_prunes_the_parked_upstream_and_keeps_head():
         # The trap `--detach` exists for: HEAD must still name a commit.
         head = await box.run(["git", "rev-parse", "--verify", "HEAD"], {})
         assert head.exit_code == 0, head.stderr
-        refs = await box.run(["git", "for-each-ref"], {})
-        assert refs.stdout.strip() == ""
+        # The one ref setup leaves is its own record of the base, at HEAD.
+        refs = await box.run(["git", "for-each-ref", "--format=%(refname) %(objectname)"], {})
+        assert refs.stdout.split() == [BASE_REF, head.stdout.strip()]
 
 
 @docker

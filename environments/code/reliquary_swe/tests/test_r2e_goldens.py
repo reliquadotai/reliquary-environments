@@ -22,7 +22,7 @@ import pytest
 from conftest import _trace, provisioned_runtime, run_gold_episode
 
 from reliquary_swe import corpus, grading
-from reliquary_swe.taskset import SweTask, task_for
+from reliquary_swe.taskset import BASE_REF, SweTask, task_for
 
 docker = pytest.mark.docker
 pytestmark = pytest.mark.slow
@@ -75,10 +75,11 @@ async def test_setup_makes_the_fix_commit_unreachable_and_hides_the_tests(fix_co
         dirty = await box.run(["git", "status", "--porcelain", "--untracked-files=no"], {})
         assert dirty.stdout.strip() == ""
         assert not await _fix_is_reachable(box, fix_commit)
-        refs = await box.run(["git", "for-each-ref"], {})
-        assert refs.stdout.strip() == ""
         head = await box.run(["git", "rev-parse", "--verify", "HEAD"], {})
         assert head.exit_code == 0, head.stderr
+        # The one ref setup leaves is its own record of the base, at HEAD.
+        refs = await box.run(["git", "for-each-ref", "--format=%(refname) %(objectname)"], {})
+        assert refs.stdout.split() == [BASE_REF, head.stdout.strip()]
         # Real history before the bug is context the agent may read.
         count = await box.run(["git", "rev-list", "--count", "HEAD"], {})
         assert int(count.stdout.strip()) > 1
