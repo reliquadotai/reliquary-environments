@@ -1,0 +1,4678 @@
+diff --git a/README.md b/README.md
+index 266df41..a48e29c 100644
+--- a/README.md
++++ b/README.md
+@@ -139,6 +139,18 @@ options. See the ConfigState documentation for more details.
+ 	Maximum number of levels to descend into nested data structures.
+ 	There is no limit by default.
+ 
++* DisableMethods
++	Disables invocation of error and Stringer interface methods.
++	Method invocation is enabled by default.
++
++* DisablePointerMethods
++	Disables invocation of error and Stringer interface methods on types
++	which only accept pointer receivers from non-pointer variables.  This option
++	relies on access to the unsafe package, so it will not have any effect when
++	running in environments without access to the unsafe package such as Google
++	App Engine or with the "safe" build tag specified.
++	Pointer method invocation is enabled by default.
++
+ * DisablePointerAddresses
+ 	DisablePointerAddresses specifies whether to disable the printing of
+ 	pointer addresses. This is useful when diffing data structures in tests.
+@@ -148,11 +160,16 @@ options. See the ConfigState documentation for more details.
+ 	for arrays, slices, maps and channels. This is useful when diffing data
+ 	structures in tests.
+ 
++* ContinueOnMethod
++	Enables recursion into types after invoking error and Stringer interface
++	methods. Recursion after method invocation is disabled by default.
++
+ * SortKeys
+ 	Specifies map keys should be sorted before being printed. Use
+ 	this to have a more deterministic, diffable output.  Note that
+ 	only native types (bool, int, uint, floats, uintptr and string)
+-	are supported, with other types sorted according to the reflect.Value.String() output
++	and types which implement error or Stringer interfaces are supported,
++	with other types sorted according to the reflect.Value.String() output
+ 	which guarantees display stability.  Natural map order is used by
+ 	default.
+ 
+diff --git a/bypass.go b/bypass.go
+index cc8ffb4..435d989 100644
+--- a/bypass.go
++++ b/bypass.go
+@@ -85,6 +85,10 @@ func flagField(v *reflect.Value) *flag {
+ // unexported data.  It works by digging the raw pointer to the underlying
+ // value out of the protected value and generating a new unprotected (unsafe)
+ // reflect.Value to it.
++//
++// This allows us to check for implementations of the Stringer and error
++// interfaces to be used for pretty printing ordinarily unaddressable and
++// inaccessible values such as unexported struct fields.
+ func unsafeReflectValue(v reflect.Value) reflect.Value {
+ 	if !v.IsValid() || (v.CanInterface() && v.CanAddr()) {
+ 		return v
+diff --git a/bypasssafe.go b/bypasssafe.go
+index a3e544d..70b77ee 100644
+--- a/bypasssafe.go
++++ b/bypasssafe.go
+@@ -33,7 +33,7 @@ const (
+ // unsafeReflectValue typically converts the passed reflect.Value into a one
+ // that bypasses the typical safety restrictions preventing access to
+ // unaddressable and unexported data.  However, doing this relies on access to
+-// the unsafe package.  This safe version simply returns the passed
++// the unsafe package.  This is a stub version which simply returns the passed
+ // reflect.Value when the unsafe package is not available.
+ func unsafeReflectValue(v reflect.Value) reflect.Value {
+ 	return v
+diff --git a/common.go b/common.go
+index 30f1915..83bdcd2 100644
+--- a/common.go
++++ b/common.go
+@@ -30,6 +30,7 @@ import (
+ // Some constants in the form of bytes to avoid string overhead.  This mirrors
+ // the technique used in the fmt package.
+ var (
++	panicBytes            = []byte("(PANIC=")
+ 	plusBytes             = []byte("+")
+ 	iBytes                = []byte("i")
+ 	trueBytes             = []byte("true")
+@@ -68,6 +69,88 @@ var (
+ // hexDigits is used to map a decimal value to a hex digit.
+ const hexDigits = "0123456789abcdef"
+ 
++// catchPanic handles any panics that might occur during the handleMethods
++// calls.
++func catchPanic(w io.Writer, v reflect.Value) {
++	if err := recover(); err != nil {
++		w.Write(panicBytes)
++		fmt.Fprintf(w, "%v", err)
++		w.Write(closeParenBytes)
++	}
++}
++
++// canForcedAddr tests if value v can forced into a
++// pointer value without a nil pointer panic.
++func canForcedAddr(v reflect.Value) bool {
++	switch v.Kind() {
++	case reflect.Chan, reflect.Func, reflect.Map:
++		return !v.CanAddr()
++	}
++	return v.CanAddr()
++}
++
++// handleMethods attempts to call the Error and String methods on the underlying
++// type the passed reflect.Value represents and outputes the result to Writer w.
++//
++// It handles panics in any called methods by catching and displaying the error
++// as the formatted value.
++func handleMethods(cs *ConfigState, w io.Writer, v reflect.Value) (handled bool) {
++	// We need an interface to check if the type implements the error or
++	// Stringer interface.  However, the reflect package won't give us an
++	// interface on certain things like unexported struct fields in order
++	// to enforce visibility rules.  We use unsafe, when it's available,
++	// to bypass these restrictions since this package does not mutate the
++	// values.
++	if !v.CanInterface() {
++		if UnsafeDisabled {
++			return false
++		}
++
++		v = unsafeReflectValue(v)
++	}
++
++	// Choose whether or not to do error and Stringer interface lookups against
++	// the base type or a pointer to the base type depending on settings.
++	// Technically calling one of these methods with a pointer receiver can
++	// mutate the value, however, types which choose to satisify an error or
++	// Stringer interface with a pointer receiver should not be mutating their
++	// state inside these interface methods.
++	if !cs.DisablePointerMethods && !UnsafeDisabled && !canForcedAddr(v) {
++		v = unsafeReflectValue(v)
++	}
++	if v.CanAddr() {
++		v = v.Addr()
++	}
++
++	// Is it an error or Stringer?
++	switch iface := v.Interface().(type) {
++	case error:
++		defer catchPanic(w, v)
++		if cs.ContinueOnMethod {
++			w.Write(openParenBytes)
++			io.WriteString(w, iface.Error())
++			w.Write(closeParenBytes)
++			w.Write(spaceBytes)
++			return false
++		}
++		io.WriteString(w, iface.Error())
++		return true
++
++	case fmt.Stringer:
++		defer catchPanic(w, v)
++		if cs.ContinueOnMethod {
++			w.Write(openParenBytes)
++			io.WriteString(w, iface.String())
++			w.Write(closeParenBytes)
++			w.Write(spaceBytes)
++			return false
++		}
++		io.WriteString(w, iface.String())
++		return true
++	}
++	return false
++}
++
+ // printInt outputs a signed integer value to Writer w.
+ func printInt(w io.Writer, val int64, base int) {
+ 	b := bufferGet()
+@@ -262,7 +345,17 @@ type printer interface {
+ 	defaultFormat() string
+ }
+ 
+-func printValue(w io.Writer, p printer, v reflect.Value, kind reflect.Kind) {
++func printValue(w io.Writer, p printer, v reflect.Value, kind reflect.Kind, cs *ConfigState) {
++	// Call Stringer/error interfaces if they exist and the handle methods
++	// flag is enabled.
++	if !cs.DisableMethods {
++		if kind != reflect.Invalid && kind != reflect.Interface {
++			if handled := handleMethods(cs, w, v); handled {
++				return
++			}
++		}
++	}
++
+ 	switch kind {
+ 	case reflect.Invalid:
+ 		// Do nothing.  We should never get here since invalid has already
+@@ -351,16 +444,28 @@ func printValue(w io.Writer, p printer, v reflect.Value, kind reflect.Kind) {
+ type valuesSorter struct {
+ 	values  []reflect.Value
+ 	strings []string // either nil or same len as values
++	cs      *ConfigState
+ }
+ 
+ // newValuesSorter initializes a valuesSorter instance, which holds a set of
+ // surrogate keys on which the data should be sorted.  It uses flags in
+ // ConfigState to decide if and how to populate those surrogate keys.
+ func newValuesSorter(values []reflect.Value, cs *ConfigState) sort.Interface {
+-	vs := &valuesSorter{values: values}
++	vs := &valuesSorter{values: values, cs: cs}
+ 	if canSortSimply(vs.values[0].Kind()) {
+ 		return vs
+ 	}
++	if !cs.DisableMethods {
++		vs.strings = make([]string, len(values))
++		for i := range vs.values {
++			var b bytes.Buffer
++			if !handleMethods(cs, &b, vs.values[i]) {
++				vs.strings = nil
++				break
++			}
++			vs.strings[i] = b.String()
++		}
++	}
+ 	if vs.strings == nil && cs.SpewKeys {
+ 		vs.strings = make([]string, len(values))
+ 		for i := range vs.values {
+diff --git a/common_test.go b/common_test.go
+new file mode 100644
+index 0000000..58ad3ed
+--- /dev/null
++++ b/common_test.go
+@@ -0,0 +1,397 @@
++/*
++ * Copyright (c) 2013-2016 Dave Collins <dave@davec.name>
++ * Copyright (c) 2021, 2023 Anner van Hardenbroek
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++
++package spew_test
++
++import (
++	"fmt"
++	"reflect"
++	"sort"
++	"strings"
++	"testing"
++
++	"github.com/spewerspew/spew"
++)
++
++// custom type to test Stinger interface on non-pointer receiver.
++type stringer string
++
++// String implements the Stringer interface for testing invocation of custom
++// stringers on types with non-pointer receivers.
++func (s stringer) String() string {
++	return "stringer " + string(s)
++}
++
++// custom type to test Stinger interface on pointer receiver.
++type pstringer string
++
++// String implements the Stringer interface for testing invocation of custom
++// stringers on types with only pointer receivers.
++func (s *pstringer) String() string {
++	return "stringer " + string(*s)
++}
++
++// custom type to test Stringer interface on non-pointer channel receiver.
++type chanStringer chan struct{}
++
++// String implements the Stringer interface for testing invocations of custom
++// stringers on types with non-pointer receivers.
++func (s chanStringer) String() string {
++	return "chan stringer"
++}
++
++// custom type to test Stringer interface on non-pointer func receiver.
++type funcStringer func()
++
++// String implements the Stringer interface for testing invocations of custom
++// stringers on types with non-pointer receivers.
++func (s funcStringer) String() string {
++	return "func stringer"
++}
++
++// custom type to test Stringer interface on non-pointer map receiver.
++type mapStringer map[string]struct{}
++
++// String implements the Stringer interface for testing invocations of custom
++// stringers on types with non-pointer receivers.
++func (s mapStringer) String() string {
++	return "map stringer"
++}
++
++// xref1 and xref2 are cross referencing structs for testing circular reference
++// detection.
++type xref1 struct {
++	ps2 *xref2
++}
++type xref2 struct {
++	ps1 *xref1
++}
++
++// indirCir1, indirCir2, and indirCir3 are used to generate an indirect circular
++// reference for testing detection.
++type indirCir1 struct {
++	ps2 *indirCir2
++}
++type indirCir2 struct {
++	ps3 *indirCir3
++}
++type indirCir3 struct {
++	ps1 *indirCir1
++}
++
++// embed is used to test embedded structures.
++type embed struct {
++	a string
++}
++
++// embedwrap is used to test embedded structures.
++type embedwrap struct {
++	*embed
++	e *embed
++}
++
++// panicer is used to intentionally cause a panic for testing spew properly
++// handles them
++type panicer int
++
++func (p panicer) String() string {
++	panic("test panic")
++}
++
++// customError is used to test custom error interface invocation.
++type customError int
++
++func (e customError) Error() string {
++	return fmt.Sprintf("error: %d", int(e))
++}
++
++type chanError chan struct{}
++
++func (e chanError) Error() string {
++	return "chan error"
++}
++
++type funcError func()
++
++func (e funcError) Error() string {
++	return "func error"
++}
++
++type mapError map[string]struct{}
++
++func (e mapError) Error() string {
++	return "map error"
++}
++
++// stringizeWants converts a slice of wanted test output into a format suitable
++// for a test error message.
++func stringizeWants(wants []string) string {
++	if len(wants) == 1 {
++		return fmt.Sprintf("want: %q", wants[0])
++	}
++	var b strings.Builder
++	for i, want := range wants {
++		if i > 0 {
++			fmt.Fprintf(&b, "want%d: %q\n", i+1, want)
++		} else {
++			fmt.Fprintf(&b, "want: %q", want)
++		}
++	}
++	return b.String()
++}
++
++// testFailed returns whether or not a test failed by checking if the result
++// of the test is in the slice of wanted strings.
++func testFailed(result string, wants []string) bool {
++	for _, want := range wants {
++		if result == want {
++			return false
++		}
++	}
++	return true
++}
++
++type sortableStruct struct {
++	x int
++}
++
++func (ss sortableStruct) String() string {
++	return fmt.Sprintf("ss.%d", ss.x)
++}
++
++type unsortableStruct struct {
++	x int
++}
++
++type sortTestCase struct {
++	input    []reflect.Value
++	expected []reflect.Value
++}
++
++func helpTestSortValues(tests []sortTestCase, cs *spew.ConfigState, t *testing.T) {
++	getInterfaces := func(values []reflect.Value) []interface{} {
++		interfaces := []interface{}{}
++		for _, v := range values {
++			interfaces = append(interfaces, v.Interface())
++		}
++		return interfaces
++	}
++
++	for _, test := range tests {
++		spew.SortValues(test.input, cs)
++		// reflect.DeepEqual cannot really make sense of reflect.Value,
++		// probably because of all the pointer tricks. For instance,
++		// v(2.0) != v(2.0) on a 32-bits system. Turn them into interface{}
++		// instead.
++		input := getInterfaces(test.input)
++		expected := getInterfaces(test.expected)
++		if !reflect.DeepEqual(input, expected) {
++			t.Errorf("Sort mismatch:\n %v != %v", input, expected)
++		}
++	}
++}
++
++// TestSortValues ensures the sort functionality for relect.Value based sorting
++// works as intended.
++func TestSortValues(t *testing.T) {
++	v := reflect.ValueOf
++
++	a := v("a")
++	b := v("b")
++	c := v("c")
++	embedA := v(embed{"a"})
++	embedB := v(embed{"b"})
++	embedC := v(embed{"c"})
++	tests := []sortTestCase{
++		// No values.
++		{
++			[]reflect.Value{},
++			[]reflect.Value{},
++		},
++		// Bools.
++		{
++			[]reflect.Value{v(false), v(true), v(false)},
++			[]reflect.Value{v(false), v(false), v(true)},
++		},
++		// Ints.
++		{
++			[]reflect.Value{v(2), v(1), v(3)},
++			[]reflect.Value{v(1), v(2), v(3)},
++		},
++		// Uints.
++		{
++			[]reflect.Value{v(uint8(2)), v(uint8(1)), v(uint8(3))},
++			[]reflect.Value{v(uint8(1)), v(uint8(2)), v(uint8(3))},
++		},
++		// Floats.
++		{
++			[]reflect.Value{v(2.0), v(1.0), v(3.0)},
++			[]reflect.Value{v(1.0), v(2.0), v(3.0)},
++		},
++		// Strings.
++		{
++			[]reflect.Value{b, a, c},
++			[]reflect.Value{a, b, c},
++		},
++		// Array
++		{
++			[]reflect.Value{v([3]int{3, 2, 1}), v([3]int{1, 3, 2}), v([3]int{1, 2, 3})},
++			[]reflect.Value{v([3]int{1, 2, 3}), v([3]int{1, 3, 2}), v([3]int{3, 2, 1})},
++		},
++		// Uintptrs.
++		{
++			[]reflect.Value{v(uintptr(2)), v(uintptr(1)), v(uintptr(3))},
++			[]reflect.Value{v(uintptr(1)), v(uintptr(2)), v(uintptr(3))},
++		},
++		// SortableStructs.
++		{
++			// Note: not sorted - DisableMethods is set.
++			[]reflect.Value{v(sortableStruct{2}), v(sortableStruct{1}), v(sortableStruct{3})},
++			[]reflect.Value{v(sortableStruct{2}), v(sortableStruct{1}), v(sortableStruct{3})},
++		},
++		// UnsortableStructs.
++		{
++			// Note: not sorted - SpewKeys is false.
++			[]reflect.Value{v(unsortableStruct{2}), v(unsortableStruct{1}), v(unsortableStruct{3})},
++			[]reflect.Value{v(unsortableStruct{2}), v(unsortableStruct{1}), v(unsortableStruct{3})},
++		},
++		// Invalid.
++		{
++			[]reflect.Value{embedB, embedA, embedC},
++			[]reflect.Value{embedB, embedA, embedC},
++		},
++	}
++	cs := spew.ConfigState{DisableMethods: true, SpewKeys: false}
++	helpTestSortValues(tests, &cs, t)
++}
++
++// TestSortValuesWithMethods ensures the sort functionality for relect.Value
++// based sorting works as intended when using string methods.
++func TestSortValuesWithMethods(t *testing.T) {
++	v := reflect.ValueOf
++
++	a := v("a")
++	b := v("b")
++	c := v("c")
++	tests := []sortTestCase{
++		// Ints.
++		{
++			[]reflect.Value{v(2), v(1), v(3)},
++			[]reflect.Value{v(1), v(2), v(3)},
++		},
++		// Strings.
++		{
++			[]reflect.Value{b, a, c},
++			[]reflect.Value{a, b, c},
++		},
++		// SortableStructs.
++		{
++			[]reflect.Value{v(sortableStruct{2}), v(sortableStruct{1}), v(sortableStruct{3})},
++			[]reflect.Value{v(sortableStruct{1}), v(sortableStruct{2}), v(sortableStruct{3})},
++		},
++		// UnsortableStructs.
++		{
++			// Note: not sorted - SpewKeys is false.
++			[]reflect.Value{v(unsortableStruct{2}), v(unsortableStruct{1}), v(unsortableStruct{3})},
++			[]reflect.Value{v(unsortableStruct{2}), v(unsortableStruct{1}), v(unsortableStruct{3})},
++		},
++	}
++	cs := spew.ConfigState{DisableMethods: false, SpewKeys: false}
++	helpTestSortValues(tests, &cs, t)
++}
++
++// TestSortValuesWithSpew ensures the sort functionality for relect.Value
++// based sorting works as intended when using spew to stringify keys.
++func TestSortValuesWithSpew(t *testing.T) {
++	v := reflect.ValueOf
++
++	a := v("a")
++	b := v("b")
++	c := v("c")
++	tests := []sortTestCase{
++		// Ints.
++		{
++			[]reflect.Value{v(2), v(1), v(3)},
++			[]reflect.Value{v(1), v(2), v(3)},
++		},
++		// Strings.
++		{
++			[]reflect.Value{b, a, c},
++			[]reflect.Value{a, b, c},
++		},
++		// SortableStructs.
++		{
++			[]reflect.Value{v(sortableStruct{2}), v(sortableStruct{1}), v(sortableStruct{3})},
++			[]reflect.Value{v(sortableStruct{1}), v(sortableStruct{2}), v(sortableStruct{3})},
++		},
++		// UnsortableStructs.
++		{
++			[]reflect.Value{v(unsortableStruct{2}), v(unsortableStruct{1}), v(unsortableStruct{3})},
++			[]reflect.Value{v(unsortableStruct{1}), v(unsortableStruct{2}), v(unsortableStruct{3})},
++		},
++	}
++	cs := spew.ConfigState{DisableMethods: true, SpewKeys: true}
++	helpTestSortValues(tests, &cs, t)
++}
++
++func typeNameOf(v interface{}) string {
++	rv := reflect.ValueOf(v)
++
++	switch rv.Kind() {
++	case reflect.Invalid:
++		return "nil"
++
++	case reflect.Ptr:
++		for rv.Kind() == reflect.Ptr {
++			if rv.IsNil() {
++				return rv.Type().Elem().String()
++			}
++			rv = rv.Elem()
++		}
++
++	case reflect.Array, reflect.Slice:
++		return rv.Type().String()
++	}
++
++	return rv.Type().String()
++}
++
++func uniqueStringSlice(s []string) []string {
++	sort.Strings(s)
++
++	i := 0
++	for j := 0; j < len(s); j++ {
++		if !(s[i] < s[j]) {
++			continue
++		}
++		i++
++		s[i] = s[j]
++	}
++
++	i++
++	return s[:i]
++}
++
++func TestUniqueStringSlice(t *testing.T) {
++	in := []string{"x", "k", "y", "m", "a", "x", "x", "y"}
++	want := []string{"a", "k", "m", "x", "y"}
++
++	got := uniqueStringSlice(in)
++	if !reflect.DeepEqual(got, want) {
++		t.Errorf("got %#v, want: %#v", got, want)
++	}
++}
+diff --git a/config.go b/config.go
+index 135a47a..e53845d 100644
+--- a/config.go
++++ b/config.go
+@@ -49,6 +49,24 @@ type ConfigState struct {
+ 	// nested data structures.
+ 	MaxDepth int
+ 
++	// DisableMethods specifies whether or not error and Stringer interfaces are
++	// invoked for types that implement them.
++	DisableMethods bool
++
++	// DisablePointerMethods specifies whether or not to check for and invoke
++	// error and Stringer interfaces on types which only accept a pointer
++	// receiver when the current type is not a pointer.
++	//
++	// NOTE: This might be an unsafe action since calling one of these methods
++	// with a pointer receiver could technically mutate the value, however,
++	// in practice, types which choose to satisify an error or Stringer
++	// interface with a pointer receiver should not be mutating their state
++	// inside these interface methods.  As a result, this option relies on
++	// access to the unsafe package, so it will not have any effect when
++	// running in environments without access to the unsafe package such as
++	// Google App Engine or with the "safe" build tag specified.
++	DisablePointerMethods bool
++
+ 	// DisablePointerAddresses specifies whether to disable the printing of
+ 	// pointer addresses. This is useful when diffing data structures in tests.
+ 	DisablePointerAddresses bool
+@@ -58,10 +76,21 @@ type ConfigState struct {
+ 	// data structures in tests.
+ 	DisableCapacities bool
+ 
++	// ContinueOnMethod specifies whether or not recursion should continue once
++	// a custom error or Stringer interface is invoked.  The default, false,
++	// means it will print the results of invoking the custom error or Stringer
++	// interface and return immediately instead of continuing to recurse into
++	// the internals of the data type.
++	//
++	// NOTE: This flag does not have any effect if method invocation is disabled
++	// via the DisableMethods or DisablePointerMethods options.
++	ContinueOnMethod bool
++
+ 	// SortKeys specifies map keys should be sorted before being printed. Use
+ 	// this to have a more deterministic, diffable output.  Note that only
+-	// native types (bool, int, uint, floats, uintptr and string) are supported,
+-	// with other types sorted according to the
++	// native types (bool, int, uint, floats, uintptr and string) and types
++	// that support the error or Stringer interfaces (if methods are
++	// enabled) are supported, with other types sorted according to the
+ 	// reflect.Value.String() output which guarantees display stability.
+ 	SortKeys bool
+ 
+@@ -247,6 +276,11 @@ package:
+ 
+ 	* Pointers are dereferenced and followed
+ 	* Circular data structures are detected and handled properly
++	* Custom Stringer/error interfaces are optionally invoked, including
++	  on unexported types
++	* Custom types which only implement the Stringer/error interfaces via
++	  a pointer receiver are optionally invoked when passing non-pointer
++	  variables
+ 	* Byte arrays and slices are dumped like the hexdump -C command which
+ 	  includes offsets, byte values in hex, and ASCII output
+ 
+@@ -273,6 +307,9 @@ func (c *ConfigState) Sdump(a ...interface{}) string {
+ //
+ // 	Indent: " "
+ // 	MaxDepth: 0
++// 	DisableMethods: false
++// 	DisablePointerMethods: false
++// 	ContinueOnMethod: false
+ // 	SortKeys: false
+ func NewDefaultConfig() *ConfigState {
+ 	return &ConfigState{Indent: " "}
+diff --git a/doc.go b/doc.go
+index e4fb174..aacaac6 100644
+--- a/doc.go
++++ b/doc.go
+@@ -23,6 +23,11 @@ printing facilities for Go data types are as follows:
+ 
+ 	* Pointers are dereferenced and followed
+ 	* Circular data structures are detected and handled properly
++	* Custom Stringer/error interfaces are optionally invoked, including
++	  on unexported types
++	* Custom types which only implement the Stringer/error interfaces via
++	  a pointer receiver are optionally invoked when passing non-pointer
++	  variables
+ 	* Byte arrays and slices are dumped like the hexdump -C command which
+ 	  includes offsets, byte values in hex, and ASCII output (only when using
+ 	  Dump style)
+@@ -77,6 +82,15 @@ The following configuration options are available:
+ 		Maximum number of levels to descend into nested data structures.
+ 		There is no limit by default.
+ 
++	* DisableMethods
++		Disables invocation of error and Stringer interface methods.
++		Method invocation is enabled by default.
++
++	* DisablePointerMethods
++		Disables invocation of error and Stringer interface methods on types
++		which only accept pointer receivers from non-pointer variables.
++		Pointer method invocation is enabled by default.
++
+ 	* DisablePointerAddresses
+ 		DisablePointerAddresses specifies whether to disable the printing of
+ 		pointer addresses. This is useful when diffing data structures in tests.
+@@ -86,11 +100,16 @@ The following configuration options are available:
+ 		capacities for arrays, slices, maps and channels. This is useful when
+ 		diffing data structures in tests.
+ 
++	* ContinueOnMethod
++		Enables recursion into types after invoking error and Stringer interface
++		methods. Recursion after method invocation is disabled by default.
++
+ 	* SortKeys
+ 		Specifies map keys should be sorted before being printed. Use
+ 		this to have a more deterministic, diffable output.  Note that
+ 		only native types (bool, int, uint, floats, uintptr and string)
+-		are supported with other types sorted according to the
++		and types which implement error or Stringer interfaces are
++		supported with other types sorted according to the
+ 		reflect.Value.String() output which guarantees display
+ 		stability.  Natural map order is used by default.
+ 
+@@ -181,5 +200,12 @@ Pointer to circular struct with a uint8 field and a pointer to itself:
+ 
+ See the Printf example for details on the setup of variables being shown
+ here.
++
++Errors
++
++Since it is possible for custom Stringer/error interfaces to panic, spew
++detects them and handles them internally by printing the panic information
++inline with the output.  Since spew is intended to provide deep pretty printing
++capabilities on structures, it intentionally does not return any errors.
+ */
+ package spew
+diff --git a/dump.go b/dump.go
+index 53122a0..4d8dca6 100644
+--- a/dump.go
++++ b/dump.go
+@@ -18,6 +18,7 @@
+ package spew
+ 
+ import (
++	"fmt"
+ 	"io"
+ 	"reflect"
+ 	"regexp"
+@@ -31,6 +32,10 @@ var (
+ 	// convert cgo types to uint8 slices for hexdumping.
+ 	uint8Type = reflect.TypeOf(uint8(0))
+ 
++	// fmtStringerType is a reflect.Type representing fmt.Stringer.
++	// It is used to pretty print types instead of hexdump them.
++	fmtStringerType = reflect.TypeOf((*fmt.Stringer)(nil)).Elem()
++
+ 	// cCharRE is a regular expression that matches a cgo char.
+ 	// It is used to detect character arrays to hexdump them.
+ 	cCharRE = regexp.MustCompile(`^.*\._Ctype_char$`)
+@@ -154,33 +159,37 @@ func (d *dumpState) dumpSlice(v reflect.Value) {
+ 		// Try to use existing uint8 slices and fall back to converting
+ 		// and copying if that fails.
+ 		case vt.Kind() == reflect.Uint8:
+-			// We need an addressable interface to convert the type
+-			// to a byte slice.  However, the reflect package won't
+-			// give us an interface on certain things like
+-			// unexported struct fields in order to enforce
+-			// visibility rules.  We use unsafe, when available, to
+-			// bypass these restrictions since this package does not
+-			// mutate the values.
+-			vs := v
+-			if !vs.CanInterface() || !vs.CanAddr() {
+-				vs = unsafeReflectValue(vs)
+-			}
+-			if !UnsafeDisabled {
+-				vs = vs.Slice(0, numEntries)
+-
+-				// Use the existing uint8 slice if it can be
+-				// type asserted.
+-				iface := vs.Interface()
+-				if slice, ok := iface.([]uint8); ok {
+-					buf = slice
+-					doHexDump = true
+-					break
++			if vt.Implements(fmtStringerType) {
++				doConvert = d.cs.DisableMethods
++			} else {
++				// We need an addressable interface to convert the type
++				// to a byte slice.  However, the reflect package won't
++				// give us an interface on certain things like
++				// unexported struct fields in order to enforce
++				// visibility rules.  We use unsafe, when available, to
++				// bypass these restrictions since this package does not
++				// mutate the values.
++				vs := v
++				if !vs.CanInterface() || !vs.CanAddr() {
++					vs = unsafeReflectValue(vs)
++				}
++				if !UnsafeDisabled {
++					vs = vs.Slice(0, numEntries)
++
++					// Use the existing uint8 slice if it can be
++					// type asserted.
++					iface := vs.Interface()
++					if slice, ok := iface.([]uint8); ok {
++						buf = slice
++						doHexDump = true
++						break
++					}
+ 				}
+-			}
+ 
+-			// The underlying data needs to be converted if it can't
+-			// be type asserted to a uint8 slice.
+-			doConvert = true
++				// The underlying data needs to be converted if it can't
++				// be type asserted to a uint8 slice.
++				doConvert = true
++			}
+ 		}
+ 
+ 		// Copy and convert the underlying type if needed.
+@@ -276,7 +285,7 @@ func (d *dumpState) dump(v reflect.Value) {
+ 		d.w.Write(spaceBytes)
+ 	}
+ 
+-	printValue(d.w, d, v, kind)
++	printValue(d.w, d, v, kind, d.cs)
+ }
+ 
+ func (d *dumpState) printArray(v reflect.Value) {
+diff --git a/dump_test.go b/dump_test.go
+new file mode 100644
+index 0000000..d959152
+--- /dev/null
++++ b/dump_test.go
+@@ -0,0 +1,1172 @@
++/*
++ * Copyright (c) 2013-2016 Dave Collins <dave@davec.name>
++ * Copyright (c) 2021, 2023 Anner van Hardenbroek
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++
++/*
++Test Summary:
++NOTE: For each test, a nil pointer, a single pointer and double pointer to the
++base test element are also tested to ensure proper indirection across all types.
++
++- Max int8, int16, int32, int64, int
++- Max uint8, uint16, uint32, uint64, uint
++- Boolean true and false
++- Standard complex64 and complex128
++- Array containing standard ints
++- Array containing type with custom formatter on pointer receiver only
++- Array containing interfaces
++- Array containing bytes
++- Slice containing standard float32 values
++- Slice containing type with custom formatter on pointer receiver only
++- Slice containing interfaces
++- Slice containing bytes
++- Nil slice
++- Standard string
++- Nil interface
++- Sub-interface
++- Map with string keys and int vals
++- Map with custom formatter type on pointer receiver only keys and vals
++- Map with interface keys and values
++- Map with nil interface value
++- Struct with primitives
++- Struct that contains another struct
++- Struct that contains custom type with Stringer pointer interface via both
++  exported and unexported fields
++- Struct that contains embedded struct and field to same struct
++- Uintptr to 0 (null pointer)
++- Uintptr address of real variable
++- Unsafe.Pointer to 0 (null pointer)
++- Unsafe.Pointer to address of real variable
++- Nil channel
++- Standard int channel
++- Function with no params and no returns
++- Function with param and no returns
++- Function with multiple params and multiple returns
++- Struct that is circular through self referencing
++- Structs that are circular through cross referencing
++- Structs that are indirectly circular
++- Type that panics in its Stringer interface
++*/
++
++package spew_test
++
++import (
++	"bytes"
++	"fmt"
++	"io"
++	"strconv"
++	"strings"
++	"testing"
++	"unsafe"
++
++	"github.com/spewerspew/spew"
++)
++
++// dumpTest is used to describe a test to be performed against the Dump method.
++type dumpTest struct {
++	in    interface{}
++	wants []string
++	typ   string
++}
++
++// dumpTests houses all of the tests to be performed against the Dump method.
++var dumpTests []dumpTest
++
++// addDumpTest is a helper method to append the passed input and desired result
++// to dumpTests
++func addDumpTest(in interface{}, wants ...string) {
++	test := dumpTest{in, wants, typeNameOf(in)}
++	dumpTests = append(dumpTests, test)
++}
++
++func addIntDumpTests() {
++	// Max int8.
++	v := int8(127)
++	nv := (*int8)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "int8"
++	vs := "127"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	// Max int16.
++	v2 := int16(32767)
++	nv2 := (*int16)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "int16"
++	v2s := "32767"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv2, "(*"+v2t+")(<nil>)\n")
++
++	// Max int32.
++	v3 := int32(2147483647)
++	nv3 := (*int32)(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "int32"
++	v3s := "2147483647"
++	addDumpTest(v3, "("+v3t+") "+v3s+"\n")
++	addDumpTest(pv3, "(*"+v3t+")("+v3Addr+")("+v3s+")\n")
++	addDumpTest(&pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")("+v3s+")\n")
++	addDumpTest(nv3, "(*"+v3t+")(<nil>)\n")
++
++	// Max int64.
++	v4 := int64(9223372036854775807)
++	nv4 := (*int64)(nil)
++	pv4 := &v4
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "int64"
++	v4s := "9223372036854775807"
++	addDumpTest(v4, "("+v4t+") "+v4s+"\n")
++	addDumpTest(pv4, "(*"+v4t+")("+v4Addr+")("+v4s+")\n")
++	addDumpTest(&pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")("+v4s+")\n")
++	addDumpTest(nv4, "(*"+v4t+")(<nil>)\n")
++
++	// Max int.
++	v5 := int(2147483647)
++	nv5 := (*int)(nil)
++	pv5 := &v5
++	v5Addr := fmt.Sprintf("%p", pv5)
++	pv5Addr := fmt.Sprintf("%p", &pv5)
++	v5t := "int"
++	v5s := "2147483647"
++	addDumpTest(v5, "("+v5t+") "+v5s+"\n")
++	addDumpTest(pv5, "(*"+v5t+")("+v5Addr+")("+v5s+")\n")
++	addDumpTest(&pv5, "(**"+v5t+")("+pv5Addr+"->"+v5Addr+")("+v5s+")\n")
++	addDumpTest(nv5, "(*"+v5t+")(<nil>)\n")
++}
++
++func addUintDumpTests() {
++	// Max uint8.
++	v := uint8(255)
++	nv := (*uint8)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "uint8"
++	vs := "255"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	// Max uint16.
++	v2 := uint16(65535)
++	nv2 := (*uint16)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "uint16"
++	v2s := "65535"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv2, "(*"+v2t+")(<nil>)\n")
++
++	// Max uint32.
++	v3 := uint32(4294967295)
++	nv3 := (*uint32)(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "uint32"
++	v3s := "4294967295"
++	addDumpTest(v3, "("+v3t+") "+v3s+"\n")
++	addDumpTest(pv3, "(*"+v3t+")("+v3Addr+")("+v3s+")\n")
++	addDumpTest(&pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")("+v3s+")\n")
++	addDumpTest(nv3, "(*"+v3t+")(<nil>)\n")
++
++	// Max uint64.
++	v4 := uint64(18446744073709551615)
++	nv4 := (*uint64)(nil)
++	pv4 := &v4
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "uint64"
++	v4s := "18446744073709551615"
++	addDumpTest(v4, "("+v4t+") "+v4s+"\n")
++	addDumpTest(pv4, "(*"+v4t+")("+v4Addr+")("+v4s+")\n")
++	addDumpTest(&pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")("+v4s+")\n")
++	addDumpTest(nv4, "(*"+v4t+")(<nil>)\n")
++
++	// Max uint.
++	v5 := uint(4294967295)
++	nv5 := (*uint)(nil)
++	pv5 := &v5
++	v5Addr := fmt.Sprintf("%p", pv5)
++	pv5Addr := fmt.Sprintf("%p", &pv5)
++	v5t := "uint"
++	v5s := "4294967295"
++	addDumpTest(v5, "("+v5t+") "+v5s+"\n")
++	addDumpTest(pv5, "(*"+v5t+")("+v5Addr+")("+v5s+")\n")
++	addDumpTest(&pv5, "(**"+v5t+")("+pv5Addr+"->"+v5Addr+")("+v5s+")\n")
++	addDumpTest(nv5, "(*"+v5t+")(<nil>)\n")
++}
++
++func addBoolDumpTests() {
++	// Boolean true.
++	v := bool(true)
++	nv := (*bool)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "bool"
++	vs := "true"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	// Boolean false.
++	v2 := bool(false)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "bool"
++	v2s := "false"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++}
++
++func addFloatDumpTests() {
++	// Standard float32.
++	v := float32(3.1415)
++	nv := (*float32)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "float32"
++	vs := "3.1415"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	// Standard float64.
++	v2 := float64(3.1415926)
++	nv2 := (*float64)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "float64"
++	v2s := "3.1415926"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv2, "(*"+v2t+")(<nil>)\n")
++}
++
++func addComplexDumpTests() {
++	// Standard complex64.
++	v := complex(float32(6), -2)
++	nv := (*complex64)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "complex64"
++	vs := "(6-2i)"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	// Standard complex128.
++	v2 := complex(float64(-6), 2)
++	nv2 := (*complex128)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "complex128"
++	v2s := "(-6+2i)"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv2, "(*"+v2t+")(<nil>)\n")
++}
++
++func addArrayDumpTests() {
++	// Array containing standard ints.
++	v := [3]int{1, 2, 3}
++	vLen := fmt.Sprintf("%d", len(v))
++	vCap := fmt.Sprintf("%d", cap(v))
++	nv := (*[3]int)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "int"
++	vs := "(len=" + vLen + " cap=" + vCap + ") {\n (" + vt + ") 1,\n (" +
++		vt + ") 2,\n (" + vt + ") 3\n}"
++	addDumpTest(v, "([3]"+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*[3]"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**[3]"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*[3]"+vt+")(<nil>)\n")
++
++	// Array containing type with custom formatter on pointer receiver only.
++	v2i0 := pstringer("1")
++	v2i1 := pstringer("2")
++	v2i2 := pstringer("3")
++	v2 := [3]pstringer{v2i0, v2i1, v2i2}
++	v2i0Len := fmt.Sprintf("%d", len(v2i0))
++	v2i1Len := fmt.Sprintf("%d", len(v2i1))
++	v2i2Len := fmt.Sprintf("%d", len(v2i2))
++	v2Len := fmt.Sprintf("%d", len(v2))
++	v2Cap := fmt.Sprintf("%d", cap(v2))
++	nv2 := (*[3]pstringer)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "spew_test.pstringer"
++	v2sp := "(len=" + v2Len + " cap=" + v2Cap + ") {\n (" + v2t +
++		") (len=" + v2i0Len + ") stringer 1,\n (" + v2t +
++		") (len=" + v2i1Len + ") stringer 2,\n (" + v2t +
++		") (len=" + v2i2Len + ") " + "stringer 3\n}"
++	v2s := v2sp
++	if spew.UnsafeDisabled {
++		v2s = "(len=" + v2Len + " cap=" + v2Cap + ") {\n (" + v2t +
++			") (len=" + v2i0Len + ") \"1\",\n (" + v2t + ") (len=" +
++			v2i1Len + ") \"2\",\n (" + v2t + ") (len=" + v2i2Len +
++			") " + "\"3\"\n}"
++	}
++	addDumpTest(v2, "([3]"+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*[3]"+v2t+")("+v2Addr+")("+v2sp+")\n")
++	addDumpTest(&pv2, "(**[3]"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2sp+")\n")
++	addDumpTest(nv2, "(*[3]"+v2t+")(<nil>)\n")
++
++	// Array containing interfaces.
++	v3i0 := "one"
++	v3 := [3]interface{}{v3i0, int(2), uint(3)}
++	v3i0Len := fmt.Sprintf("%d", len(v3i0))
++	v3Len := fmt.Sprintf("%d", len(v3))
++	v3Cap := fmt.Sprintf("%d", cap(v3))
++	nv3 := (*[3]interface{})(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "[3]interface {}"
++	v3t2 := "string"
++	v3t3 := "int"
++	v3t4 := "uint"
++	v3s := "(len=" + v3Len + " cap=" + v3Cap + ") {\n (" + v3t2 + ") " +
++		"(len=" + v3i0Len + ") \"one\",\n (" + v3t3 + ") 2,\n (" +
++		v3t4 + ") 3\n}"
++	addDumpTest(v3, "("+v3t+") "+v3s+"\n")
++	addDumpTest(pv3, "(*"+v3t+")("+v3Addr+")("+v3s+")\n")
++	addDumpTest(&pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")("+v3s+")\n")
++	addDumpTest(nv3, "(*"+v3t+")(<nil>)\n")
++
++	// Array containing bytes.
++	v4 := [34]byte{
++		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
++		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
++		0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
++		0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
++		0x31, 0x32,
++	}
++	v4Len := fmt.Sprintf("%d", len(v4))
++	v4Cap := fmt.Sprintf("%d", cap(v4))
++	nv4 := (*[34]byte)(nil)
++	pv4 := &v4
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "[34]uint8"
++	v4s := "(len=" + v4Len + " cap=" + v4Cap + ") " +
++		"{\n 00000000  11 12 13 14 15 16 17 18  19 1a 1b 1c 1d 1e 1f 20" +
++		"  |............... |\n" +
++		" 00000010  21 22 23 24 25 26 27 28  29 2a 2b 2c 2d 2e 2f 30" +
++		"  |!\"#$%&'()*+,-./0|\n" +
++		" 00000020  31 32                                           " +
++		"  |12|\n}"
++	addDumpTest(v4, "("+v4t+") "+v4s+"\n")
++	addDumpTest(pv4, "(*"+v4t+")("+v4Addr+")("+v4s+")\n")
++	addDumpTest(&pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")("+v4s+")\n")
++	addDumpTest(nv4, "(*"+v4t+")(<nil>)\n")
++}
++
++func addSliceDumpTests() {
++	// Slice containing standard float32 values.
++	v := []float32{3.14, 6.28, 12.56}
++	vLen := fmt.Sprintf("%d", len(v))
++	vCap := fmt.Sprintf("%d", cap(v))
++	nv := (*[]float32)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "float32"
++	vs := "(len=" + vLen + " cap=" + vCap + ") {\n (" + vt + ") 3.14,\n (" +
++		vt + ") 6.28,\n (" + vt + ") 12.56\n}"
++	addDumpTest(v, "([]"+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*[]"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**[]"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*[]"+vt+")(<nil>)\n")
++
++	// Slice containing type with custom formatter on pointer receiver only.
++	v2i0 := pstringer("1")
++	v2i1 := pstringer("2")
++	v2i2 := pstringer("3")
++	v2 := []pstringer{v2i0, v2i1, v2i2}
++	v2i0Len := fmt.Sprintf("%d", len(v2i0))
++	v2i1Len := fmt.Sprintf("%d", len(v2i1))
++	v2i2Len := fmt.Sprintf("%d", len(v2i2))
++	v2Len := fmt.Sprintf("%d", len(v2))
++	v2Cap := fmt.Sprintf("%d", cap(v2))
++	nv2 := (*[]pstringer)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "spew_test.pstringer"
++	v2s := "(len=" + v2Len + " cap=" + v2Cap + ") {\n (" + v2t + ") (len=" +
++		v2i0Len + ") stringer 1,\n (" + v2t + ") (len=" + v2i1Len +
++		") stringer 2,\n (" + v2t + ") (len=" + v2i2Len + ") " +
++		"stringer 3\n}"
++	addDumpTest(v2, "([]"+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*[]"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**[]"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv2, "(*[]"+v2t+")(<nil>)\n")
++
++	// Slice containing interfaces.
++	v3i0 := "one"
++	v3 := []interface{}{v3i0, int(2), uint(3), nil}
++	v3i0Len := fmt.Sprintf("%d", len(v3i0))
++	v3Len := fmt.Sprintf("%d", len(v3))
++	v3Cap := fmt.Sprintf("%d", cap(v3))
++	nv3 := (*[]interface{})(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "[]interface {}"
++	v3t2 := "string"
++	v3t3 := "int"
++	v3t4 := "uint"
++	v3t5 := "interface {}"
++	v3s := "(len=" + v3Len + " cap=" + v3Cap + ") {\n (" + v3t2 + ") " +
++		"(len=" + v3i0Len + ") \"one\",\n (" + v3t3 + ") 2,\n (" +
++		v3t4 + ") 3,\n (" + v3t5 + ") <nil>\n}"
++	addDumpTest(v3, "("+v3t+") "+v3s+"\n")
++	addDumpTest(pv3, "(*"+v3t+")("+v3Addr+")("+v3s+")\n")
++	addDumpTest(&pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")("+v3s+")\n")
++	addDumpTest(nv3, "(*"+v3t+")(<nil>)\n")
++
++	// Slice containing bytes.
++	v4 := []byte{
++		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
++		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
++		0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
++		0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
++		0x31, 0x32,
++	}
++	v4Len := fmt.Sprintf("%d", len(v4))
++	v4Cap := fmt.Sprintf("%d", cap(v4))
++	nv4 := (*[]byte)(nil)
++	pv4 := &v4
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "[]uint8"
++	v4s := "(len=" + v4Len + " cap=" + v4Cap + ") " +
++		"{\n 00000000  11 12 13 14 15 16 17 18  19 1a 1b 1c 1d 1e 1f 20" +
++		"  |............... |\n" +
++		" 00000010  21 22 23 24 25 26 27 28  29 2a 2b 2c 2d 2e 2f 30" +
++		"  |!\"#$%&'()*+,-./0|\n" +
++		" 00000020  31 32                                           " +
++		"  |12|\n}"
++	addDumpTest(v4, "("+v4t+") "+v4s+"\n")
++	addDumpTest(pv4, "(*"+v4t+")("+v4Addr+")("+v4s+")\n")
++	addDumpTest(&pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")("+v4s+")\n")
++	addDumpTest(nv4, "(*"+v4t+")(<nil>)\n")
++
++	// Nil slice.
++	v5 := []int(nil)
++	nv5 := (*[]int)(nil)
++	pv5 := &v5
++	v5Addr := fmt.Sprintf("%p", pv5)
++	pv5Addr := fmt.Sprintf("%p", &pv5)
++	v5t := "[]int"
++	v5s := "<nil>"
++	addDumpTest(v5, "("+v5t+") "+v5s+"\n")
++	addDumpTest(pv5, "(*"+v5t+")("+v5Addr+")("+v5s+")\n")
++	addDumpTest(&pv5, "(**"+v5t+")("+pv5Addr+"->"+v5Addr+")("+v5s+")\n")
++	addDumpTest(nv5, "(*"+v5t+")(<nil>)\n")
++}
++
++func addStringDumpTests() {
++	// Standard string.
++	v := "test"
++	vLen := fmt.Sprintf("%d", len(v))
++	nv := (*string)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "string"
++	vs := "(len=" + vLen + ") \"test\""
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++}
++
++func addInterfaceDumpTests() {
++	// Nil interface.
++	var v interface{}
++	nv := (*interface{})(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "interface {}"
++	vs := "<nil>"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	// Sub-interface.
++	v2 := interface{}(uint16(65535))
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "uint16"
++	v2s := "65535"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++}
++
++func addMapDumpTests() {
++	// Map with string keys and int vals.
++	k := "one"
++	kk := "two"
++	m := map[string]int{k: 1, kk: 2}
++	klen := fmt.Sprintf("%d", len(k)) // not kLen to shut golint up
++	kkLen := fmt.Sprintf("%d", len(kk))
++	mLen := fmt.Sprintf("%d", len(m))
++	nilMap := map[string]int(nil)
++	nm := (*map[string]int)(nil)
++	pm := &m
++	mAddr := fmt.Sprintf("%p", pm)
++	pmAddr := fmt.Sprintf("%p", &pm)
++	mt := "map[string]int"
++	mt1 := "string"
++	mt2 := "int"
++	ms := "(len=" + mLen + ") {\n (" + mt1 + ") (len=" + klen + ") " +
++		"\"one\": (" + mt2 + ") 1,\n (" + mt1 + ") (len=" + kkLen +
++		") \"two\": (" + mt2 + ") 2\n}"
++	ms2 := "(len=" + mLen + ") {\n (" + mt1 + ") (len=" + kkLen + ") " +
++		"\"two\": (" + mt2 + ") 2,\n (" + mt1 + ") (len=" + klen +
++		") \"one\": (" + mt2 + ") 1\n}"
++	addDumpTest(m, "("+mt+") "+ms+"\n", "("+mt+") "+ms2+"\n")
++	addDumpTest(pm, "(*"+mt+")("+mAddr+")("+ms+")\n",
++		"(*"+mt+")("+mAddr+")("+ms2+")\n")
++	addDumpTest(&pm, "(**"+mt+")("+pmAddr+"->"+mAddr+")("+ms+")\n",
++		"(**"+mt+")("+pmAddr+"->"+mAddr+")("+ms2+")\n")
++	addDumpTest(nm, "(*"+mt+")(<nil>)\n")
++	addDumpTest(nilMap, "("+mt+") <nil>\n")
++
++	// Map with custom formatter type on pointer receiver only keys and vals.
++	k2 := pstringer("one")
++	v2 := pstringer("1")
++	m2 := map[pstringer]pstringer{k2: v2}
++	k2Len := fmt.Sprintf("%d", len(k2))
++	v2Len := fmt.Sprintf("%d", len(v2))
++	m2Len := fmt.Sprintf("%d", len(m2))
++	nilMap2 := map[pstringer]pstringer(nil)
++	nm2 := (*map[pstringer]pstringer)(nil)
++	pm2 := &m2
++	m2Addr := fmt.Sprintf("%p", pm2)
++	pm2Addr := fmt.Sprintf("%p", &pm2)
++	m2t := "map[spew_test.pstringer]spew_test.pstringer"
++	m2t1 := "spew_test.pstringer"
++	m2t2 := "spew_test.pstringer"
++	m2s := "(len=" + m2Len + ") {\n (" + m2t1 + ") (len=" + k2Len + ") " +
++		"stringer one: (" + m2t2 + ") (len=" + v2Len + ") stringer 1\n}"
++	if spew.UnsafeDisabled {
++		m2s = "(len=" + m2Len + ") {\n (" + m2t1 + ") (len=" + k2Len +
++			") " + "\"one\": (" + m2t2 + ") (len=" + v2Len +
++			") \"1\"\n}"
++	}
++	addDumpTest(m2, "("+m2t+") "+m2s+"\n")
++	addDumpTest(pm2, "(*"+m2t+")("+m2Addr+")("+m2s+")\n")
++	addDumpTest(&pm2, "(**"+m2t+")("+pm2Addr+"->"+m2Addr+")("+m2s+")\n")
++	addDumpTest(nm2, "(*"+m2t+")(<nil>)\n")
++	addDumpTest(nilMap2, "("+m2t+") <nil>\n")
++
++	// Map with interface keys and values.
++	k3 := "one"
++	k3Len := fmt.Sprintf("%d", len(k3))
++	m3 := map[interface{}]interface{}{k3: 1}
++	m3Len := fmt.Sprintf("%d", len(m3))
++	nilMap3 := map[interface{}]interface{}(nil)
++	nm3 := (*map[interface{}]interface{})(nil)
++	pm3 := &m3
++	m3Addr := fmt.Sprintf("%p", pm3)
++	pm3Addr := fmt.Sprintf("%p", &pm3)
++	m3t := "map[interface {}]interface {}"
++	m3t1 := "string"
++	m3t2 := "int"
++	m3s := "(len=" + m3Len + ") {\n (" + m3t1 + ") (len=" + k3Len + ") " +
++		"\"one\": (" + m3t2 + ") 1\n}"
++	addDumpTest(m3, "("+m3t+") "+m3s+"\n")
++	addDumpTest(pm3, "(*"+m3t+")("+m3Addr+")("+m3s+")\n")
++	addDumpTest(&pm3, "(**"+m3t+")("+pm3Addr+"->"+m3Addr+")("+m3s+")\n")
++	addDumpTest(nm3, "(*"+m3t+")(<nil>)\n")
++	addDumpTest(nilMap3, "("+m3t+") <nil>\n")
++
++	// Map with nil interface value.
++	k4 := "nil"
++	k4Len := fmt.Sprintf("%d", len(k4))
++	m4 := map[string]interface{}{k4: nil}
++	m4Len := fmt.Sprintf("%d", len(m4))
++	nilMap4 := map[string]interface{}(nil)
++	nm4 := (*map[string]interface{})(nil)
++	pm4 := &m4
++	m4Addr := fmt.Sprintf("%p", pm4)
++	pm4Addr := fmt.Sprintf("%p", &pm4)
++	m4t := "map[string]interface {}"
++	m4t1 := "string"
++	m4t2 := "interface {}"
++	m4s := "(len=" + m4Len + ") {\n (" + m4t1 + ") (len=" + k4Len + ")" +
++		" \"nil\": (" + m4t2 + ") <nil>\n}"
++	addDumpTest(m4, "("+m4t+") "+m4s+"\n")
++	addDumpTest(pm4, "(*"+m4t+")("+m4Addr+")("+m4s+")\n")
++	addDumpTest(&pm4, "(**"+m4t+")("+pm4Addr+"->"+m4Addr+")("+m4s+")\n")
++	addDumpTest(nm4, "(*"+m4t+")(<nil>)\n")
++	addDumpTest(nilMap4, "("+m4t+") <nil>\n")
++}
++
++func addStructDumpTests() {
++	// Struct with primitives.
++	type s1 struct {
++		a int8
++		b uint8
++	}
++	v := s1{127, 255}
++	nv := (*s1)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "spew_test.s1"
++	vt2 := "int8"
++	vt3 := "uint8"
++	vs := "{\n a: (" + vt2 + ") 127,\n b: (" + vt3 + ") 255\n}"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	// Struct that contains another struct.
++	type s2 struct {
++		s1 s1
++		b  bool
++	}
++	v2 := s2{s1{127, 255}, true}
++	nv2 := (*s2)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "spew_test.s2"
++	v2t2 := "spew_test.s1"
++	v2t3 := "int8"
++	v2t4 := "uint8"
++	v2t5 := "bool"
++	v2s := "{\n s1: (" + v2t2 + ") {\n  a: (" + v2t3 + ") 127,\n  b: (" +
++		v2t4 + ") 255\n },\n b: (" + v2t5 + ") true\n}"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv2, "(*"+v2t+")(<nil>)\n")
++
++	// Struct that contains custom type with Stringer pointer interface via both
++	// exported and unexported fields.
++	type s3 struct {
++		s pstringer
++		S pstringer
++	}
++	v3 := s3{"test", "test2"}
++	nv3 := (*s3)(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "spew_test.s3"
++	v3t2 := "spew_test.pstringer"
++	v3s := "{\n s: (" + v3t2 + ") (len=4) stringer test,\n S: (" + v3t2 +
++		") (len=5) stringer test2\n}"
++	v3sp := v3s
++	if spew.UnsafeDisabled {
++		v3s = "{\n s: (" + v3t2 + ") (len=4) \"test\",\n S: (" +
++			v3t2 + ") (len=5) \"test2\"\n}"
++		v3sp = "{\n s: (" + v3t2 + ") (len=4) \"test\",\n S: (" +
++			v3t2 + ") (len=5) stringer test2\n}"
++	}
++	addDumpTest(v3, "("+v3t+") "+v3s+"\n")
++	addDumpTest(pv3, "(*"+v3t+")("+v3Addr+")("+v3sp+")\n")
++	addDumpTest(&pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")("+v3sp+")\n")
++	addDumpTest(nv3, "(*"+v3t+")(<nil>)\n")
++
++	// Struct that contains embedded struct and field to same struct.
++	e := embed{"embedstr"}
++	eLen := fmt.Sprintf("%d", len("embedstr"))
++	v4 := embedwrap{embed: &e, e: &e}
++	nv4 := (*embedwrap)(nil)
++	pv4 := &v4
++	eAddr := fmt.Sprintf("%p", &e)
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "spew_test.embedwrap"
++	v4t2 := "spew_test.embed"
++	v4t3 := "string"
++	v4s := "{\n embed: (*" + v4t2 + ")(" + eAddr + ")({\n  a: (" + v4t3 +
++		") (len=" + eLen + ") \"embedstr\"\n }),\n e: (*" + v4t2 +
++		")(" + eAddr + ")({\n  a: (" + v4t3 + ") (len=" + eLen + ")" +
++		" \"embedstr\"\n })\n}"
++	addDumpTest(v4, "("+v4t+") "+v4s+"\n")
++	addDumpTest(pv4, "(*"+v4t+")("+v4Addr+")("+v4s+")\n")
++	addDumpTest(&pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")("+v4s+")\n")
++	addDumpTest(nv4, "(*"+v4t+")(<nil>)\n")
++}
++
++func addUintptrDumpTests() {
++	// Null pointer.
++	v := uintptr(0)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "uintptr"
++	vs := "<nil>"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++
++	// Address of real variable.
++	i := 1
++	v2 := uintptr(unsafe.Pointer(&i))
++	nv2 := (*uintptr)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "uintptr"
++	v2s := fmt.Sprintf("%p", &i)
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv2, "(*"+v2t+")(<nil>)\n")
++}
++
++func addUnsafePointerDumpTests() {
++	// Null pointer.
++	v := unsafe.Pointer(nil)
++	nv := (*unsafe.Pointer)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "unsafe.Pointer"
++	vs := "<nil>"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	// Address of real variable.
++	i := 1
++	v2 := unsafe.Pointer(&i)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "unsafe.Pointer"
++	v2s := fmt.Sprintf("%p", &i)
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++}
++
++func addChanDumpTests() {
++	// Nil channel.
++	var v chan int
++	pv := &v
++	nv := (*chan int)(nil)
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "chan int"
++	vs := "<nil>"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	// Real channel.
++	v2 := make(chan int)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "chan int"
++	v2s := fmt.Sprintf("%p", v2)
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++}
++
++func addFuncDumpTests() {
++	// Function with no params and no returns.
++	v := addIntDumpTests
++	nv := (*func())(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "func()"
++	vs := fmt.Sprintf("%p", v)
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	// Function with param and no returns.
++	v2 := TestDump
++	nv2 := (*func(*testing.T))(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "func(*testing.T)"
++	v2s := fmt.Sprintf("%p", v2)
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv2, "(*"+v2t+")(<nil>)\n")
++
++	// Function with multiple params and multiple returns.
++	var v3 = func(i int, s string) (b bool, err error) {
++		return true, nil
++	}
++	nv3 := (*func(int, string) (bool, error))(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "func(int, string) (bool, error)"
++	v3s := fmt.Sprintf("%p", v3)
++	addDumpTest(v3, "("+v3t+") "+v3s+"\n")
++	addDumpTest(pv3, "(*"+v3t+")("+v3Addr+")("+v3s+")\n")
++	addDumpTest(&pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")("+v3s+")\n")
++	addDumpTest(nv3, "(*"+v3t+")(<nil>)\n")
++}
++
++func addCircularDumpTests() {
++	// Struct that is circular through self referencing.
++	type circular struct {
++		c *circular
++	}
++	v := circular{nil}
++	v.c = &v
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "spew_test.circular"
++	vs := "{\n c: (*" + vt + ")(" + vAddr + ")({\n  c: (*" + vt + ")(" +
++		vAddr + ")(<already shown>)\n })\n}"
++	vs2 := "{\n c: (*" + vt + ")(" + vAddr + ")(<already shown>)\n}"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs2+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs2+")\n")
++
++	// Structs that are circular through cross referencing.
++	v2 := xref1{nil}
++	ts2 := xref2{&v2}
++	v2.ps2 = &ts2
++	pv2 := &v2
++	ts2Addr := fmt.Sprintf("%p", &ts2)
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "spew_test.xref1"
++	v2t2 := "spew_test.xref2"
++	v2s := "{\n ps2: (*" + v2t2 + ")(" + ts2Addr + ")({\n  ps1: (*" + v2t +
++		")(" + v2Addr + ")({\n   ps2: (*" + v2t2 + ")(" + ts2Addr +
++		")(<already shown>)\n  })\n })\n}"
++	v2s2 := "{\n ps2: (*" + v2t2 + ")(" + ts2Addr + ")({\n  ps1: (*" + v2t +
++		")(" + v2Addr + ")(<already shown>)\n })\n}"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s2+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s2+")\n")
++
++	// Structs that are indirectly circular.
++	v3 := indirCir1{nil}
++	tic2 := indirCir2{nil}
++	tic3 := indirCir3{&v3}
++	tic2.ps3 = &tic3
++	v3.ps2 = &tic2
++	pv3 := &v3
++	tic2Addr := fmt.Sprintf("%p", &tic2)
++	tic3Addr := fmt.Sprintf("%p", &tic3)
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "spew_test.indirCir1"
++	v3t2 := "spew_test.indirCir2"
++	v3t3 := "spew_test.indirCir3"
++	v3s := "{\n ps2: (*" + v3t2 + ")(" + tic2Addr + ")({\n  ps3: (*" + v3t3 +
++		")(" + tic3Addr + ")({\n   ps1: (*" + v3t + ")(" + v3Addr +
++		")({\n    ps2: (*" + v3t2 + ")(" + tic2Addr +
++		")(<already shown>)\n   })\n  })\n })\n}"
++	v3s2 := "{\n ps2: (*" + v3t2 + ")(" + tic2Addr + ")({\n  ps3: (*" + v3t3 +
++		")(" + tic3Addr + ")({\n   ps1: (*" + v3t + ")(" + v3Addr +
++		")(<already shown>)\n  })\n })\n}"
++	addDumpTest(v3, "("+v3t+") "+v3s+"\n")
++	addDumpTest(pv3, "(*"+v3t+")("+v3Addr+")("+v3s2+")\n")
++	addDumpTest(&pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")("+v3s2+")\n")
++}
++
++func addPanicDumpTests() {
++	// Type that panics in its Stringer interface.
++	v := panicer(127)
++	nv := (*panicer)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "spew_test.panicer"
++	vs := "(PANIC=test panic)127"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++}
++
++func addStringerDumpTests() {
++	// Type that has a custom Stringer interface.
++	v := stringer("test")
++	var nv stringer
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vl := fmt.Sprintf("(len=%d) ", len(v))
++	vt := "spew_test.stringer"
++	vs := "stringer test"
++	addDumpTest(v, "("+vt+") "+vl+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vl+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vl+vs+")\n")
++	addDumpTest(nv, "("+vt+") stringer \n")
++
++	v1 := pstringer("test")
++	var nv1 pstringer
++	pv1 := &v1
++	v1Addr := fmt.Sprintf("%p", pv1)
++	pv1Addr := fmt.Sprintf("%p", &pv1)
++	v1l := fmt.Sprintf("(len=%d) ", len(v1))
++	v1t := "spew_test.pstringer"
++	v1s := "stringer test"
++	addDumpTest(v1, "("+v1t+") "+v1l+v1s+"\n")
++	addDumpTest(pv1, "(*"+v1t+")("+v1Addr+")("+v1l+v1s+")\n")
++	addDumpTest(&pv1, "(**"+v1t+")("+pv1Addr+"->"+v1Addr+")("+v1l+v1s+")\n")
++	addDumpTest(nv1, "("+v1t+") stringer \n")
++
++	v2 := make(chanStringer)
++	var nv2 chanStringer
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "spew_test.chanStringer"
++	v2s := "chan stringer"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv2, "("+v2t+") chan stringer\n")
++
++	v3 := funcStringer(func() {})
++	var nv3 funcStringer
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "spew_test.funcStringer"
++	v3s := "func stringer"
++	addDumpTest(v3, "("+v3t+") "+v3s+"\n")
++	addDumpTest(pv3, "(*"+v3t+")("+v3Addr+")("+v3s+")\n")
++	addDumpTest(&pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")("+v3s+")\n")
++	addDumpTest(nv3, "("+v3t+") func stringer\n")
++
++	v4 := make(mapStringer)
++	var nv4 mapStringer
++	pv4 := &v4
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "spew_test.mapStringer"
++	v4s := "map stringer"
++	addDumpTest(v4, "("+v4t+") "+v4s+"\n")
++	addDumpTest(pv4, "(*"+v4t+")("+v4Addr+")("+v4s+")\n")
++	addDumpTest(&pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")("+v4s+")\n")
++	addDumpTest(nv4, "("+v4t+") map stringer\n")
++}
++
++func addErrorDumpTests() {
++	// Type that has a custom Error interface.
++	v := customError(127)
++	nv := (*customError)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "spew_test.customError"
++	vs := "error: 127"
++	addDumpTest(v, "("+vt+") "+vs+"\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")("+vs+")\n")
++	addDumpTest(nv, "(*"+vt+")(<nil>)\n")
++
++	v1 := make(chanError)
++	var nv1 chanError
++	pv1 := &v1
++	v1Addr := fmt.Sprintf("%p", pv1)
++	pv1Addr := fmt.Sprintf("%p", &pv1)
++	v1t := "spew_test.chanError"
++	v1s := "chan error"
++	addDumpTest(v1, "("+v1t+") "+v1s+"\n")
++	addDumpTest(pv1, "(*"+v1t+")("+v1Addr+")("+v1s+")\n")
++	addDumpTest(&pv1, "(**"+v1t+")("+pv1Addr+"->"+v1Addr+")("+v1s+")\n")
++	addDumpTest(nv1, "("+v1t+") chan error\n")
++
++	v2 := funcError(func() {})
++	var nv2 funcError
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "spew_test.funcError"
++	v2s := "func error"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++	addDumpTest(pv2, "(*"+v2t+")("+v2Addr+")("+v2s+")\n")
++	addDumpTest(&pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")("+v2s+")\n")
++	addDumpTest(nv2, "("+v2t+") func error\n")
++
++	v3 := make(mapError)
++	var nv3 mapError
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "spew_test.mapError"
++	v3s := "map error"
++	addDumpTest(v3, "("+v3t+") "+v3s+"\n")
++	addDumpTest(pv3, "(*"+v3t+")("+v3Addr+")("+v3s+")\n")
++	addDumpTest(&pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")("+v3s+")\n")
++	addDumpTest(nv3, "("+v3t+") map error\n")
++}
++
++func setupDumpTests() {
++	if len(dumpTests) == 0 {
++		addIntDumpTests()
++		addUintDumpTests()
++		addBoolDumpTests()
++		addFloatDumpTests()
++		addComplexDumpTests()
++		addArrayDumpTests()
++		addSliceDumpTests()
++		addStringDumpTests()
++		addInterfaceDumpTests()
++		addMapDumpTests()
++		addStructDumpTests()
++		addUintptrDumpTests()
++		addUnsafePointerDumpTests()
++		addChanDumpTests()
++		addFuncDumpTests()
++		addCircularDumpTests()
++		addPanicDumpTests()
++		addStringerDumpTests()
++		addErrorDumpTests()
++		addCgoDumpTests()
++	}
++}
++
++// TestDump executes all of the tests described by dumpTests.
++func TestDump(t *testing.T) {
++	setupDumpTests()
++
++	t.Logf("Running %d tests", len(dumpTests))
++	for i, test := range dumpTests {
++		t.Run(strconv.Itoa(i), func(t *testing.T) {
++			buf := new(bytes.Buffer)
++			spew.Fdump(buf, test.in)
++			s := buf.String()
++			if testFailed(s, test.wants) {
++				t.Errorf("\ngot:  %q\n%s", s, stringizeWants(test.wants))
++			}
++		})
++	}
++}
++
++func BenchmarkDump(b *testing.B) {
++	setupDumpTests()
++
++	b.Logf("Running %d benchmarks", len(dumpTests))
++	for _, test := range dumpTests {
++		s := test.wants[0]
++		name := test.typ + "/" + s[:strings.IndexByte(s, '\n')]
++		b.Run(name, func(b *testing.B) {
++			b.ReportAllocs()
++			b.ResetTimer()
++			for i := 0; i < b.N; i++ {
++				spew.Fdump(io.Discard, test.in)
++			}
++		})
++	}
++}
++
++func TestDumpSortedKeys(t *testing.T) {
++	cfg := spew.ConfigState{SortKeys: true}
++	s := cfg.Sdump(map[int]string{1: "1", 3: "3", 2: "2"})
++	expected := "(map[int]string) (len=3) {\n(int) 1: (string) (len=1) " +
++		"\"1\",\n(int) 2: (string) (len=1) \"2\",\n(int) 3: (string) " +
++		"(len=1) \"3\"\n" +
++		"}\n"
++	if s != expected {
++		t.Errorf("Sorted keys mismatch:\n  %v %v", s, expected)
++	}
++
++	s = cfg.Sdump(map[stringer]int{"1": 1, "3": 3, "2": 2})
++	expected = "(map[spew_test.stringer]int) (len=3) {\n" +
++		"(spew_test.stringer) (len=1) stringer 1: (int) 1,\n" +
++		"(spew_test.stringer) (len=1) stringer 2: (int) 2,\n" +
++		"(spew_test.stringer) (len=1) stringer 3: (int) 3\n" +
++		"}\n"
++	if s != expected {
++		t.Errorf("Sorted keys mismatch:\n  %v %v", s, expected)
++	}
++
++	s = cfg.Sdump(map[pstringer]int{pstringer("1"): 1, pstringer("3"): 3, pstringer("2"): 2})
++	expected = "(map[spew_test.pstringer]int) (len=3) {\n" +
++		"(spew_test.pstringer) (len=1) stringer 1: (int) 1,\n" +
++		"(spew_test.pstringer) (len=1) stringer 2: (int) 2,\n" +
++		"(spew_test.pstringer) (len=1) stringer 3: (int) 3\n" +
++		"}\n"
++	if spew.UnsafeDisabled {
++		expected = "(map[spew_test.pstringer]int) (len=3) {\n" +
++			"(spew_test.pstringer) (len=1) \"1\": (int) 1,\n" +
++			"(spew_test.pstringer) (len=1) \"2\": (int) 2,\n" +
++			"(spew_test.pstringer) (len=1) \"3\": (int) 3\n" +
++			"}\n"
++	}
++	if s != expected {
++		t.Errorf("Sorted keys mismatch:\n  %v %v", s, expected)
++	}
++
++	s = cfg.Sdump(map[customError]int{customError(1): 1, customError(3): 3, customError(2): 2})
++	expected = "(map[spew_test.customError]int) (len=3) {\n" +
++		"(spew_test.customError) error: 1: (int) 1,\n" +
++		"(spew_test.customError) error: 2: (int) 2,\n" +
++		"(spew_test.customError) error: 3: (int) 3\n" +
++		"}\n"
++	if s != expected {
++		t.Errorf("Sorted keys mismatch:\n  %v %v", s, expected)
++	}
++
++}
+diff --git a/dumpcgo_test.go b/dumpcgo_test.go
+new file mode 100644
+index 0000000..d26e6c8
+--- /dev/null
++++ b/dumpcgo_test.go
+@@ -0,0 +1,102 @@
++// Copyright (c) 2013-2016 Dave Collins <dave@davec.name>
++//
++// Permission to use, copy, modify, and distribute this software for any
++// purpose with or without fee is hereby granted, provided that the above
++// copyright notice and this permission notice appear in all copies.
++//
++// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++// OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++
++// NOTE: Due to the following build constraints, this file will only be compiled
++// when both cgo is supported and "-tags testcgo" is added to the go test
++// command line.  This means the cgo tests are only added (and hence run) when
++// specifially requested.  This configuration is used because spew itself
++// does not require cgo to run even though it does handle certain cgo types
++// specially.  Rather than forcing all clients to require cgo and an external
++// C compiler just to run the tests, this scheme makes them optional.
++//go:build cgo && testcgo
++// +build cgo,testcgo
++
++package spew_test
++
++import (
++	"fmt"
++
++	"github.com/spewerspew/spew/testdata"
++)
++
++func addCgoDumpTests() {
++	// C char pointer.
++	v := testdata.GetCgoCharPointer()
++	nv := testdata.GetCgoNullCharPointer()
++	pv := &v
++	vcAddr := fmt.Sprintf("%p", v)
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "*testdata._Ctype_char"
++	vs := "116"
++	addDumpTest(v, "("+vt+")("+vcAddr+")("+vs+")\n")
++	addDumpTest(pv, "(*"+vt+")("+vAddr+"->"+vcAddr+")("+vs+")\n")
++	addDumpTest(&pv, "(**"+vt+")("+pvAddr+"->"+vAddr+"->"+vcAddr+")("+vs+")\n")
++	addDumpTest(nv, "("+vt+")(<nil>)\n")
++
++	// C char array.
++	v2, v2l, v2c := testdata.GetCgoCharArray()
++	v2Len := fmt.Sprintf("%d", v2l)
++	v2Cap := fmt.Sprintf("%d", v2c)
++	v2t := "[6]testdata._Ctype_char"
++	v2s := "(len=" + v2Len + " cap=" + v2Cap + ") " +
++		"{\n 00000000  74 65 73 74 32 00                               " +
++		"  |test2.|\n}"
++	addDumpTest(v2, "("+v2t+") "+v2s+"\n")
++
++	// C unsigned char array.
++	v3, v3l, v3c := testdata.GetCgoUnsignedCharArray()
++	v3Len := fmt.Sprintf("%d", v3l)
++	v3Cap := fmt.Sprintf("%d", v3c)
++	v3t := "[6]testdata._Ctype_unsignedchar"
++	v3t2 := "[6]testdata._Ctype_uchar"
++	v3s := "(len=" + v3Len + " cap=" + v3Cap + ") " +
++		"{\n 00000000  74 65 73 74 33 00                               " +
++		"  |test3.|\n}"
++	addDumpTest(v3, "("+v3t+") "+v3s+"\n", "("+v3t2+") "+v3s+"\n")
++
++	// C signed char array.
++	v4, v4l, v4c := testdata.GetCgoSignedCharArray()
++	v4Len := fmt.Sprintf("%d", v4l)
++	v4Cap := fmt.Sprintf("%d", v4c)
++	v4t := "[6]testdata._Ctype_schar"
++	v4t2 := "testdata._Ctype_schar"
++	v4s := "(len=" + v4Len + " cap=" + v4Cap + ") " +
++		"{\n (" + v4t2 + ") 116,\n (" + v4t2 + ") 101,\n (" + v4t2 +
++		") 115,\n (" + v4t2 + ") 116,\n (" + v4t2 + ") 52,\n (" + v4t2 +
++		") 0\n}"
++	addDumpTest(v4, "("+v4t+") "+v4s+"\n")
++
++	// C uint8_t array.
++	v5, v5l, v5c := testdata.GetCgoUint8tArray()
++	v5Len := fmt.Sprintf("%d", v5l)
++	v5Cap := fmt.Sprintf("%d", v5c)
++	v5t := "[6]testdata._Ctype_uint8_t"
++	v5t2 := "[6]testdata._Ctype_uchar"
++	v5s := "(len=" + v5Len + " cap=" + v5Cap + ") " +
++		"{\n 00000000  74 65 73 74 35 00                               " +
++		"  |test5.|\n}"
++	addDumpTest(v5, "("+v5t+") "+v5s+"\n", "("+v5t2+") "+v5s+"\n")
++
++	// C typedefed unsigned char array.
++	v6, v6l, v6c := testdata.GetCgoTypdefedUnsignedCharArray()
++	v6Len := fmt.Sprintf("%d", v6l)
++	v6Cap := fmt.Sprintf("%d", v6c)
++	v6t := "[6]testdata._Ctype_custom_uchar_t"
++	v6t2 := "[6]testdata._Ctype_uchar"
++	v6s := "(len=" + v6Len + " cap=" + v6Cap + ") " +
++		"{\n 00000000  74 65 73 74 36 00                               " +
++		"  |test6.|\n}"
++	addDumpTest(v6, "("+v6t+") "+v6s+"\n", "("+v6t2+") "+v6s+"\n")
++}
+diff --git a/dumpnocgo_test.go b/dumpnocgo_test.go
+new file mode 100644
+index 0000000..9498d98
+--- /dev/null
++++ b/dumpnocgo_test.go
+@@ -0,0 +1,27 @@
++// Copyright (c) 2013 Dave Collins <dave@davec.name>
++//
++// Permission to use, copy, modify, and distribute this software for any
++// purpose with or without fee is hereby granted, provided that the above
++// copyright notice and this permission notice appear in all copies.
++//
++// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++// OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++
++// NOTE: Due to the following build constraints, this file will only be compiled
++// when either cgo is not supported or "-tags testcgo" is not added to the go
++// test command line.  This file intentionally does not setup any cgo tests in
++// this scenario.
++//go:build !cgo || !testcgo
++// +build !cgo !testcgo
++
++package spew_test
++
++func addCgoDumpTests() {
++	// Don't add any tests for cgo since this file is only compiled when
++	// there should not be any cgo tests.
++}
+diff --git a/example_test.go b/example_test.go
+new file mode 100644
+index 0000000..731acb6
+--- /dev/null
++++ b/example_test.go
+@@ -0,0 +1,226 @@
++/*
++ * Copyright (c) 2013-2016 Dave Collins <dave@davec.name>
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++
++package spew_test
++
++import (
++	"fmt"
++
++	"github.com/spewerspew/spew"
++)
++
++type Flag int
++
++const (
++	flagOne Flag = iota
++	flagTwo
++)
++
++var flagStrings = map[Flag]string{
++	flagOne: "flagOne",
++	flagTwo: "flagTwo",
++}
++
++func (f Flag) String() string {
++	if s, ok := flagStrings[f]; ok {
++		return s
++	}
++	return fmt.Sprintf("Unknown flag (%d)", int(f))
++}
++
++type Bar struct {
++	data uintptr
++}
++
++type Foo struct {
++	unexportedField Bar
++	ExportedField   map[interface{}]interface{}
++}
++
++// This example demonstrates how to use Dump to dump variables to stdout.
++func ExampleDump() {
++	// The following package level declarations are assumed for this example:
++	/*
++		type Flag int
++
++		const (
++			flagOne Flag = iota
++			flagTwo
++		)
++
++		var flagStrings = map[Flag]string{
++			flagOne: "flagOne",
++			flagTwo: "flagTwo",
++		}
++
++		func (f Flag) String() string {
++			if s, ok := flagStrings[f]; ok {
++				return s
++			}
++			return fmt.Sprintf("Unknown flag (%d)", int(f))
++		}
++
++		type Bar struct {
++			data uintptr
++		}
++
++		type Foo struct {
++			unexportedField Bar
++			ExportedField   map[interface{}]interface{}
++		}
++	*/
++
++	// Setup some sample data structures for the example.
++	bar := Bar{uintptr(0)}
++	s1 := Foo{bar, map[interface{}]interface{}{"one": true}}
++	f := Flag(5)
++	b := []byte{
++		0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
++		0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
++		0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
++		0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
++		0x31, 0x32,
++	}
++
++	// Dump!
++	spew.Dump(s1, f, b)
++
++	// Output:
++	// (spew_test.Foo) {
++	//  unexportedField: (spew_test.Bar) {
++	//   data: (uintptr) <nil>
++	//  },
++	//  ExportedField: (map[interface {}]interface {}) (len=1) {
++	//   (string) (len=3) "one": (bool) true
++	//  }
++	// }
++	// (spew_test.Flag) Unknown flag (5)
++	// ([]uint8) (len=34 cap=34) {
++	//  00000000  11 12 13 14 15 16 17 18  19 1a 1b 1c 1d 1e 1f 20  |............... |
++	//  00000010  21 22 23 24 25 26 27 28  29 2a 2b 2c 2d 2e 2f 30  |!"#$%&'()*+,-./0|
++	//  00000020  31 32                                             |12|
++	// }
++	//
++}
++
++// This example demonstrates how to use Printf to display a variable with a
++// format string and inline formatting.
++func ExamplePrintf() {
++	// Create a double pointer to a uint 8.
++	ui8 := uint8(5)
++	pui8 := &ui8
++	ppui8 := &pui8
++
++	// Create a circular data type.
++	type circular struct {
++		ui8 uint8
++		c   *circular
++	}
++	c := circular{ui8: 1}
++	c.c = &c
++
++	// Print!
++	spew.Printf("ppui8: %v\n", ppui8)
++	spew.Printf("circular: %v\n", c)
++
++	// Output:
++	// ppui8: <**>5
++	// circular: {1 <*>{1 <*><shown>}}
++}
++
++// This example demonstrates how to use a ConfigState.
++func ExampleConfigState() {
++	// Modify the indent level of the ConfigState only.  The global
++	// configuration is not modified.
++	scs := spew.ConfigState{Indent: "\t"}
++
++	// Output using the ConfigState instance.
++	v := map[string]int{"one": 1}
++	scs.Printf("v: %v\n", v)
++	scs.Dump(v)
++
++	// Output:
++	// v: map[one:1]
++	// (map[string]int) (len=1) {
++	// 	(string) (len=3) "one": (int) 1
++	// }
++}
++
++// This example demonstrates how to use ConfigState.Dump to dump variables to
++// stdout
++func ExampleConfigState_Dump() {
++	// See the top-level Dump example for details on the types used in this
++	// example.
++
++	// Create two ConfigState instances with different indentation.
++	scs := spew.ConfigState{Indent: "\t"}
++	scs2 := spew.ConfigState{Indent: " "}
++
++	// Setup some sample data structures for the example.
++	bar := Bar{uintptr(0)}
++	s1 := Foo{bar, map[interface{}]interface{}{"one": true}}
++
++	// Dump using the ConfigState instances.
++	scs.Dump(s1)
++	scs2.Dump(s1)
++
++	// Output:
++	// (spew_test.Foo) {
++	// 	unexportedField: (spew_test.Bar) {
++	// 		data: (uintptr) <nil>
++	// 	},
++	// 	ExportedField: (map[interface {}]interface {}) (len=1) {
++	//		(string) (len=3) "one": (bool) true
++	// 	}
++	// }
++	// (spew_test.Foo) {
++	//  unexportedField: (spew_test.Bar) {
++	//   data: (uintptr) <nil>
++	//  },
++	//  ExportedField: (map[interface {}]interface {}) (len=1) {
++	//   (string) (len=3) "one": (bool) true
++	//  }
++	// }
++	//
++}
++
++// This example demonstrates how to use ConfigState.Printf to display a variable
++// with a format string and inline formatting.
++func ExampleConfigState_Printf() {
++	// See the top-level Dump example for details on the types used in this
++	// example.
++
++	// Create two ConfigState instances and modify the method handling of the
++	// first ConfigState only.
++	scs := spew.NewDefaultConfig()
++	scs2 := spew.NewDefaultConfig()
++	scs.DisableMethods = true
++
++	// Alternatively
++	// scs := spew.ConfigState{Indent: " ", DisableMethods: true}
++	// scs2 := spew.ConfigState{Indent: " "}
++
++	// This is of type Flag which implements a Stringer and has raw value 1.
++	f := flagTwo
++
++	// Dump using the ConfigState instances.
++	scs.Printf("f: %v\n", f)
++	scs2.Printf("f: %v\n", f)
++
++	// Output:
++	// f: 1
++	// f: flagTwo
++}
+diff --git a/format.go b/format.go
+index 44bf58f..4eecc5a 100644
+--- a/format.go
++++ b/format.go
+@@ -188,7 +188,7 @@ func (f *formatState) format(v reflect.Value) {
+ 	}
+ 	f.ignoreNextType = false
+ 
+-	printValue(f.fs, f, v, kind)
++	printValue(f.fs, f, v, kind, f.cs)
+ }
+ 
+ // Format satisfies the fmt.Formatter interface. See NewFormatter for usage
+diff --git a/format_test.go b/format_test.go
+new file mode 100644
+index 0000000..42590ea
+--- /dev/null
++++ b/format_test.go
+@@ -0,0 +1,1595 @@
++/*
++ * Copyright (c) 2013-2016 Dave Collins <dave@davec.name>
++ * Copyright (c) 2021 Anner van Hardenbroek
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++
++/*
++Test Summary:
++NOTE: For each test, a nil pointer, a single pointer and double pointer to the
++base test element are also tested to ensure proper indirection across all types.
++
++- Max int8, int16, int32, int64, int
++- Max uint8, uint16, uint32, uint64, uint
++- Boolean true and false
++- Standard complex64 and complex128
++- Array containing standard ints
++- Array containing type with custom formatter on pointer receiver only
++- Array containing interfaces
++- Slice containing standard float32 values
++- Slice containing type with custom formatter on pointer receiver only
++- Slice containing interfaces
++- Nil slice
++- Standard string
++- Nil interface
++- Sub-interface
++- Map with string keys and int vals
++- Map with custom formatter type on pointer receiver only keys and vals
++- Map with interface keys and values
++- Map with nil interface value
++- Struct with primitives
++- Struct that contains another struct
++- Struct that contains custom type with Stringer pointer interface via both
++  exported and unexported fields
++- Struct that contains embedded struct and field to same struct
++- Uintptr to 0 (null pointer)
++- Uintptr address of real variable
++- Unsafe.Pointer to 0 (null pointer)
++- Unsafe.Pointer to address of real variable
++- Nil channel
++- Standard int channel
++- Function with no params and no returns
++- Function with param and no returns
++- Function with multiple params and multiple returns
++- Struct that is circular through self referencing
++- Structs that are circular through cross referencing
++- Structs that are indirectly circular
++- Type that panics in its Stringer interface
++- Type that has a custom Stringer interface
++- Type that has a custom Error interface
++- %x passthrough with uint
++- %#x passthrough with uint
++- %f passthrough with precision
++- %f passthrough with width and precision
++- %d passthrough with width
++- %q passthrough with string
++*/
++
++package spew_test
++
++import (
++	"bytes"
++	"fmt"
++	"io"
++	"testing"
++	"unsafe"
++
++	"github.com/spewerspew/spew"
++)
++
++// formatterTest is used to describe a test to be performed against NewFormatter.
++type formatterTest struct {
++	format string
++	in     interface{}
++	wants  []string
++	typ    string
++}
++
++// formatterTests houses all of the tests to be performed against NewFormatter.
++var formatterTests []formatterTest
++
++// addFormatterTest is a helper method to append the passed input and desired
++// result to formatterTests.
++func addFormatterTest(format string, in interface{}, wants ...string) {
++	test := formatterTest{format, in, wants, typeNameOf(in)}
++	formatterTests = append(formatterTests, test)
++}
++
++func addIntFormatterTests() {
++	// Max int8.
++	v := int8(127)
++	nv := (*int8)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "int8"
++	vs := "127"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Max int16.
++	v2 := int16(32767)
++	nv2 := (*int16)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "int16"
++	v2s := "32767"
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%v", nv2, "<nil>")
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#v", nv2, "(*"+v2t+")"+"<nil>")
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", nv2, "(*"+v2t+")"+"<nil>")
++
++	// Max int32.
++	v3 := int32(2147483647)
++	nv3 := (*int32)(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "int32"
++	v3s := "2147483647"
++	addFormatterTest("%v", v3, v3s)
++	addFormatterTest("%v", pv3, "<*>"+v3s)
++	addFormatterTest("%v", &pv3, "<**>"+v3s)
++	addFormatterTest("%v", nv3, "<nil>")
++	addFormatterTest("%+v", v3, v3s)
++	addFormatterTest("%+v", pv3, "<*>("+v3Addr+")"+v3s)
++	addFormatterTest("%+v", &pv3, "<**>("+pv3Addr+"->"+v3Addr+")"+v3s)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%#v", v3, "("+v3t+")"+v3s)
++	addFormatterTest("%#v", pv3, "(*"+v3t+")"+v3s)
++	addFormatterTest("%#v", &pv3, "(**"+v3t+")"+v3s)
++	addFormatterTest("%#v", nv3, "(*"+v3t+")"+"<nil>")
++	addFormatterTest("%#+v", v3, "("+v3t+")"+v3s)
++	addFormatterTest("%#+v", pv3, "(*"+v3t+")("+v3Addr+")"+v3s)
++	addFormatterTest("%#+v", &pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")"+v3s)
++	addFormatterTest("%#v", nv3, "(*"+v3t+")"+"<nil>")
++
++	// Max int64.
++	v4 := int64(9223372036854775807)
++	nv4 := (*int64)(nil)
++	pv4 := &v4
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "int64"
++	v4s := "9223372036854775807"
++	addFormatterTest("%v", v4, v4s)
++	addFormatterTest("%v", pv4, "<*>"+v4s)
++	addFormatterTest("%v", &pv4, "<**>"+v4s)
++	addFormatterTest("%v", nv4, "<nil>")
++	addFormatterTest("%+v", v4, v4s)
++	addFormatterTest("%+v", pv4, "<*>("+v4Addr+")"+v4s)
++	addFormatterTest("%+v", &pv4, "<**>("+pv4Addr+"->"+v4Addr+")"+v4s)
++	addFormatterTest("%+v", nv4, "<nil>")
++	addFormatterTest("%#v", v4, "("+v4t+")"+v4s)
++	addFormatterTest("%#v", pv4, "(*"+v4t+")"+v4s)
++	addFormatterTest("%#v", &pv4, "(**"+v4t+")"+v4s)
++	addFormatterTest("%#v", nv4, "(*"+v4t+")"+"<nil>")
++	addFormatterTest("%#+v", v4, "("+v4t+")"+v4s)
++	addFormatterTest("%#+v", pv4, "(*"+v4t+")("+v4Addr+")"+v4s)
++	addFormatterTest("%#+v", &pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")"+v4s)
++	addFormatterTest("%#+v", nv4, "(*"+v4t+")"+"<nil>")
++
++	// Max int.
++	v5 := int(2147483647)
++	nv5 := (*int)(nil)
++	pv5 := &v5
++	v5Addr := fmt.Sprintf("%p", pv5)
++	pv5Addr := fmt.Sprintf("%p", &pv5)
++	v5t := "int"
++	v5s := "2147483647"
++	addFormatterTest("%v", v5, v5s)
++	addFormatterTest("%v", pv5, "<*>"+v5s)
++	addFormatterTest("%v", &pv5, "<**>"+v5s)
++	addFormatterTest("%v", nv5, "<nil>")
++	addFormatterTest("%+v", v5, v5s)
++	addFormatterTest("%+v", pv5, "<*>("+v5Addr+")"+v5s)
++	addFormatterTest("%+v", &pv5, "<**>("+pv5Addr+"->"+v5Addr+")"+v5s)
++	addFormatterTest("%+v", nv5, "<nil>")
++	addFormatterTest("%#v", v5, "("+v5t+")"+v5s)
++	addFormatterTest("%#v", pv5, "(*"+v5t+")"+v5s)
++	addFormatterTest("%#v", &pv5, "(**"+v5t+")"+v5s)
++	addFormatterTest("%#v", nv5, "(*"+v5t+")"+"<nil>")
++	addFormatterTest("%#+v", v5, "("+v5t+")"+v5s)
++	addFormatterTest("%#+v", pv5, "(*"+v5t+")("+v5Addr+")"+v5s)
++	addFormatterTest("%#+v", &pv5, "(**"+v5t+")("+pv5Addr+"->"+v5Addr+")"+v5s)
++	addFormatterTest("%#+v", nv5, "(*"+v5t+")"+"<nil>")
++}
++
++func addUintFormatterTests() {
++	// Max uint8.
++	v := uint8(255)
++	nv := (*uint8)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "uint8"
++	vs := "255"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Max uint16.
++	v2 := uint16(65535)
++	nv2 := (*uint16)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "uint16"
++	v2s := "65535"
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%v", nv2, "<nil>")
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#v", nv2, "(*"+v2t+")"+"<nil>")
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", nv2, "(*"+v2t+")"+"<nil>")
++
++	// Max uint32.
++	v3 := uint32(4294967295)
++	nv3 := (*uint32)(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "uint32"
++	v3s := "4294967295"
++	addFormatterTest("%v", v3, v3s)
++	addFormatterTest("%v", pv3, "<*>"+v3s)
++	addFormatterTest("%v", &pv3, "<**>"+v3s)
++	addFormatterTest("%v", nv3, "<nil>")
++	addFormatterTest("%+v", v3, v3s)
++	addFormatterTest("%+v", pv3, "<*>("+v3Addr+")"+v3s)
++	addFormatterTest("%+v", &pv3, "<**>("+pv3Addr+"->"+v3Addr+")"+v3s)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%#v", v3, "("+v3t+")"+v3s)
++	addFormatterTest("%#v", pv3, "(*"+v3t+")"+v3s)
++	addFormatterTest("%#v", &pv3, "(**"+v3t+")"+v3s)
++	addFormatterTest("%#v", nv3, "(*"+v3t+")"+"<nil>")
++	addFormatterTest("%#+v", v3, "("+v3t+")"+v3s)
++	addFormatterTest("%#+v", pv3, "(*"+v3t+")("+v3Addr+")"+v3s)
++	addFormatterTest("%#+v", &pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")"+v3s)
++	addFormatterTest("%#v", nv3, "(*"+v3t+")"+"<nil>")
++
++	// Max uint64.
++	v4 := uint64(18446744073709551615)
++	nv4 := (*uint64)(nil)
++	pv4 := &v4
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "uint64"
++	v4s := "18446744073709551615"
++	addFormatterTest("%v", v4, v4s)
++	addFormatterTest("%v", pv4, "<*>"+v4s)
++	addFormatterTest("%v", &pv4, "<**>"+v4s)
++	addFormatterTest("%v", nv4, "<nil>")
++	addFormatterTest("%+v", v4, v4s)
++	addFormatterTest("%+v", pv4, "<*>("+v4Addr+")"+v4s)
++	addFormatterTest("%+v", &pv4, "<**>("+pv4Addr+"->"+v4Addr+")"+v4s)
++	addFormatterTest("%+v", nv4, "<nil>")
++	addFormatterTest("%#v", v4, "("+v4t+")"+v4s)
++	addFormatterTest("%#v", pv4, "(*"+v4t+")"+v4s)
++	addFormatterTest("%#v", &pv4, "(**"+v4t+")"+v4s)
++	addFormatterTest("%#v", nv4, "(*"+v4t+")"+"<nil>")
++	addFormatterTest("%#+v", v4, "("+v4t+")"+v4s)
++	addFormatterTest("%#+v", pv4, "(*"+v4t+")("+v4Addr+")"+v4s)
++	addFormatterTest("%#+v", &pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")"+v4s)
++	addFormatterTest("%#+v", nv4, "(*"+v4t+")"+"<nil>")
++
++	// Max uint.
++	v5 := uint(4294967295)
++	nv5 := (*uint)(nil)
++	pv5 := &v5
++	v5Addr := fmt.Sprintf("%p", pv5)
++	pv5Addr := fmt.Sprintf("%p", &pv5)
++	v5t := "uint"
++	v5s := "4294967295"
++	addFormatterTest("%v", v5, v5s)
++	addFormatterTest("%v", pv5, "<*>"+v5s)
++	addFormatterTest("%v", &pv5, "<**>"+v5s)
++	addFormatterTest("%v", nv5, "<nil>")
++	addFormatterTest("%+v", v5, v5s)
++	addFormatterTest("%+v", pv5, "<*>("+v5Addr+")"+v5s)
++	addFormatterTest("%+v", &pv5, "<**>("+pv5Addr+"->"+v5Addr+")"+v5s)
++	addFormatterTest("%+v", nv5, "<nil>")
++	addFormatterTest("%#v", v5, "("+v5t+")"+v5s)
++	addFormatterTest("%#v", pv5, "(*"+v5t+")"+v5s)
++	addFormatterTest("%#v", &pv5, "(**"+v5t+")"+v5s)
++	addFormatterTest("%#v", nv5, "(*"+v5t+")"+"<nil>")
++	addFormatterTest("%#+v", v5, "("+v5t+")"+v5s)
++	addFormatterTest("%#+v", pv5, "(*"+v5t+")("+v5Addr+")"+v5s)
++	addFormatterTest("%#+v", &pv5, "(**"+v5t+")("+pv5Addr+"->"+v5Addr+")"+v5s)
++	addFormatterTest("%#v", nv5, "(*"+v5t+")"+"<nil>")
++}
++
++func addBoolFormatterTests() {
++	// Boolean true.
++	v := bool(true)
++	nv := (*bool)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "bool"
++	vs := "true"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Boolean false.
++	v2 := bool(false)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "bool"
++	v2s := "false"
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++}
++
++func addFloatFormatterTests() {
++	// Standard float32.
++	v := float32(3.1415)
++	nv := (*float32)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "float32"
++	vs := "3.1415"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Standard float64.
++	v2 := float64(3.1415926)
++	nv2 := (*float64)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "float64"
++	v2s := "3.1415926"
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#v", nv2, "(*"+v2t+")"+"<nil>")
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", nv2, "(*"+v2t+")"+"<nil>")
++}
++
++func addComplexFormatterTests() {
++	// Standard complex64.
++	v := complex(float32(6), -2)
++	nv := (*complex64)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "complex64"
++	vs := "(6-2i)"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Standard complex128.
++	v2 := complex(float64(-6), 2)
++	nv2 := (*complex128)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "complex128"
++	v2s := "(-6+2i)"
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#v", nv2, "(*"+v2t+")"+"<nil>")
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", nv2, "(*"+v2t+")"+"<nil>")
++}
++
++func addArrayFormatterTests() {
++	// Array containing standard ints.
++	v := [3]int{1, 2, 3}
++	nv := (*[3]int)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "[3]int"
++	vs := "[1 2 3]"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Array containing type with custom formatter on pointer receiver only.
++	v2 := [3]pstringer{"1", "2", "3"}
++	nv2 := (*[3]pstringer)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "[3]spew_test.pstringer"
++	v2sp := "[stringer 1 stringer 2 stringer 3]"
++	v2s := v2sp
++	if spew.UnsafeDisabled {
++		v2s = "[1 2 3]"
++	}
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2sp)
++	addFormatterTest("%v", &pv2, "<**>"+v2sp)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2sp)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2sp)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2sp)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2sp)
++	addFormatterTest("%#v", nv2, "(*"+v2t+")"+"<nil>")
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2sp)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2sp)
++	addFormatterTest("%#+v", nv2, "(*"+v2t+")"+"<nil>")
++
++	// Array containing interfaces.
++	v3 := [3]interface{}{"one", int(2), uint(3)}
++	nv3 := (*[3]interface{})(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "[3]interface {}"
++	v3t2 := "string"
++	v3t3 := "int"
++	v3t4 := "uint"
++	v3s := "[one 2 3]"
++	v3s2 := "[(" + v3t2 + ")one (" + v3t3 + ")2 (" + v3t4 + ")3]"
++	addFormatterTest("%v", v3, v3s)
++	addFormatterTest("%v", pv3, "<*>"+v3s)
++	addFormatterTest("%v", &pv3, "<**>"+v3s)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%+v", v3, v3s)
++	addFormatterTest("%+v", pv3, "<*>("+v3Addr+")"+v3s)
++	addFormatterTest("%+v", &pv3, "<**>("+pv3Addr+"->"+v3Addr+")"+v3s)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%#v", v3, "("+v3t+")"+v3s2)
++	addFormatterTest("%#v", pv3, "(*"+v3t+")"+v3s2)
++	addFormatterTest("%#v", &pv3, "(**"+v3t+")"+v3s2)
++	addFormatterTest("%#v", nv3, "(*"+v3t+")"+"<nil>")
++	addFormatterTest("%#+v", v3, "("+v3t+")"+v3s2)
++	addFormatterTest("%#+v", pv3, "(*"+v3t+")("+v3Addr+")"+v3s2)
++	addFormatterTest("%#+v", &pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")"+v3s2)
++	addFormatterTest("%#+v", nv3, "(*"+v3t+")"+"<nil>")
++}
++
++func addSliceFormatterTests() {
++	// Slice containing standard float32 values.
++	v := []float32{3.14, 6.28, 12.56}
++	nv := (*[]float32)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "[]float32"
++	vs := "[3.14 6.28 12.56]"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Slice containing type with custom formatter on pointer receiver only.
++	v2 := []pstringer{"1", "2", "3"}
++	nv2 := (*[]pstringer)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "[]spew_test.pstringer"
++	v2s := "[stringer 1 stringer 2 stringer 3]"
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#v", nv2, "(*"+v2t+")"+"<nil>")
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", nv2, "(*"+v2t+")"+"<nil>")
++
++	// Slice containing interfaces.
++	v3 := []interface{}{"one", int(2), uint(3), nil}
++	nv3 := (*[]interface{})(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "[]interface {}"
++	v3t2 := "string"
++	v3t3 := "int"
++	v3t4 := "uint"
++	v3t5 := "interface {}"
++	v3s := "[one 2 3 <nil>]"
++	v3s2 := "[(" + v3t2 + ")one (" + v3t3 + ")2 (" + v3t4 + ")3 (" + v3t5 +
++		")<nil>]"
++	addFormatterTest("%v", v3, v3s)
++	addFormatterTest("%v", pv3, "<*>"+v3s)
++	addFormatterTest("%v", &pv3, "<**>"+v3s)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%+v", v3, v3s)
++	addFormatterTest("%+v", pv3, "<*>("+v3Addr+")"+v3s)
++	addFormatterTest("%+v", &pv3, "<**>("+pv3Addr+"->"+v3Addr+")"+v3s)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%#v", v3, "("+v3t+")"+v3s2)
++	addFormatterTest("%#v", pv3, "(*"+v3t+")"+v3s2)
++	addFormatterTest("%#v", &pv3, "(**"+v3t+")"+v3s2)
++	addFormatterTest("%#v", nv3, "(*"+v3t+")"+"<nil>")
++	addFormatterTest("%#+v", v3, "("+v3t+")"+v3s2)
++	addFormatterTest("%#+v", pv3, "(*"+v3t+")("+v3Addr+")"+v3s2)
++	addFormatterTest("%#+v", &pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")"+v3s2)
++	addFormatterTest("%#+v", nv3, "(*"+v3t+")"+"<nil>")
++
++	// Nil slice.
++	var v4 []int
++	nv4 := (*[]int)(nil)
++	pv4 := &v4
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "[]int"
++	v4s := "<nil>"
++	addFormatterTest("%v", v4, v4s)
++	addFormatterTest("%v", pv4, "<*>"+v4s)
++	addFormatterTest("%v", &pv4, "<**>"+v4s)
++	addFormatterTest("%+v", nv4, "<nil>")
++	addFormatterTest("%+v", v4, v4s)
++	addFormatterTest("%+v", pv4, "<*>("+v4Addr+")"+v4s)
++	addFormatterTest("%+v", &pv4, "<**>("+pv4Addr+"->"+v4Addr+")"+v4s)
++	addFormatterTest("%+v", nv4, "<nil>")
++	addFormatterTest("%#v", v4, "("+v4t+")"+v4s)
++	addFormatterTest("%#v", pv4, "(*"+v4t+")"+v4s)
++	addFormatterTest("%#v", &pv4, "(**"+v4t+")"+v4s)
++	addFormatterTest("%#v", nv4, "(*"+v4t+")"+"<nil>")
++	addFormatterTest("%#+v", v4, "("+v4t+")"+v4s)
++	addFormatterTest("%#+v", pv4, "(*"+v4t+")("+v4Addr+")"+v4s)
++	addFormatterTest("%#+v", &pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")"+v4s)
++	addFormatterTest("%#+v", nv4, "(*"+v4t+")"+"<nil>")
++}
++
++func addStringFormatterTests() {
++	// Standard string.
++	v := "test"
++	nv := (*string)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "string"
++	vs := "test"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++}
++
++func addInterfaceFormatterTests() {
++	// Nil interface.
++	var v interface{}
++	nv := (*interface{})(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "interface {}"
++	vs := "<nil>"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Sub-interface.
++	v2 := interface{}(uint16(65535))
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "uint16"
++	v2s := "65535"
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++}
++
++func addMapFormatterTests() {
++	// Map with string keys and int vals.
++	v := map[string]int{"one": 1, "two": 2}
++	nilMap := map[string]int(nil)
++	nv := (*map[string]int)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "map[string]int"
++	vs := "map[one:1 two:2]"
++	vs2 := "map[two:2 one:1]"
++	addFormatterTest("%v", v, vs, vs2)
++	addFormatterTest("%v", pv, "<*>"+vs, "<*>"+vs2)
++	addFormatterTest("%v", &pv, "<**>"+vs, "<**>"+vs2)
++	addFormatterTest("%+v", nilMap, "<nil>")
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs, vs2)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs, "<*>("+vAddr+")"+vs2)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs,
++		"<**>("+pvAddr+"->"+vAddr+")"+vs2)
++	addFormatterTest("%+v", nilMap, "<nil>")
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs, "("+vt+")"+vs2)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs, "(*"+vt+")"+vs2)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs, "(**"+vt+")"+vs2)
++	addFormatterTest("%#v", nilMap, "("+vt+")"+"<nil>")
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs, "("+vt+")"+vs2)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs,
++		"(*"+vt+")("+vAddr+")"+vs2)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs,
++		"(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs2)
++	addFormatterTest("%#+v", nilMap, "("+vt+")"+"<nil>")
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Map with custom formatter type on pointer receiver only keys and vals.
++	v2 := map[pstringer]pstringer{"one": "1"}
++	nv2 := (*map[pstringer]pstringer)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "map[spew_test.pstringer]spew_test.pstringer"
++	v2s := "map[stringer one:stringer 1]"
++	if spew.UnsafeDisabled {
++		v2s = "map[one:1]"
++	}
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#v", nv2, "(*"+v2t+")"+"<nil>")
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", nv2, "(*"+v2t+")"+"<nil>")
++
++	// Map with interface keys and values.
++	v3 := map[interface{}]interface{}{"one": 1}
++	nv3 := (*map[interface{}]interface{})(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "map[interface {}]interface {}"
++	v3t1 := "string"
++	v3t2 := "int"
++	v3s := "map[one:1]"
++	v3s2 := "map[(" + v3t1 + ")one:(" + v3t2 + ")1]"
++	addFormatterTest("%v", v3, v3s)
++	addFormatterTest("%v", pv3, "<*>"+v3s)
++	addFormatterTest("%v", &pv3, "<**>"+v3s)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%+v", v3, v3s)
++	addFormatterTest("%+v", pv3, "<*>("+v3Addr+")"+v3s)
++	addFormatterTest("%+v", &pv3, "<**>("+pv3Addr+"->"+v3Addr+")"+v3s)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%#v", v3, "("+v3t+")"+v3s2)
++	addFormatterTest("%#v", pv3, "(*"+v3t+")"+v3s2)
++	addFormatterTest("%#v", &pv3, "(**"+v3t+")"+v3s2)
++	addFormatterTest("%#v", nv3, "(*"+v3t+")"+"<nil>")
++	addFormatterTest("%#+v", v3, "("+v3t+")"+v3s2)
++	addFormatterTest("%#+v", pv3, "(*"+v3t+")("+v3Addr+")"+v3s2)
++	addFormatterTest("%#+v", &pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")"+v3s2)
++	addFormatterTest("%#+v", nv3, "(*"+v3t+")"+"<nil>")
++
++	// Map with nil interface value
++	v4 := map[string]interface{}{"nil": nil}
++	nv4 := (*map[string]interface{})(nil)
++	pv4 := &v4
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "map[string]interface {}"
++	v4t1 := "interface {}"
++	v4s := "map[nil:<nil>]"
++	v4s2 := "map[nil:(" + v4t1 + ")<nil>]"
++	addFormatterTest("%v", v4, v4s)
++	addFormatterTest("%v", pv4, "<*>"+v4s)
++	addFormatterTest("%v", &pv4, "<**>"+v4s)
++	addFormatterTest("%+v", nv4, "<nil>")
++	addFormatterTest("%+v", v4, v4s)
++	addFormatterTest("%+v", pv4, "<*>("+v4Addr+")"+v4s)
++	addFormatterTest("%+v", &pv4, "<**>("+pv4Addr+"->"+v4Addr+")"+v4s)
++	addFormatterTest("%+v", nv4, "<nil>")
++	addFormatterTest("%#v", v4, "("+v4t+")"+v4s2)
++	addFormatterTest("%#v", pv4, "(*"+v4t+")"+v4s2)
++	addFormatterTest("%#v", &pv4, "(**"+v4t+")"+v4s2)
++	addFormatterTest("%#v", nv4, "(*"+v4t+")"+"<nil>")
++	addFormatterTest("%#+v", v4, "("+v4t+")"+v4s2)
++	addFormatterTest("%#+v", pv4, "(*"+v4t+")("+v4Addr+")"+v4s2)
++	addFormatterTest("%#+v", &pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")"+v4s2)
++	addFormatterTest("%#+v", nv4, "(*"+v4t+")"+"<nil>")
++}
++
++func addStructFormatterTests() {
++	// Struct with primitives.
++	type s1 struct {
++		a int8
++		b uint8
++	}
++	v := s1{127, 255}
++	nv := (*s1)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "spew_test.s1"
++	vt2 := "int8"
++	vt3 := "uint8"
++	vs := "{127 255}"
++	vs2 := "{a:127 b:255}"
++	vs3 := "{a:(" + vt2 + ")127 b:(" + vt3 + ")255}"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs2)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs2)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs2)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs3)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs3)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs3)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs3)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs3)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs3)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Struct that contains another struct.
++	type s2 struct {
++		s1 s1
++		b  bool
++	}
++	v2 := s2{s1{127, 255}, true}
++	nv2 := (*s2)(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "spew_test.s2"
++	v2t2 := "spew_test.s1"
++	v2t3 := "int8"
++	v2t4 := "uint8"
++	v2t5 := "bool"
++	v2s := "{{127 255} true}"
++	v2s2 := "{s1:{a:127 b:255} b:true}"
++	v2s3 := "{s1:(" + v2t2 + "){a:(" + v2t3 + ")127 b:(" + v2t4 + ")255} b:(" +
++		v2t5 + ")true}"
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%+v", v2, v2s2)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s2)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s2)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s3)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s3)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s3)
++	addFormatterTest("%#v", nv2, "(*"+v2t+")"+"<nil>")
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s3)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s3)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s3)
++	addFormatterTest("%#+v", nv2, "(*"+v2t+")"+"<nil>")
++
++	// Struct that contains custom type with Stringer pointer interface via both
++	// exported and unexported fields.
++	type s3 struct {
++		s pstringer
++		S pstringer
++	}
++	v3 := s3{"test", "test2"}
++	nv3 := (*s3)(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "spew_test.s3"
++	v3t2 := "spew_test.pstringer"
++	v3s := "{stringer test stringer test2}"
++	v3sp := v3s
++	v3s2 := "{s:stringer test S:stringer test2}"
++	v3s2p := v3s2
++	v3s3 := "{s:(" + v3t2 + ")stringer test S:(" + v3t2 + ")stringer test2}"
++	v3s3p := v3s3
++	if spew.UnsafeDisabled {
++		v3s = "{test test2}"
++		v3sp = "{test stringer test2}"
++		v3s2 = "{s:test S:test2}"
++		v3s2p = "{s:test S:stringer test2}"
++		v3s3 = "{s:(" + v3t2 + ")test S:(" + v3t2 + ")test2}"
++		v3s3p = "{s:(" + v3t2 + ")test S:(" + v3t2 + ")stringer test2}"
++	}
++	addFormatterTest("%v", v3, v3s)
++	addFormatterTest("%v", pv3, "<*>"+v3sp)
++	addFormatterTest("%v", &pv3, "<**>"+v3sp)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%+v", v3, v3s2)
++	addFormatterTest("%+v", pv3, "<*>("+v3Addr+")"+v3s2p)
++	addFormatterTest("%+v", &pv3, "<**>("+pv3Addr+"->"+v3Addr+")"+v3s2p)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%#v", v3, "("+v3t+")"+v3s3)
++	addFormatterTest("%#v", pv3, "(*"+v3t+")"+v3s3p)
++	addFormatterTest("%#v", &pv3, "(**"+v3t+")"+v3s3p)
++	addFormatterTest("%#v", nv3, "(*"+v3t+")"+"<nil>")
++	addFormatterTest("%#+v", v3, "("+v3t+")"+v3s3)
++	addFormatterTest("%#+v", pv3, "(*"+v3t+")("+v3Addr+")"+v3s3p)
++	addFormatterTest("%#+v", &pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")"+v3s3p)
++	addFormatterTest("%#+v", nv3, "(*"+v3t+")"+"<nil>")
++
++	// Struct that contains embedded struct and field to same struct.
++	e := embed{"embedstr"}
++	v4 := embedwrap{embed: &e, e: &e}
++	nv4 := (*embedwrap)(nil)
++	pv4 := &v4
++	eAddr := fmt.Sprintf("%p", &e)
++	v4Addr := fmt.Sprintf("%p", pv4)
++	pv4Addr := fmt.Sprintf("%p", &pv4)
++	v4t := "spew_test.embedwrap"
++	v4t2 := "spew_test.embed"
++	v4t3 := "string"
++	v4s := "{<*>{embedstr} <*>{embedstr}}"
++	v4s2 := "{embed:<*>(" + eAddr + "){a:embedstr} e:<*>(" + eAddr +
++		"){a:embedstr}}"
++	v4s3 := "{embed:(*" + v4t2 + "){a:(" + v4t3 + ")embedstr} e:(*" + v4t2 +
++		"){a:(" + v4t3 + ")embedstr}}"
++	v4s4 := "{embed:(*" + v4t2 + ")(" + eAddr + "){a:(" + v4t3 +
++		")embedstr} e:(*" + v4t2 + ")(" + eAddr + "){a:(" + v4t3 + ")embedstr}}"
++	addFormatterTest("%v", v4, v4s)
++	addFormatterTest("%v", pv4, "<*>"+v4s)
++	addFormatterTest("%v", &pv4, "<**>"+v4s)
++	addFormatterTest("%+v", nv4, "<nil>")
++	addFormatterTest("%+v", v4, v4s2)
++	addFormatterTest("%+v", pv4, "<*>("+v4Addr+")"+v4s2)
++	addFormatterTest("%+v", &pv4, "<**>("+pv4Addr+"->"+v4Addr+")"+v4s2)
++	addFormatterTest("%+v", nv4, "<nil>")
++	addFormatterTest("%#v", v4, "("+v4t+")"+v4s3)
++	addFormatterTest("%#v", pv4, "(*"+v4t+")"+v4s3)
++	addFormatterTest("%#v", &pv4, "(**"+v4t+")"+v4s3)
++	addFormatterTest("%#v", nv4, "(*"+v4t+")"+"<nil>")
++	addFormatterTest("%#+v", v4, "("+v4t+")"+v4s4)
++	addFormatterTest("%#+v", pv4, "(*"+v4t+")("+v4Addr+")"+v4s4)
++	addFormatterTest("%#+v", &pv4, "(**"+v4t+")("+pv4Addr+"->"+v4Addr+")"+v4s4)
++	addFormatterTest("%#+v", nv4, "(*"+v4t+")"+"<nil>")
++}
++
++func addUintptrFormatterTests() {
++	// Null pointer.
++	v := uintptr(0)
++	nv := (*uintptr)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "uintptr"
++	vs := "<nil>"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Address of real variable.
++	i := 1
++	v2 := uintptr(unsafe.Pointer(&i))
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "uintptr"
++	v2s := fmt.Sprintf("%p", &i)
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++}
++
++func addUnsafePointerFormatterTests() {
++	// Null pointer.
++	v := unsafe.Pointer(nil)
++	nv := (*unsafe.Pointer)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "unsafe.Pointer"
++	vs := "<nil>"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Address of real variable.
++	i := 1
++	v2 := unsafe.Pointer(&i)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "unsafe.Pointer"
++	v2s := fmt.Sprintf("%p", &i)
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++}
++
++func addChanFormatterTests() {
++	// Nil channel.
++	var v chan int
++	pv := &v
++	nv := (*chan int)(nil)
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "chan int"
++	vs := "<nil>"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Real channel.
++	v2 := make(chan int)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "chan int"
++	v2s := fmt.Sprintf("%p", v2)
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++}
++
++func addFuncFormatterTests() {
++	// Function with no params and no returns.
++	v := addIntFormatterTests
++	nv := (*func())(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "func()"
++	vs := fmt.Sprintf("%p", v)
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++
++	// Function with param and no returns.
++	v2 := TestFormatter
++	nv2 := (*func(*testing.T))(nil)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "func(*testing.T)"
++	v2s := fmt.Sprintf("%p", v2)
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s)
++	addFormatterTest("%v", &pv2, "<**>"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%+v", v2, v2s)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%+v", nv2, "<nil>")
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s)
++	addFormatterTest("%#v", nv2, "(*"+v2t+")"+"<nil>")
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s)
++	addFormatterTest("%#+v", nv2, "(*"+v2t+")"+"<nil>")
++
++	// Function with multiple params and multiple returns.
++	var v3 = func(i int, s string) (b bool, err error) {
++		return true, nil
++	}
++	nv3 := (*func(int, string) (bool, error))(nil)
++	pv3 := &v3
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "func(int, string) (bool, error)"
++	v3s := fmt.Sprintf("%p", v3)
++	addFormatterTest("%v", v3, v3s)
++	addFormatterTest("%v", pv3, "<*>"+v3s)
++	addFormatterTest("%v", &pv3, "<**>"+v3s)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%+v", v3, v3s)
++	addFormatterTest("%+v", pv3, "<*>("+v3Addr+")"+v3s)
++	addFormatterTest("%+v", &pv3, "<**>("+pv3Addr+"->"+v3Addr+")"+v3s)
++	addFormatterTest("%+v", nv3, "<nil>")
++	addFormatterTest("%#v", v3, "("+v3t+")"+v3s)
++	addFormatterTest("%#v", pv3, "(*"+v3t+")"+v3s)
++	addFormatterTest("%#v", &pv3, "(**"+v3t+")"+v3s)
++	addFormatterTest("%#v", nv3, "(*"+v3t+")"+"<nil>")
++	addFormatterTest("%#+v", v3, "("+v3t+")"+v3s)
++	addFormatterTest("%#+v", pv3, "(*"+v3t+")("+v3Addr+")"+v3s)
++	addFormatterTest("%#+v", &pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")"+v3s)
++	addFormatterTest("%#+v", nv3, "(*"+v3t+")"+"<nil>")
++}
++
++func addCircularFormatterTests() {
++	// Struct that is circular through self referencing.
++	type circular struct {
++		c *circular
++	}
++	v := circular{nil}
++	v.c = &v
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "spew_test.circular"
++	vs := "{<*>{<*><shown>}}"
++	vs2 := "{<*><shown>}"
++	vs3 := "{c:<*>(" + vAddr + "){c:<*>(" + vAddr + ")<shown>}}"
++	vs4 := "{c:<*>(" + vAddr + ")<shown>}"
++	vs5 := "{c:(*" + vt + "){c:(*" + vt + ")<shown>}}"
++	vs6 := "{c:(*" + vt + ")<shown>}"
++	vs7 := "{c:(*" + vt + ")(" + vAddr + "){c:(*" + vt + ")(" + vAddr +
++		")<shown>}}"
++	vs8 := "{c:(*" + vt + ")(" + vAddr + ")<shown>}"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs2)
++	addFormatterTest("%v", &pv, "<**>"+vs2)
++	addFormatterTest("%+v", v, vs3)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs4)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs4)
++	addFormatterTest("%#v", v, "("+vt+")"+vs5)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs6)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs6)
++	addFormatterTest("%#+v", v, "("+vt+")"+vs7)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs8)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs8)
++
++	// Structs that are circular through cross referencing.
++	v2 := xref1{nil}
++	ts2 := xref2{&v2}
++	v2.ps2 = &ts2
++	pv2 := &v2
++	ts2Addr := fmt.Sprintf("%p", &ts2)
++	v2Addr := fmt.Sprintf("%p", pv2)
++	pv2Addr := fmt.Sprintf("%p", &pv2)
++	v2t := "spew_test.xref1"
++	v2t2 := "spew_test.xref2"
++	v2s := "{<*>{<*>{<*><shown>}}}"
++	v2s2 := "{<*>{<*><shown>}}"
++	v2s3 := "{ps2:<*>(" + ts2Addr + "){ps1:<*>(" + v2Addr + "){ps2:<*>(" +
++		ts2Addr + ")<shown>}}}"
++	v2s4 := "{ps2:<*>(" + ts2Addr + "){ps1:<*>(" + v2Addr + ")<shown>}}"
++	v2s5 := "{ps2:(*" + v2t2 + "){ps1:(*" + v2t + "){ps2:(*" + v2t2 +
++		")<shown>}}}"
++	v2s6 := "{ps2:(*" + v2t2 + "){ps1:(*" + v2t + ")<shown>}}"
++	v2s7 := "{ps2:(*" + v2t2 + ")(" + ts2Addr + "){ps1:(*" + v2t +
++		")(" + v2Addr + "){ps2:(*" + v2t2 + ")(" + ts2Addr +
++		")<shown>}}}"
++	v2s8 := "{ps2:(*" + v2t2 + ")(" + ts2Addr + "){ps1:(*" + v2t +
++		")(" + v2Addr + ")<shown>}}"
++	addFormatterTest("%v", v2, v2s)
++	addFormatterTest("%v", pv2, "<*>"+v2s2)
++	addFormatterTest("%v", &pv2, "<**>"+v2s2)
++	addFormatterTest("%+v", v2, v2s3)
++	addFormatterTest("%+v", pv2, "<*>("+v2Addr+")"+v2s4)
++	addFormatterTest("%+v", &pv2, "<**>("+pv2Addr+"->"+v2Addr+")"+v2s4)
++	addFormatterTest("%#v", v2, "("+v2t+")"+v2s5)
++	addFormatterTest("%#v", pv2, "(*"+v2t+")"+v2s6)
++	addFormatterTest("%#v", &pv2, "(**"+v2t+")"+v2s6)
++	addFormatterTest("%#+v", v2, "("+v2t+")"+v2s7)
++	addFormatterTest("%#+v", pv2, "(*"+v2t+")("+v2Addr+")"+v2s8)
++	addFormatterTest("%#+v", &pv2, "(**"+v2t+")("+pv2Addr+"->"+v2Addr+")"+v2s8)
++
++	// Structs that are indirectly circular.
++	v3 := indirCir1{nil}
++	tic2 := indirCir2{nil}
++	tic3 := indirCir3{&v3}
++	tic2.ps3 = &tic3
++	v3.ps2 = &tic2
++	pv3 := &v3
++	tic2Addr := fmt.Sprintf("%p", &tic2)
++	tic3Addr := fmt.Sprintf("%p", &tic3)
++	v3Addr := fmt.Sprintf("%p", pv3)
++	pv3Addr := fmt.Sprintf("%p", &pv3)
++	v3t := "spew_test.indirCir1"
++	v3t2 := "spew_test.indirCir2"
++	v3t3 := "spew_test.indirCir3"
++	v3s := "{<*>{<*>{<*>{<*><shown>}}}}"
++	v3s2 := "{<*>{<*>{<*><shown>}}}"
++	v3s3 := "{ps2:<*>(" + tic2Addr + "){ps3:<*>(" + tic3Addr + "){ps1:<*>(" +
++		v3Addr + "){ps2:<*>(" + tic2Addr + ")<shown>}}}}"
++	v3s4 := "{ps2:<*>(" + tic2Addr + "){ps3:<*>(" + tic3Addr + "){ps1:<*>(" +
++		v3Addr + ")<shown>}}}"
++	v3s5 := "{ps2:(*" + v3t2 + "){ps3:(*" + v3t3 + "){ps1:(*" + v3t +
++		"){ps2:(*" + v3t2 + ")<shown>}}}}"
++	v3s6 := "{ps2:(*" + v3t2 + "){ps3:(*" + v3t3 + "){ps1:(*" + v3t +
++		")<shown>}}}"
++	v3s7 := "{ps2:(*" + v3t2 + ")(" + tic2Addr + "){ps3:(*" + v3t3 + ")(" +
++		tic3Addr + "){ps1:(*" + v3t + ")(" + v3Addr + "){ps2:(*" + v3t2 +
++		")(" + tic2Addr + ")<shown>}}}}"
++	v3s8 := "{ps2:(*" + v3t2 + ")(" + tic2Addr + "){ps3:(*" + v3t3 + ")(" +
++		tic3Addr + "){ps1:(*" + v3t + ")(" + v3Addr + ")<shown>}}}"
++	addFormatterTest("%v", v3, v3s)
++	addFormatterTest("%v", pv3, "<*>"+v3s2)
++	addFormatterTest("%v", &pv3, "<**>"+v3s2)
++	addFormatterTest("%+v", v3, v3s3)
++	addFormatterTest("%+v", pv3, "<*>("+v3Addr+")"+v3s4)
++	addFormatterTest("%+v", &pv3, "<**>("+pv3Addr+"->"+v3Addr+")"+v3s4)
++	addFormatterTest("%#v", v3, "("+v3t+")"+v3s5)
++	addFormatterTest("%#v", pv3, "(*"+v3t+")"+v3s6)
++	addFormatterTest("%#v", &pv3, "(**"+v3t+")"+v3s6)
++	addFormatterTest("%#+v", v3, "("+v3t+")"+v3s7)
++	addFormatterTest("%#+v", pv3, "(*"+v3t+")("+v3Addr+")"+v3s8)
++	addFormatterTest("%#+v", &pv3, "(**"+v3t+")("+pv3Addr+"->"+v3Addr+")"+v3s8)
++}
++
++func addPanicFormatterTests() {
++	// Type that panics in its Stringer interface.
++	v := panicer(127)
++	nv := (*panicer)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "spew_test.panicer"
++	vs := "(PANIC=test panic)127"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++}
++
++func addErrorFormatterTests() {
++	// Type that has a custom Error interface.
++	v := customError(127)
++	nv := (*customError)(nil)
++	pv := &v
++	vAddr := fmt.Sprintf("%p", pv)
++	pvAddr := fmt.Sprintf("%p", &pv)
++	vt := "spew_test.customError"
++	vs := "error: 127"
++	addFormatterTest("%v", v, vs)
++	addFormatterTest("%v", pv, "<*>"+vs)
++	addFormatterTest("%v", &pv, "<**>"+vs)
++	addFormatterTest("%v", nv, "<nil>")
++	addFormatterTest("%+v", v, vs)
++	addFormatterTest("%+v", pv, "<*>("+vAddr+")"+vs)
++	addFormatterTest("%+v", &pv, "<**>("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%+v", nv, "<nil>")
++	addFormatterTest("%#v", v, "("+vt+")"+vs)
++	addFormatterTest("%#v", pv, "(*"+vt+")"+vs)
++	addFormatterTest("%#v", &pv, "(**"+vt+")"+vs)
++	addFormatterTest("%#v", nv, "(*"+vt+")"+"<nil>")
++	addFormatterTest("%#+v", v, "("+vt+")"+vs)
++	addFormatterTest("%#+v", pv, "(*"+vt+")("+vAddr+")"+vs)
++	addFormatterTest("%#+v", &pv, "(**"+vt+")("+pvAddr+"->"+vAddr+")"+vs)
++	addFormatterTest("%#+v", nv, "(*"+vt+")"+"<nil>")
++}
++
++func addPassthroughFormatterTests() {
++	// %x passthrough with uint.
++	v := uint(4294967295)
++	pv := &v
++	vAddr := fmt.Sprintf("%x", pv)
++	pvAddr := fmt.Sprintf("%x", &pv)
++	vs := "ffffffff"
++	addFormatterTest("%x", v, vs)
++	addFormatterTest("%x", pv, vAddr)
++	addFormatterTest("%x", &pv, pvAddr)
++
++	// %#x passthrough with uint.
++	v2 := int(2147483647)
++	pv2 := &v2
++	v2Addr := fmt.Sprintf("%#x", pv2)
++	pv2Addr := fmt.Sprintf("%#x", &pv2)
++	v2s := "0x7fffffff"
++	addFormatterTest("%#x", v2, v2s)
++	addFormatterTest("%#x", pv2, v2Addr)
++	addFormatterTest("%#x", &pv2, pv2Addr)
++
++	// %f passthrough with precision.
++	addFormatterTest("%.2f", 3.1415, "3.14")
++	addFormatterTest("%.3f", 3.1415, "3.142")
++	addFormatterTest("%.4f", 3.1415, "3.1415")
++
++	// %f passthrough with width and precision.
++	addFormatterTest("%5.2f", 3.1415, " 3.14")
++	addFormatterTest("%6.3f", 3.1415, " 3.142")
++	addFormatterTest("%7.4f", 3.1415, " 3.1415")
++
++	// %d passthrough with width.
++	addFormatterTest("%3d", 127, "127")
++	addFormatterTest("%4d", 127, " 127")
++	addFormatterTest("%5d", 127, "  127")
++
++	// %q passthrough with string.
++	addFormatterTest("%q", "test", "\"test\"")
++}
++
++func setupFormatterTests() {
++	if len(formatterTests) == 0 {
++		// Setup tests.
++		addIntFormatterTests()
++		addUintFormatterTests()
++		addBoolFormatterTests()
++		addFloatFormatterTests()
++		addComplexFormatterTests()
++		addArrayFormatterTests()
++		addSliceFormatterTests()
++		addStringFormatterTests()
++		addInterfaceFormatterTests()
++		addMapFormatterTests()
++		addStructFormatterTests()
++		addUintptrFormatterTests()
++		addUnsafePointerFormatterTests()
++		addChanFormatterTests()
++		addFuncFormatterTests()
++		addCircularFormatterTests()
++		addPanicFormatterTests()
++		addErrorFormatterTests()
++		addPassthroughFormatterTests()
++	}
++}
++
++// TestFormatter executes all of the tests described by formatterTests.
++func TestFormatter(t *testing.T) {
++	setupFormatterTests()
++
++	t.Logf("Running %d tests", len(formatterTests))
++	for i, test := range formatterTests {
++		buf := new(bytes.Buffer)
++		spew.Fprintf(buf, test.format, test.in)
++		s := buf.String()
++		if testFailed(s, test.wants) {
++			t.Errorf("Formatter #%d format: %s got: %s %s", i, test.format, s,
++				stringizeWants(test.wants))
++			continue
++		}
++	}
++}
++
++func BenchmarkFormatter(b *testing.B) {
++	setupFormatterTests()
++
++	var formats []string
++	cases := make(map[string][]formatterTest)
++	for _, t := range formatterTests {
++		formats = append(formats, t.format)
++		cases[t.format] = append(cases[t.format], t)
++	}
++
++	b.Logf("Running %d benchmarks", len(formatterTests))
++	for _, format := range uniqueStringSlice(formats) {
++		b.Run(format, func(b *testing.B) {
++			for _, test := range cases[format] {
++				name := test.typ + "/" + test.wants[0]
++				b.Run(name, func(b *testing.B) {
++					b.ReportAllocs()
++					b.ResetTimer()
++					for i := 0; i < b.N; i++ {
++						spew.Fprintf(io.Discard, test.format, test.in)
++					}
++				})
++			}
++		})
++	}
++}
++
++type testStruct struct {
++	x int
++}
++
++func (ts testStruct) String() string {
++	return fmt.Sprintf("ts.%d", ts.x)
++}
++
++type testStructP struct {
++	x int
++}
++
++func (ts *testStructP) String() string {
++	return fmt.Sprintf("ts.%d", ts.x)
++}
++
++func TestPrintSortedKeys(t *testing.T) {
++	cfg := spew.ConfigState{SortKeys: true}
++	s := cfg.Sprint(map[int]string{1: "1", 3: "3", 2: "2"})
++	expected := "map[1:1 2:2 3:3]"
++	if s != expected {
++		t.Errorf("Sorted keys mismatch 1:\n  %v %v", s, expected)
++	}
++
++	s = cfg.Sprint(map[stringer]int{"1": 1, "3": 3, "2": 2})
++	expected = "map[stringer 1:1 stringer 2:2 stringer 3:3]"
++	if s != expected {
++		t.Errorf("Sorted keys mismatch 2:\n  %v %v", s, expected)
++	}
++
++	s = cfg.Sprint(map[pstringer]int{pstringer("1"): 1, pstringer("3"): 3, pstringer("2"): 2})
++	expected = "map[stringer 1:1 stringer 2:2 stringer 3:3]"
++	if spew.UnsafeDisabled {
++		expected = "map[1:1 2:2 3:3]"
++	}
++	if s != expected {
++		t.Errorf("Sorted keys mismatch 3:\n  %v %v", s, expected)
++	}
++
++	s = cfg.Sprint(map[testStruct]int{{1}: 1, {3}: 3, {2}: 2})
++	expected = "map[ts.1:1 ts.2:2 ts.3:3]"
++	if s != expected {
++		t.Errorf("Sorted keys mismatch 4:\n  %v %v", s, expected)
++	}
++
++	if !spew.UnsafeDisabled {
++		s = cfg.Sprint(map[testStructP]int{{1}: 1, {3}: 3, {2}: 2})
++		expected = "map[ts.1:1 ts.2:2 ts.3:3]"
++		if s != expected {
++			t.Errorf("Sorted keys mismatch 5:\n  %v %v", s, expected)
++		}
++	}
++
++	s = cfg.Sprint(map[customError]int{customError(1): 1, customError(3): 3, customError(2): 2})
++	expected = "map[error: 1:1 error: 2:2 error: 3:3]"
++	if s != expected {
++		t.Errorf("Sorted keys mismatch 6:\n  %v %v", s, expected)
++	}
++}
+diff --git a/internal_test.go b/internal_test.go
+new file mode 100644
+index 0000000..e312b4f
+--- /dev/null
++++ b/internal_test.go
+@@ -0,0 +1,84 @@
++/*
++ * Copyright (c) 2013-2016 Dave Collins <dave@davec.name>
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++
++/*
++This test file is part of the spew package rather than than the spew_test
++package because it needs access to internals to properly test certain cases
++which are not possible via the public interface since they should never happen.
++*/
++
++package spew
++
++import (
++	"bytes"
++	"reflect"
++	"testing"
++)
++
++// dummyFmtState implements a fake fmt.State to use for testing invalid
++// reflect.Value handling.  This is necessary because the fmt package catches
++// invalid values before invoking the formatter on them.
++type dummyFmtState struct {
++	bytes.Buffer
++}
++
++func (dfs *dummyFmtState) Flag(f int) bool {
++	return f == int('+')
++}
++
++func (dfs *dummyFmtState) Precision() (int, bool) {
++	return 0, false
++}
++
++func (dfs *dummyFmtState) Width() (int, bool) {
++	return 0, false
++}
++
++// TestInvalidReflectValue ensures the dump and formatter code handles an
++// invalid reflect value properly.  This needs access to internal state since it
++// should never happen in real code and therefore can't be tested via the public
++// API.
++func TestInvalidReflectValue(t *testing.T) {
++	i := 1
++
++	// Dump invalid reflect value.
++	v := new(reflect.Value)
++	buf := new(bytes.Buffer)
++	d := dumpState{w: buf, cs: &Config}
++	d.dump(*v)
++	s := buf.String()
++	want := "<invalid>"
++	if s != want {
++		t.Errorf("InvalidReflectValue #%d\n got: %s want: %s", i, s, want)
++	}
++	i++
++
++	// Formatter invalid reflect value.
++	buf2 := new(dummyFmtState)
++	f := formatState{value: *v, cs: &Config, fs: buf2}
++	f.format(*v)
++	s = buf2.String()
++	want = "<invalid>"
++	if s != want {
++		t.Errorf("InvalidReflectValue #%d got: %s want: %s", i, s, want)
++	}
++}
++
++// SortValues makes the internal sortValues function available to the test
++// package.
++func SortValues(values []reflect.Value, cs *ConfigState) {
++	sortValues(values, cs)
++}
+diff --git a/internalunsafe_test.go b/internalunsafe_test.go
+new file mode 100644
+index 0000000..2b547c4
+--- /dev/null
++++ b/internalunsafe_test.go
+@@ -0,0 +1,102 @@
++// Copyright (c) 2013-2016 Dave Collins <dave@davec.name>
++
++// Permission to use, copy, modify, and distribute this software for any
++// purpose with or without fee is hereby granted, provided that the above
++// copyright notice and this permission notice appear in all copies.
++
++// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++// OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++
++// NOTE: Due to the following build constraints, this file will only be compiled
++// when the code is not running on Google App Engine, compiled by GopherJS, and
++// "-tags safe" is not added to the go build command line.  The "disableunsafe"
++// tag is deprecated and thus should not be used.
++//go:build !js && !appengine && !safe && !disableunsafe && go1.4
++// +build !js,!appengine,!safe,!disableunsafe,go1.4
++
++/*
++This test file is part of the spew package rather than than the spew_test
++package because it needs access to internals to properly test certain cases
++which are not possible via the public interface since they should never happen.
++*/
++
++package spew
++
++import (
++	"bytes"
++	"reflect"
++	"testing"
++)
++
++// changeKind uses unsafe to intentionally change the kind of a reflect.Value to
++// the maximum kind value which does not exist.  This is needed to test the
++// fallback code which punts to the standard fmt library for new types that
++// might get added to the language.
++func changeKind(v *reflect.Value, readOnly bool) {
++	flags := flagField(v)
++	if readOnly {
++		*flags |= flagRO
++	} else {
++		*flags &^= flagRO
++	}
++	*flags |= flagKindMask
++}
++
++// TestAddedReflectValue tests functionaly of the dump and formatter code which
++// falls back to the standard fmt library for new types that might get added to
++// the language.
++func TestAddedReflectValue(t *testing.T) {
++	i := 1
++
++	// Dump using a reflect.Value that is exported.
++	v := reflect.ValueOf(int8(5))
++	changeKind(&v, false)
++	buf := new(bytes.Buffer)
++	d := dumpState{w: buf, cs: &Config}
++	d.dump(v)
++	s := buf.String()
++	want := "(int8) 5"
++	if s != want {
++		t.Errorf("TestAddedReflectValue #%d\n got: %s want: %s", i, s, want)
++	}
++	i++
++
++	// Dump using a reflect.Value that is not exported.
++	changeKind(&v, true)
++	buf.Reset()
++	d.dump(v)
++	s = buf.String()
++	want = "(int8) <int8 Value>"
++	if s != want {
++		t.Errorf("TestAddedReflectValue #%d\n got: %s want: %s", i, s, want)
++	}
++	i++
++
++	// Formatter using a reflect.Value that is exported.
++	changeKind(&v, false)
++	buf2 := new(dummyFmtState)
++	f := formatState{value: v, cs: &Config, fs: buf2}
++	f.format(v)
++	s = buf2.String()
++	want = "5"
++	if s != want {
++		t.Errorf("TestAddedReflectValue #%d got: %s want: %s", i, s, want)
++	}
++	i++
++
++	// Formatter using a reflect.Value that is not exported.
++	changeKind(&v, true)
++	buf2.Reset()
++	f = formatState{value: v, cs: &Config, fs: buf2}
++	f.format(v)
++	s = buf2.String()
++	want = "<int8 Value>"
++	if s != want {
++		t.Errorf("TestAddedReflectValue #%d got: %s want: %s", i, s, want)
++	}
++}
+diff --git a/spew.go b/spew.go
+index 1e96853..2260c50 100644
+--- a/spew.go
++++ b/spew.go
+@@ -156,6 +156,11 @@ package:
+ 
+ 	* Pointers are dereferenced and followed
+ 	* Circular data structures are detected and handled properly
++	* Custom Stringer/error interfaces are optionally invoked, including
++	  on unexported types
++	* Custom types which only implement the Stringer/error interfaces via
++	  a pointer receiver are optionally invoked when passing non-pointer
++	  variables
+ 	* Byte arrays and slices are dumped like the hexdump -C command which
+ 	  includes offsets, byte values in hex, and ASCII output
+ 
+diff --git a/spew_test.go b/spew_test.go
+new file mode 100644
+index 0000000..780e5ce
+--- /dev/null
++++ b/spew_test.go
+@@ -0,0 +1,348 @@
++/*
++ * Copyright (c) 2013-2016 Dave Collins <dave@davec.name>
++ * Copyright (c) 2023 Anner van Hardenbroek
++ *
++ * Permission to use, copy, modify, and distribute this software for any
++ * purpose with or without fee is hereby granted, provided that the above
++ * copyright notice and this permission notice appear in all copies.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ */
++
++package spew_test
++
++import (
++	"bytes"
++	"fmt"
++	"io/ioutil"
++	"os"
++	"testing"
++
++	"github.com/spewerspew/spew"
++)
++
++// spewFunc is used to identify which public function of the spew package or
++// ConfigState a test applies to.
++type spewFunc int
++
++const (
++	fCSFdump spewFunc = iota
++	fCSFprint
++	fCSFprintf
++	fCSFprintln
++	fCSPrint
++	fCSPrintln
++	fCSSdump
++	fCSSprint
++	fCSSprintf
++	fCSSprintln
++	fCSErrorf
++	fCSNewFormatter
++	fErrorf
++	fFprint
++	fFprintln
++	fPrint
++	fPrintln
++	fSdump
++	fSprint
++	fSprintf
++	fSprintln
++)
++
++// Map of spewFunc values to names for pretty printing.
++var spewFuncStrings = map[spewFunc]string{
++	fCSFdump:        "ConfigState.Fdump",
++	fCSFprint:       "ConfigState.Fprint",
++	fCSFprintf:      "ConfigState.Fprintf",
++	fCSFprintln:     "ConfigState.Fprintln",
++	fCSSdump:        "ConfigState.Sdump",
++	fCSPrint:        "ConfigState.Print",
++	fCSPrintln:      "ConfigState.Println",
++	fCSSprint:       "ConfigState.Sprint",
++	fCSSprintf:      "ConfigState.Sprintf",
++	fCSSprintln:     "ConfigState.Sprintln",
++	fCSErrorf:       "ConfigState.Errorf",
++	fCSNewFormatter: "ConfigState.NewFormatter",
++	fErrorf:         "spew.Errorf",
++	fFprint:         "spew.Fprint",
++	fFprintln:       "spew.Fprintln",
++	fPrint:          "spew.Print",
++	fPrintln:        "spew.Println",
++	fSdump:          "spew.Sdump",
++	fSprint:         "spew.Sprint",
++	fSprintf:        "spew.Sprintf",
++	fSprintln:       "spew.Sprintln",
++}
++
++func (f spewFunc) String() string {
++	if s, ok := spewFuncStrings[f]; ok {
++		return s
++	}
++	return fmt.Sprintf("Unknown spewFunc (%d)", int(f))
++}
++
++// spewTest is used to describe a test to be performed against the public
++// functions of the spew package or ConfigState.
++type spewTest struct {
++	cs     *spew.ConfigState
++	f      spewFunc
++	format string
++	in     interface{}
++	want   string
++}
++
++// spewTests houses the tests to be performed against the public functions of
++// the spew package and ConfigState.
++//
++// These tests are only intended to ensure the public functions are exercised
++// and are intentionally not exhaustive of types.  The exhaustive type
++// tests are handled in the dump and format tests.
++var spewTests []spewTest
++
++// redirStdout is a helper function to return the standard output from f as a
++// byte slice.
++func redirStdout(f func()) ([]byte, error) {
++	tempFile, err := ioutil.TempFile("", "ss-test")
++	if err != nil {
++		return nil, err
++	}
++	fileName := tempFile.Name()
++	defer os.Remove(fileName) // Ignore error
++
++	origStdout := os.Stdout
++	os.Stdout = tempFile
++	f()
++	os.Stdout = origStdout
++	tempFile.Close()
++
++	return ioutil.ReadFile(fileName)
++}
++
++func initSpewTests() {
++	// Config states with various settings.
++	scsDefault := spew.NewDefaultConfig()
++	scsNoMethods := &spew.ConfigState{Indent: " ", DisableMethods: true}
++	scsNoPmethods := &spew.ConfigState{Indent: " ", DisablePointerMethods: true}
++	scsMaxDepth := &spew.ConfigState{Indent: " ", MaxDepth: 1}
++	scsContinue := &spew.ConfigState{Indent: " ", ContinueOnMethod: true}
++	scsNoPtrAddr := &spew.ConfigState{DisablePointerAddresses: true}
++	scsNoCap := &spew.ConfigState{DisableCapacities: true}
++
++	// Variables for tests on types which implement Stringer interface with and
++	// without a pointer receiver.
++	ts := stringer("test")
++	tps := pstringer("test")
++
++	// Variables for tests on types which implement Stringer interface without
++	// a pointer receiver.
++	cs := make(chanStringer)
++	fs := funcStringer(func() {})
++	ms := mapStringer{}
++
++	type ptrTester struct {
++		s *struct{}
++	}
++	tptr := &ptrTester{s: &struct{}{}}
++
++	// depthTester is used to test max depth handling for structs, array, slices
++	// and maps.
++	type depthTester struct {
++		ic    indirCir1
++		arr   [1]string
++		slice []string
++		m     map[string]int
++	}
++	dt := depthTester{indirCir1{nil}, [1]string{"arr"}, []string{"slice"},
++		map[string]int{"one": 1}}
++
++	// Variable for tests on types which implement error interface.
++	te := customError(10)
++
++	spewTests = []spewTest{
++		{scsDefault, fCSFdump, "", int8(127), "(int8) 127\n"},
++		{scsDefault, fCSFprint, "", int16(32767), "32767"},
++		{scsDefault, fCSFprintf, "%v", int32(2147483647), "2147483647"},
++		{scsDefault, fCSFprintln, "", int(2147483647), "2147483647\n"},
++		{scsDefault, fCSPrint, "", int64(9223372036854775807), "9223372036854775807"},
++		{scsDefault, fCSPrintln, "", uint8(255), "255\n"},
++		{scsDefault, fCSSdump, "", uint8(64), "(uint8) 64\n"},
++		{scsDefault, fCSSprint, "", complex(1, 2), "(1+2i)"},
++		{scsDefault, fCSSprintf, "%v", complex(float32(3), 4), "(3+4i)"},
++		{scsDefault, fCSSprintln, "", complex(float64(5), 6), "(5+6i)\n"},
++		{scsDefault, fCSErrorf, "%#v", uint16(65535), "(uint16)65535"},
++		{scsDefault, fCSNewFormatter, "%v", uint32(4294967295), "4294967295"},
++		{scsDefault, fErrorf, "%v", uint64(18446744073709551615), "18446744073709551615"},
++		{scsDefault, fFprint, "", float32(3.14), "3.14"},
++		{scsDefault, fFprintln, "", float64(6.28), "6.28\n"},
++		{scsDefault, fPrint, "", true, "true"},
++		{scsDefault, fPrintln, "", false, "false\n"},
++		{scsDefault, fSdump, "", complex(-10, -20), "(complex128) (-10-20i)\n"},
++		{scsDefault, fSprint, "", complex(-1, -2), "(-1-2i)"},
++		{scsDefault, fSprintf, "%v", complex(float32(-3), -4), "(-3-4i)"},
++		{scsDefault, fSprintln, "", complex(float64(-5), -6), "(-5-6i)\n"},
++		{scsNoMethods, fCSFprint, "", ts, "test"},
++		{scsNoMethods, fCSFprint, "", &ts, "<*>test"},
++		{scsNoMethods, fCSFprint, "", tps, "test"},
++		{scsNoMethods, fCSFprint, "", &tps, "<*>test"},
++		{scsNoPmethods, fCSFprint, "", ts, "stringer test"},
++		{scsNoPmethods, fCSFprint, "", &ts, "<*>stringer test"},
++		{scsNoPmethods, fCSFprint, "", tps, "test"},
++		{scsNoPmethods, fCSFprint, "", &tps, "<*>stringer test"},
++		{scsMaxDepth, fCSFprint, "", dt, "{{<max>} [<max>] [<max>] map[<max>]}"},
++		{scsMaxDepth, fCSFdump, "", dt, "(spew_test.depthTester) {\n" +
++			" ic: (spew_test.indirCir1) {\n  <max depth reached>\n },\n" +
++			" arr: ([1]string) (len=1 cap=1) {\n  <max depth reached>\n },\n" +
++			" slice: ([]string) (len=1 cap=1) {\n  <max depth reached>\n },\n" +
++			" m: (map[string]int) (len=1) {\n  <max depth reached>\n }\n}\n"},
++		{scsContinue, fCSFprint, "", ts, "(stringer test) test"},
++		{scsContinue, fCSFdump, "", ts, "(spew_test.stringer) " +
++			"(len=4) (stringer test) \"test\"\n"},
++		{scsContinue, fCSFprint, "", te, "(error: 10) 10"},
++		{scsContinue, fCSFdump, "", te, "(spew_test.customError) " +
++			"(error: 10) 10\n"},
++		{scsNoPtrAddr, fCSFprint, "", tptr, "<*>{<*>{}}"},
++		{scsNoPtrAddr, fCSSdump, "", tptr, "(*spew_test.ptrTester)({\ns: (*struct {})({\n})\n})\n"},
++		{scsNoCap, fCSSdump, "", make([]string, 0, 10), "([]string) {\n}\n"},
++		{scsNoCap, fCSSdump, "", make([]string, 1, 10), "([]string) (len=1) {\n(string) \"\"\n}\n"},
++
++		{scsDefault, fCSFprint, "", cs, "chan stringer"},
++		{scsDefault, fCSFprint, "", &cs, "<*>chan stringer"},
++		{scsNoPmethods, fCSFprint, "", cs, "chan stringer"},
++		{scsNoPmethods, fCSFprint, "", &cs, "<*>chan stringer"},
++		{scsNoMethods, fCSFprint, "", cs, fmt.Sprintf("%p", cs)},
++		{scsNoMethods, fCSFprint, "", &cs, fmt.Sprintf("<*>%p", cs)},
++
++		{scsDefault, fFprint, "", ms, "map stringer"},
++		{scsDefault, fFprint, "", &ms, "<*>map stringer"},
++		{scsNoMethods, fCSFprint, "", ms, "map[]"},
++		{scsNoMethods, fCSFprint, "", &ms, "<*>map[]"},
++		{scsNoPmethods, fCSFprint, "", ms, "map stringer"},
++		{scsNoPmethods, fCSFprint, "", &ms, "<*>map stringer"},
++
++		{scsDefault, fFprint, "", fs, "func stringer"},
++		{scsDefault, fFprint, "", &fs, "<*>func stringer"},
++		{scsNoMethods, fCSFprint, "", fs, fmt.Sprintf("%p", fs)},
++		{scsNoMethods, fCSFprint, "", &fs, fmt.Sprintf("<*>%p", fs)},
++		{scsNoPmethods, fCSFprint, "", fs, "func stringer"},
++		{scsNoPmethods, fCSFprint, "", &fs, "<*>func stringer"},
++	}
++}
++
++// TestSpew executes all of the tests described by spewTests.
++func TestSpew(t *testing.T) {
++	initSpewTests()
++
++	t.Logf("Running %d tests", len(spewTests))
++	for i, test := range spewTests {
++		buf := new(bytes.Buffer)
++		switch test.f {
++		case fCSFdump:
++			test.cs.Fdump(buf, test.in)
++
++		case fCSFprint:
++			test.cs.Fprint(buf, test.in)
++
++		case fCSFprintf:
++			test.cs.Fprintf(buf, test.format, test.in)
++
++		case fCSFprintln:
++			test.cs.Fprintln(buf, test.in)
++
++		case fCSPrint:
++			b, err := redirStdout(func() { test.cs.Print(test.in) })
++			if err != nil {
++				t.Errorf("%v #%d %v", test.f, i, err)
++				continue
++			}
++			buf.Write(b)
++
++		case fCSPrintln:
++			b, err := redirStdout(func() { test.cs.Println(test.in) })
++			if err != nil {
++				t.Errorf("%v #%d %v", test.f, i, err)
++				continue
++			}
++			buf.Write(b)
++
++		case fCSSdump:
++			str := test.cs.Sdump(test.in)
++			buf.WriteString(str)
++
++		case fCSSprint:
++			str := test.cs.Sprint(test.in)
++			buf.WriteString(str)
++
++		case fCSSprintf:
++			str := test.cs.Sprintf(test.format, test.in)
++			buf.WriteString(str)
++
++		case fCSSprintln:
++			str := test.cs.Sprintln(test.in)
++			buf.WriteString(str)
++
++		case fCSErrorf:
++			err := test.cs.Errorf(test.format, test.in)
++			buf.WriteString(err.Error())
++
++		case fCSNewFormatter:
++			fmt.Fprintf(buf, test.format, test.cs.NewFormatter(test.in))
++
++		case fErrorf:
++			err := spew.Errorf(test.format, test.in)
++			buf.WriteString(err.Error())
++
++		case fFprint:
++			spew.Fprint(buf, test.in)
++
++		case fFprintln:
++			spew.Fprintln(buf, test.in)
++
++		case fPrint:
++			b, err := redirStdout(func() { spew.Print(test.in) })
++			if err != nil {
++				t.Errorf("%v #%d %v", test.f, i, err)
++				continue
++			}
++			buf.Write(b)
++
++		case fPrintln:
++			b, err := redirStdout(func() { spew.Println(test.in) })
++			if err != nil {
++				t.Errorf("%v #%d %v", test.f, i, err)
++				continue
++			}
++			buf.Write(b)
++
++		case fSdump:
++			str := spew.Sdump(test.in)
++			buf.WriteString(str)
++
++		case fSprint:
++			str := spew.Sprint(test.in)
++			buf.WriteString(str)
++
++		case fSprintf:
++			str := spew.Sprintf(test.format, test.in)
++			buf.WriteString(str)
++
++		case fSprintln:
++			str := spew.Sprintln(test.in)
++			buf.WriteString(str)
++
++		default:
++			t.Errorf("%v #%d unrecognized function", test.f, i)
++			continue
++		}
++		s := buf.String()
++		if test.want != s {
++			t.Errorf("ConfigState #%d\n got: %s want: %s", i, s, test.want)
++			continue
++		}
++	}
++}
+diff --git a/testdata/dumpcgo.go b/testdata/dumpcgo.go
+new file mode 100644
+index 0000000..4ca1aeb
+--- /dev/null
++++ b/testdata/dumpcgo.go
+@@ -0,0 +1,84 @@
++// Copyright (c) 2013 Dave Collins <dave@davec.name>
++// Copyright (c) 2023 Anner van Hardenbroek
++//
++// Permission to use, copy, modify, and distribute this software for any
++// purpose with or without fee is hereby granted, provided that the above
++// copyright notice and this permission notice appear in all copies.
++//
++// THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
++// ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
++// ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
++// OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++
++// NOTE: Due to the following build constraints, this file will only be compiled
++// when both cgo is supported and "-tags testcgo" is added to the go test
++// command line.  This code should really only be in the dumpcgo_test.go file,
++// but unfortunately Go will not allow cgo in test files, so this is a
++// workaround to allow cgo types to be tested.  This configuration is used
++// because spew itself does not require cgo to run even though it does handle
++// certain cgo types specially.  Rather than forcing all clients to require cgo
++// and an external C compiler just to run the tests, this scheme makes them
++// optional.
++//go:build cgo && testcgo
++// +build cgo,testcgo
++
++package testdata
++
++/*
++#include <stdint.h>
++typedef unsigned char custom_uchar_t;
++
++char            *ncp = 0;
++char            *cp = "test";
++char             ca[6] = {'t', 'e', 's', 't', '2', '\0'};
++unsigned char    uca[6] = {'t', 'e', 's', 't', '3', '\0'};
++signed char      sca[6] = {'t', 'e', 's', 't', '4', '\0'};
++uint8_t          ui8ta[6] = {'t', 'e', 's', 't', '5', '\0'};
++custom_uchar_t   tuca[6] = {'t', 'e', 's', 't', '6', '\0'};
++*/
++import "C"
++
++// GetCgoNullCharPointer returns a null char pointer via cgo.  This is only
++// used for tests.
++func GetCgoNullCharPointer() interface{} {
++	return C.ncp
++}
++
++// GetCgoCharPointer returns a char pointer via cgo.  This is only used for
++// tests.
++func GetCgoCharPointer() interface{} {
++	return C.cp
++}
++
++// GetCgoCharArray returns a char array via cgo and the array's len and cap.
++// This is only used for tests.
++func GetCgoCharArray() (interface{}, int, int) {
++	return C.ca, len(C.ca), cap(C.ca)
++}
++
++// GetCgoUnsignedCharArray returns an unsigned char array via cgo and the
++// array's len and cap.  This is only used for tests.
++func GetCgoUnsignedCharArray() (interface{}, int, int) {
++	return C.uca, len(C.uca), cap(C.uca)
++}
++
++// GetCgoSignedCharArray returns a signed char array via cgo and the array's len
++// and cap.  This is only used for tests.
++func GetCgoSignedCharArray() (interface{}, int, int) {
++	return C.sca, len(C.sca), cap(C.sca)
++}
++
++// GetCgoUint8tArray returns a uint8_t array via cgo and the array's len and
++// cap.  This is only used for tests.
++func GetCgoUint8tArray() (interface{}, int, int) {
++	return C.ui8ta, len(C.ui8ta), cap(C.ui8ta)
++}
++
++// GetCgoTypdefedUnsignedCharArray returns a typedefed unsigned char array via
++// cgo and the array's len and cap.  This is only used for tests.
++func GetCgoTypdefedUnsignedCharArray() (interface{}, int, int) {
++	return C.tuca, len(C.tuca), cap(C.tuca)
++}
