@@ -91,7 +91,9 @@ below. `setup` is the exception: see its own paragraph.
 
 Three of them are capped by what a signed-episode sandbox accepts: setup at most 600s,
 and each grading step (finalize, then grading) at most 810s, the most its verification
-window admits. They were 900s, 900s and 1800s; the new values and their remaining
+window admits. The sandbox gives each of its grading steps (extract, i.e. finalize, and
+grade) the larger of the two declared: max(finalize, scoring) = 810s.
+They were 900s, 900s and 1800s; the new values and their remaining
 headroom are given in each paragraph.
 
 **`setup`** (600s) covers `SweTask.setup`'s cleanup script — `git reset`,
@@ -146,7 +148,9 @@ runs. Measured on the container host: a single 573 MB novel file costs
 declares) — far past any legitimate source edit — while still bounding a disk-filling pathology
 (container disk quotas are advisory on Docker, per `TaskResources.disk`'s
 own docstring, not enforced) to a fixed ceiling instead of an unbounded
-hang.
+hang. The capture's scratch repository starts with an index holding no stat data, so
+`git add -A` hashes every tracked file once more: 0.5s for 30,000 files (118 MB,
+page cache warm, a development machine), against 0.1s in the repository's own index.
 
 **`scoring`** (810s) bounds `env.py`'s `_grade`, which wraps
 provisioning-through-grading in `asyncio.timeout(task.data.timeout.scoring)`.
@@ -519,6 +523,12 @@ split's size).
   and finalize.
 - `SweTask.finalize` removes any `/logs/artifacts/patch.diff` the agent planted, then
   writes the agent's diff there (verifiers' artifact convention; no declared artifact).
+  The diff is taken in a scratch repository of its own over the agent's work tree, with
+  the agent's objects as a read-only alternate and no system, global or XDG config: no
+  git setting, hook, attribute driver, fsmonitor, include, replace ref or redirected work
+  tree the agent left runs or applies. Whenever no patch is written (git refused, no base
+  resolves, a `.git` that is not the repository), the path is removed again and checked
+  gone: a removal that fails fails the extract (0). A box that stops answering raises.
   The agent can move the ref or edit the list: that only widens or narrows its own diff,
   which grading never trusts.
 - `SweTask.grading_setup` prepares the pristine grading box from the image before the
@@ -532,16 +542,22 @@ split's size).
   `fail_to_pass_passed`/`_total`, `pass_to_pass_passed`/`_total`, `results_parsed`,
   `test_command_exit_code`.
 - `SweEnv` runs the agent on `task.graded_elsewhere()`: the task records no reward of its
-  own there, `SweEnv` grades in a box it provisions, as before.
+  own there, `SweEnv` grades in a box it provisions, as before. The reward records nothing
+  on any runtime but a sandbox's grading box (`runtime.config.type ==
+  "reliquary-sandbox"`): it never grades in the agent's own box.
 - Limits declared on every task: 4 GB memory, 10 GB disk; setup 600s, agent 3600s,
-  finalize 600s, scoring 810s (see "Timeouts").
+  finalize 600s, scoring 810s; a sandbox's extract (and grade) budget is max(finalize,
+  scoring) = 810s (see "Timeouts").
 - `reliquary_swe.conformance_cases(split)` and `reliquary_swe.reference_calls(split,
   index)` give the sandbox's conformance suite and reference sweep plain data, for the
   splits `train`, `r2e` and `polyglot` (served under those names): the gold patch applied
   through the `bash` tool, and declared attacks on each golden (the gold patch plus a
   forced `.venv` path, a symlink or a binary file; the gold patch planted in
-  `/logs/artifacts` with the sources untouched; a root `conftest.py` forcing every test to
-  pass). A gold patch the norm refuses is no reference (8 R2E rows add a symlink). Polyglot
+  `/logs/artifacts` with the sources untouched, beside a stale `index.lock`, by git
+  settings that would run during the capture, or with the repository moved away; a root
+  `conftest.py` forcing every test to pass; on `train`, the fail-to-pass tests overridden
+  to pass in their own files). Indices assume the split is served with the taskset's
+  defaults (`train`: no `num_images` or `max_test_count` override). A gold patch the norm refuses is no reference (8 R2E rows add a symlink). Polyglot
   publishes no fix: its references are shipped under `reliquary_swe/references/` once
   recovered from an image.
 - The images a sandbox may run are pinned by digest in

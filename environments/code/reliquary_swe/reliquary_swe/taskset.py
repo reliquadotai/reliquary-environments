@@ -13,6 +13,7 @@ strategy stops being welded to a single harness's quirks.
 from __future__ import annotations
 
 import copy
+import uuid
 from collections.abc import Iterator
 from typing import Literal
 
@@ -229,6 +230,73 @@ def cleanup_script(split: str) -> str:
     return " ; ".join(steps)
 
 
+_SANDBOX = "reliquary-sandbox"
+"""The runtime type of a signed-episode sandbox's grading box: the only one the reward
+grades in."""
+_CAPTURE_DIR = "/tmp/reliquary-capture"
+"""Prefix of finalize's scratch repository (a host nonce follows: the agent cannot
+pre-create it)."""
+_PREPARE_CAPTURE = (
+    'mkdir -m 700 -- "$1" && git init -q --bare --template= "$1"'
+    ' && git --git-dir="$1" config core.bare false'
+    ' && git --git-dir="$1" config core.excludesFile "$2/.git/info/exclude"'
+    ' && git --git-dir="$1" update-ref --no-deref HEAD "$3"'
+    ' && git --git-dir="$1" read-tree HEAD'
+)
+"""The scratch repository finalize captures in: empty (no hook, no config of the
+agent's), the agent's objects reached read-only as an alternate, HEAD and index at the
+base. The agent's own exclude file is kept: it only hides paths, as `.gitignore` does."""
+
+
+def _hardened_git_env(home: str) -> dict[str, str]:
+    """No system, global or XDG git config, no system attributes, no replace refs."""
+    return {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "HOME": home,  # git before 2.32 ignores GIT_CONFIG_GLOBAL
+        "XDG_CONFIG_HOME": home,
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+
+
+def _capture_env(workdir: str, scratch: str) -> dict[str, str]:
+    """The capture's git: the scratch repository over the agent's work tree. Every git
+    setting the agent can write (its `.git/config` and what it includes, hooks,
+    `.git/info/attributes`, fsmonitor, a redirected `core.worktree`, replace refs, a
+    `.git` file pointing elsewhere) lives in a repository this one never reads; the
+    in-tree `.gitattributes` it still reads names drivers only config defines, and
+    none is defined. What reaches it is plain data: the work tree and the objects."""
+    return {
+        **_hardened_git_env(scratch),
+        "GIT_DIR": scratch,
+        "GIT_WORK_TREE": workdir,
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": f"{workdir}/.git/objects",
+    }
+
+
+async def _resolve_base(runtime: vf.Runtime, workdir: str, home: str) -> str:
+    """The base ref's commit, else HEAD's, else "": read in the agent's repository (its
+    local config applies, but `rev-parse` runs no hook, filter or fsmonitor)."""
+    env = {**_hardened_git_env(home), "GIT_DIR": f"{workdir}/.git"}
+    for ref in (BASE_REF, "HEAD"):
+        result = await runtime.run(["git", "rev-parse", "--verify", "-q", f"{ref}^{{commit}}"], env)
+        sha = (result.stdout or "").strip()
+        if result.exit_code == 0 and sha:
+            return sha
+    return ""
+
+
+async def _remove_patch(runtime: vf.Runtime) -> None:
+    result = await runtime.run(["rm", "-f", "--", PATCH_PATH], {})
+    if result.exit_code != 0:
+        # Kept, it would travel as the agent's patch: the extract fails instead (0).
+        raise RuntimeError(
+            f"could not remove {PATCH_PATH} (exit {result.exit_code}): "
+            f"{(result.stderr or '').strip()[-300:]}"
+        )
+
+
 class SweData(vf.TaskData):
     instance_id: str
     repo: str
@@ -302,13 +370,19 @@ class SweTask(vf.Task[SweData]):
         box commands and file writes happen here (env norm): grading parses the patch,
         never this. A base ref or an untracked list the agent removed or broke is its
         own outcome: the diff is wider and fails to apply in the pristine box.
+
+        The capture runs in a scratch repository of ours (`_capture_env`), so no git
+        setting or hook the agent left runs; whenever it writes no patch, PATCH_PATH is
+        removed again and checked gone: a patch planted there never travels. A box that
+        stops answering raises (ours, not the agent's).
         """
-        await runtime.run(["rm", "-f", "--", PATCH_PATH], {})  # a planted patch never travels
-        head = await runtime.run(["git", "rev-parse", "--verify", "-q", BASE_REF], {})
-        base = head.stdout.strip() if head.exit_code == 0 else ""
+        await _remove_patch(runtime)  # a planted patch never travels
+        workdir = self.data.workdir
+        scratch = f"{_CAPTURE_DIR}-{uuid.uuid4().hex}"
+        base = await _resolve_base(runtime, workdir, scratch)
         try:
             listed = await runtime.read(
-                f"{self.data.workdir}/{UNTRACKED_FILE}", max_bytes=MAX_UNTRACKED_BYTES
+                f"{workdir}/{UNTRACKED_FILE}", max_bytes=MAX_UNTRACKED_BYTES
             )
             ignore = [p for p in listed.decode("utf-8", "replace").split("\0") if p]
         except TimeoutError:
@@ -317,12 +391,28 @@ class SweTask(vf.Task[SweData]):
             # Missing, not a regular file or inflated by the agent (verifiers' capped
             # read raises SandboxError for all three): its diff carries more.
             ignore = []
-        try:
-            await vf.capture_patch(
-                trace, runtime, base_commit=base, ignore=ignore, write_path=PATCH_PATH
+        env = _capture_env(workdir, scratch)
+        if not base:
+            trace.info["patch_error"] = "no base: neither the base ref nor HEAD resolves"
+        else:
+            prepared = await runtime.run(
+                ["sh", "-c", _PREPARE_CAPTURE, "reliquary-capture", scratch, workdir, base],
+                {k: v for k, v in env.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")},
             )
-        except vf.SandboxError:
-            return  # the box stopped answering; a sandbox records its own fault first
+            if prepared.exit_code != 0:
+                if (await runtime.run(["true"], {})).exit_code != 0:
+                    raise vf.SandboxError("patch capture failed and the box stopped answering")
+                trace.info["patch_error"] = (
+                    f"exit={prepared.exit_code} {(prepared.stderr or '').strip()[-500:]}"
+                )
+            else:
+                await vf.capture_patch(
+                    trace, runtime, base_commit=base, env=env, ignore=ignore,
+                    write_path=PATCH_PATH,
+                )
+        await runtime.run(["rm", "-rf", "--", scratch], {})
+        if "patch" not in trace.info:
+            await _remove_patch(runtime)  # whatever ran during a failed capture planted
 
     async def grading_setup(self, runtime: vf.Runtime) -> None:
         """Env norm: the pristine grading box, before the agent's patch reaches it (the
@@ -337,10 +427,12 @@ class SweTask(vf.Task[SweData]):
     ) -> float | dict[str, float]:
         """Env norm: `runtime` is a pristine box of the image that `grading_setup`
         prepared and that received only the declared artifacts (a signed-episode
-        sandbox's grading box). `SweEnv` grades elsewhere and records nothing here."""
+        sandbox's grading box). Anywhere else it records nothing: `SweEnv` grades in a
+        box of its own, and any other runtime is the agent's box, never graded in."""
         from reliquary_swe import grading
 
-        if self._graded_elsewhere:
+        box_type = getattr(getattr(runtime, "config", None), "type", None)
+        if self._graded_elsewhere or box_type != _SANDBOX:
             return {}
         try:
             raw = await runtime.read(PATCH_PATH, max_bytes=MAX_PATCH_BYTES)

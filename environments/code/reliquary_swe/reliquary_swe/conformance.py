@@ -10,8 +10,18 @@ symlink or a submodule: 8 R2E rows add a symlink) is no reference: the task has 
 Attacks on a golden task, each expected to grade 0: the gold patch plus a forced path
 under `.venv` (refused path), plus a symlink, plus a binary file (refused shapes); the
 gold patch planted in the artifact directory with the sources untouched (finalize
-replaces it); a root conftest.py that reports every test as passed (restored from the
-image by grading).
+replaces it), with a stale `index.lock` beside it, with git settings that would plant it
+during the capture (a required clean filter, fsmonitor, hooks, an external diff: the
+capture runs none of them), and with the repository gone (no capture: finalize removes
+it); a root conftest.py that reports every test as passed (restored from the image by
+grading; both R2E goldens expect every test PASSED, so forcing passes would otherwise
+score 1); on `train`, the fail-to-pass tests overridden to pass in their own files (test
+files are restored by grading).
+
+Indices are those of a split served with the taskset's defaults (`train`:
+`num_images` = `corpus.DEFAULT_SWESMITH_IMAGES`, no `max_test_count`; `r2e` and
+`polyglot`: any `num_tasks` covering the goldens). A split served otherwise names other
+tasks under these indices: its reference case then fails.
 """
 
 from __future__ import annotations
@@ -26,6 +36,13 @@ from reliquary_swe import corpus, grading
 CHUNK = 60_000
 """base64 characters per shell call."""
 STAGE = "/tmp/reliquary-reference.b64"
+PLANTER = (
+    "#!/bin/sh\n"
+    "mkdir -p /logs/artifacts && cp /tmp/reliquary-planted.diff /logs/artifacts/patch.diff\n"
+    "exit 1\n"
+)
+"""Run by any git setting the agent leaves that executes a command: plants the gold
+patch and makes git fail, so a capture that ran it would write nothing over it."""
 GOLDENS = {
     "r2e": (
         "c1bfa7352368b63f3a9b30c02f242408d07a7ab2",  # coveragepy
@@ -70,7 +87,25 @@ def apply_calls(patch: bytes, workdir: str) -> list:
     return calls
 
 
-def golden_cases(index: int, gold: bytes, workdir: str, *, python: bool) -> list[dict]:
+def _passing_overrides(fail_to_pass: tuple[str, ...]) -> dict[str, str]:
+    """Per test file, Python appended to it that makes each of its fail-to-pass tests pass
+    without touching the source (`Class.test = lambda self: None`, or a passing `def`).
+    Parametrised or nested ids are left out."""
+    overrides: dict[str, str] = {}
+    for test in fail_to_pass:
+        parts = test.split("::")
+        if "[" in test or not parts[0].endswith(".py") or len(parts) not in (2, 3):
+            continue
+        if len(parts) == 3:
+            line = f"\n{parts[1]}.{parts[2]} = lambda self: None\n"
+        else:
+            line = f"\n\ndef {parts[1]}():\n    pass\n"
+        overrides[parts[0]] = overrides.get(parts[0], "") + line
+    return overrides
+
+
+def golden_cases(index: int, gold: bytes, workdir: str, *, python: bool,
+                 fail_to_pass: tuple[str, ...] = ()) -> list[dict]:
     q = shlex.quote(workdir)
     solve = apply_calls(gold, workdir)
     cases = [
@@ -118,9 +153,49 @@ def golden_cases(index: int, gold: bytes, workdir: str, *, python: bool) -> list
             "calls": [
                 _bash("mkdir -p /logs/artifacts"),
                 *upload_calls(gold, "/logs/artifacts/patch.diff"),
+                _bash(f"touch {q}/.git/index.lock"),  # the agent's git, broken
+            ],
+        },
+        {
+            "name": f"patch_planted_by_git_config_{index}",
+            "index": index,
+            "expect": 0.0,
+            "calls": [
+                *upload_calls(gold, "/tmp/reliquary-planted.diff"),
+                *upload_calls(PLANTER.encode(), "/tmp/reliquary-plant.sh"),
+                _bash(
+                    f"cd {q} && chmod +x /tmp/reliquary-plant.sh"
+                    " && mkdir -p /tmp/reliquary-hooks"
+                    " && cp /tmp/reliquary-plant.sh /tmp/reliquary-hooks/post-index-change"
+                    " && git config filter.zz.clean /tmp/reliquary-plant.sh"
+                    " && git config filter.zz.required true"
+                    " && git config core.fsmonitor /tmp/reliquary-plant.sh"
+                    " && git config core.hooksPath /tmp/reliquary-hooks"
+                    " && git config diff.external /tmp/reliquary-plant.sh"
+                    " && echo '* filter=zz' >> .gitattributes"
+                ),
+            ],
+        },
+        {
+            "name": f"patch_planted_without_a_repository_{index}",
+            "index": index,
+            "expect": 0.0,
+            "calls": [
+                _bash("mkdir -p /logs/artifacts"),
+                *upload_calls(gold, "/logs/artifacts/patch.diff"),
+                _bash(f"mv {q}/.git /tmp/reliquary-moved-git"),
             ],
         },
     ]
+    overrides = _passing_overrides(fail_to_pass)
+    if overrides:
+        calls = []
+        for path, suffix in overrides.items():
+            calls += upload_calls(suffix.encode(), "/tmp/reliquary-override.py")
+            calls.append(_bash(f"cat /tmp/reliquary-override.py >> {q}/{shlex.quote(path)}"))
+        cases.append(
+            {"name": f"tests_rewritten_{index}", "index": index, "expect": 0.0, "calls": calls}
+        )
     if python:
         cases.append(
             {
@@ -188,7 +263,10 @@ def conformance_cases(split: str) -> list[dict]:
         row = _row(split, index)
         gold = _gold(split, row)
         if gold is not None:
-            cases += golden_cases(index, gold, row.workdir, python=split != "polyglot")
+            cases += golden_cases(
+                index, gold, row.workdir, python=split != "polyglot",
+                fail_to_pass=row.fail_to_pass if split == "train" else (),
+            )
     return cases
 
 

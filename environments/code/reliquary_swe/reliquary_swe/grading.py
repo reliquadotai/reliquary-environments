@@ -41,11 +41,11 @@ can defend this specific shape, because restoring source is the one thing
 the grader must never do -- it is the fix under test. Closing that vector
 needs a check that does not depend on file identity at all (an injected
 canary test, at a path the agent cannot predict, that must FAIL and one that
-must PASS) -- deliberately out of scope here; see task-4-report.md for where
+must PASS) -- deliberately out of scope here; `grade_prepared` marks where
 it would land.
 
 Receives a live `Runtime` and never provisions one: provisioning, retries and
-timeouts belong to Task 5's `env.py`. That seam is what lets this module be
+timeouts belong to `env.py`. That seam is what lets this module be
 tested against any box and keeps the retry policy in one place.
 """
 
@@ -250,7 +250,7 @@ class Report:
     fail_to_pass_passed: int
     pass_to_pass_passed: int
     results: dict[str, str] = field(default_factory=dict)
-    # Monitoring fields, not reward inputs -- IMPORTANT 3. All nine defects
+    # Monitoring fields, not reward inputs. All nine defects
     # found while building this package shared one shape: the test command
     # ran but produced nothing `parse_results` could read, and `results == {}`
     # scored identically to "the tests ran and genuinely failed" -- silent by
@@ -326,7 +326,7 @@ async def _checkout(runtime: vf.Runtime, base_commit: str, path: str) -> bool:
     that adds a file, and 13 of those also carry an *existing* test file in
     the same patch (astropy-7336, django-11141/11749/13516/15525/16256/16454,
     pylint-6528, sphinx-10614/10673/11510/8269/8548 -- not sphinx-8595, which
-    is add-only, both of its paths new: see IMPORTANT 6 in task-4-report.md)
+    is add-only, both of its paths new)
     -- on every one of those 13, restoring the existing file this way would
     have silently restored nothing at all, because the added path's missing
     pathspec poisoned the whole command. One path per call means one bad
@@ -952,7 +952,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str | bytes) -> Repor
     pass, or it's zero. A fractional reward would pay for a half-repair, and a
     half-repair is not a repair.
 
-    All nine implementation defects recorded in this project's progress log
+    All nine implementation defects found while building this package
     presented as exactly this function returning an all-`0` report with an
     empty `results` map, each caught by a human noticing a zero on real data,
     one at a time, on separate nights -- conda not being on `PATH`, the 128 KiB
@@ -1201,7 +1201,7 @@ async def grade_prepared(runtime: vf.Runtime, data: SweData, patch: str | bytes)
     # PASS, at a path the agent cannot predict -- would slot in here, after
     # restoration and before the real test run, and is the only defense that
     # would touch the source-monkeypatch vector this module's own docstring
-    # names. Deliberately not built now; see task-4-report.md.
+    # names. Deliberately not built now.
     if data.split == "polyglot":
         # The corpus's own verdict, unchanged: `mimo_test_command.sh` exits
         # 0 or it does not. No test lists exist to count against.
