@@ -1,0 +1,96 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/general"
+version = "0.1.0a1"
+taskset = "reliquary-general"
+entrypoint = "reliquary_general:GeneralTaskset"
+compatibility_entrypoint = "reliquary_general:GeneralPromptsEnvironment"
+license = "MIT AND Apache-2.0 AND CC-BY-4.0 AND ODC-By-1.0"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["general"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+max_turns = 1
+max_observation_bytes = 65536
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+# Per block; chat, multi-turn and safety rows carry none and refuse to grade.
+components = ["followed_instructions", "valid_structure", "identity", "clarification", "function_call"]
+
+[data]
+train = "general-prompts:v1:train"
+eval = "general-prompts:v1:eval"
+qualification = "general-prompts:v1:qualification"
+# Published as the public Hub dataset `ReliquaryForge/general-prompts-curated`,
+# one gzip file per block, pinned by revision (`corpus.REVISION`) and by the
+# sha256 of every file (`reliquary_general/_pins.py`); the wheel ships only the
+# pins. Every source allows redistribution with attribution, which NOTICE and
+# every row's `source` and `key` carry. The derivation is `scripts/build/`.
+dataset = "ReliquaryForge/general-prompts-curated"
+redistributable = true
+license = "cc-by-4.0 AND odc-by-1.0 AND apache-2.0"
+blocks = ["chat", "multiturn", "ifeval", "structured", "safety", "clarification", "identity", "tools_call", "tools_pivot"]
+modes = ["direct", "thinking"]
+renderers = { direct = "chat-template-v1", thinking = "chat-template-thinking-v1" }
+# Each (block, mode) segment opens with its single-turn rows (one user message,
+# no tools, no system message): all of chat, safety, clarification and
+# identity; the larger part of ifeval and structured; none of multiturn and the
+# tool blocks. `segments()` reports the count as `single_turn_count`.
+single_turn_first = true
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary-environments"
+port = "filtered-corpus"
+upstream = [
+  "https://huggingface.co/datasets/allenai/WildChat-4.8M",
+  "https://huggingface.co/datasets/OpenAssistant/oasst2",
+  "https://huggingface.co/datasets/nvidia/HelpSteer3",
+  "https://huggingface.co/datasets/nvidia/Nemotron-RL-Multichallenge-v1",
+  "https://huggingface.co/datasets/allenai/IF_multi_constraints_upto5",
+  "https://huggingface.co/datasets/nvidia/Nemotron-RL-Instruction-Following-Structured-Outputs-v2",
+  "https://huggingface.co/datasets/nvidia/Nemotron-RL-instruction_following-structured_outputs",
+  "https://huggingface.co/datasets/nvidia/Nemotron-SFT-Safety-v1",
+  "https://huggingface.co/datasets/nvidia/Aegis-AI-Content-Safety-Dataset-2.0",
+  "https://huggingface.co/datasets/nvidia/Nemotron-RL-Identity-Following-v1",
+  "https://huggingface.co/datasets/allenai/olmo-2-hard-coded",
+  "https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k",
+  "https://huggingface.co/datasets/nvidia/Nemotron-RL-Agentic-Function-Calling-Pivot-v1",
+  "https://huggingface.co/datasets/nvidia/Nemotron-RL-Agentic-Conversational-Tool-Use-Pivot-v1",
+  "https://huggingface.co/datasets/Agent-Ark/Toucan-1.5M",
+]
+
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """
+The corpus is hybrid: every row is drawn for one mode, `direct` or `thinking`,
+and the train split is laid out so that each (block, mode) is one contiguous
+segment a corpus job serves with the matching renderer. The mode is therefore a
+property of the row (`metadata.mode`, `metadata.renderer`), not of the
+environment. `thinking` is declared here because it is the mode of the
+Verifiers surface (instructions, structured outputs, identity, clarification),
+where most rows are thinking rows and deliberation is what counting and schema
+constraints reward. Chat, safety, identity and clarification are served half
+direct, three tenths thinking and one fifth both, because a hybrid student has
+to learn when not to think as well as how.
+"""
+max_new_tokens = 16384
+max_new_tokens_rationale = """
+The largest per-segment budget (chat and multi-turn, thinking). Each segment
+carries its own suggestion in `metadata.max_new_tokens` and in
+`corpus.MAX_NEW_TOKENS`, from 1,024 for a direct identity answer to 16,384 for
+a thinking chat answer; instruction and structured-output thinking is capped at
+8,192 so that rumination over counting constraints becomes a truncation the
+export drops instead of a habit the student learns. None is measured on this
+corpus yet: a pilot should report the share of completions that reach the cap
+per segment.
+"""

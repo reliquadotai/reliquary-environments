@@ -238,6 +238,28 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/reasoning/reliquary_hard_math/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/reasoning/reliquary_hard_math/scripts/verify_wheel.py
 
+  general:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/general/reliquary_general
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
+      - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
+      - run: uv run --no-sync pytest
+      - run: uv build --clear
+      - run: uv venv --python 3.12 .wheel-venv
+      - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_general-0.1.0a1-py3-none-any.whl
+      - name: Verify installed wheel and packaged goldens
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/environments/general/reliquary_general/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/general/reliquary_general/scripts/verify_wheel.py
+
   reliquary-code:
     runs-on: ubuntu-22.04
     defaults:
