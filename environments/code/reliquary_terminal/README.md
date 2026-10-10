@@ -173,40 +173,33 @@ on the host — both are meant as components of a mix (e.g. with
 
 ## Signed sandboxes
 
-`reliquary_terminal.sandbox:sandbox_task` serves the `train` split on a signed-episode
-sandbox gateway (`episode_envs = {"reliquary-terminal": "reliquary_terminal.sandbox:sandbox_task"}`).
+`TerminalTaskset`'s tasks follow the env norm, so a signed-episode sandbox serves them
+through its generic verifiers bridge (`verifiers:reliquary-terminal==0.3.0`), one task at a
+time (`task_at(index)`).
 
-- Served: `train` rows only, 17 of the 64. Refused: `eval` (graded in the agent's box by
-  design), rows that need the network, three rows that put `/app` on `PYTHONPATH`, and rows
-  whose tests run agent code inside pytest (`in_process_agent_code`).
-- `tmax` is served on the env norm (`TerminalTask.grading_setup` and `solved`; split `tmax`
-  only, `tmax_sft`/`tmax_rl` are not served). 201 TMax tasks are excluded statically as
-  `in_process_agent_code` (their final test loads the agent's code into pytest's process),
-  and tasks whose `%environment` points PATH, `LD_*`, `BASH_ENV`, `ENV`, `PYTHON*`, `HOME`, `XDG_*`,
-  `GIT_*`, `NODE_*`, `PERL5*`, `RUBY*`, `JAVA_*`, `CLASSPATH` or `*_OPTIONS` at
-  `/app` or `/home/user` are refused (`environment_in_artifact_roots`). Every root command
-  of the grading box runs through `/usr/bin/env` with a fixed PATH, `sh`/`bash` by absolute
-  path, HOME outside the roots, PYTHONNOUSERSITE=1, and the loader variables (every `LD_*`
-  and `PYTHON*` name off a small allow-list) unset unless the task's own value stays outside
-  the roots.
+- Served: the `tmax` split only (`tmax_sft`/`tmax_rl` are not served). `eval` is graded in
+  the agent's box by design and never served; MiMo's `train` rows are not served on
+  sandboxes. 201 TMax tasks are excluded statically as `in_process_agent_code` (their final
+  test loads the agent's code into pytest's process), and tasks whose `%environment` points
+  PATH, `LD_*`, `BASH_ENV`, `ENV`, `PYTHON*`, `HOME`, `XDG_*`, `GIT_*`, `NODE_*`, `PERL5*`,
+  `RUBY*`, `JAVA_*`, `CLASSPATH` or `*_OPTIONS` at `/app` or `/home/user` are refused
+  (`environment_in_artifact_roots`). Every root command of the grading box runs through
+  `/usr/bin/env` with a fixed PATH, `sh`/`bash` by absolute path, HOME outside the roots,
+  PYTHONNOUSERSITE=1, and the loader variables (every `LD_*` and `PYTHON*` name off a small
+  allow-list) unset unless the task's own value stays outside the roots.
+- `TerminalTask.grading_setup` runs the task's setup in the grade role in the pristine
+  grading box before the agent's `/app` and `/home/user` are restored there; the reward,
+  `solved`, stages the tests and grades in that box. `finalize` collects nothing: the
+  sandbox archives the declared roots itself.
 - In a `tmax` grading box the final-state test runs as its own uid (61000), not root:
   `test.sh` hands `/app` and `/home/user` to that uid (never following a link), runs
   pytest as it under `python3 -I` with a HOME outside the roots, kills every process of
   that uid, and only then writes `reward.txt` as root. Decision 11 of
   [docs/tmax.md](docs/tmax.md).
-- State handed to the grader: the artifact roots that exist (`/app`), through the sandbox's
-  `archive`, framed with the list of present roots; a deleted root is graded, not an error.
-  The grading box restores them once, then stages `/tests`.
-- Grading refuses links into `/tests`, `/logs`, `/proc`, `/dev` and `/sys`, ignores
-  `reward.json`, requires a complete CTRF report for a reward of 1, and stops stray processes
-  after `test.sh`. Residual: a subprocess left by a served row can race that stop; only separate
-  uids close it.
-- Needs reliquary-sandbox at `e0217aa` or later (`stop_processes`), and `verifiers` at the
-  pinned commit with its Harbor `taskset` and `env` modules unchanged; import fails otherwise.
-- Our own failures before the restore (a state header `extract` cannot have written, the
-  row's test files not parsing, an absent root that cannot be cleared), and grading that
-  never ran `test.sh` through the stopping runtime, abort the episode (`EnvInfraError`)
-  instead of grading. Graded facts carry `stop_ran: true`.
-- `served_indexes("train")` lists the indexes served on sandboxes.
+- The task's hash leaves out where its files were written, so every machine computes the
+  same one.
+- `reliquary_terminal.conformance_cases("tmax")` and `reference_calls("tmax", index)` give
+  the sandbox's conformance suite and reference sweep plain data.
 
-Failure contract, limits and the parity table: `docs/sandbox-tasks.md` (repository root).
+How the package meets the env norm, the failure contract under the bridge and image
+lists: `docs/env-norm.md` (repository root).

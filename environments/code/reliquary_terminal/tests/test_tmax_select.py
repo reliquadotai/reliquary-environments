@@ -390,3 +390,38 @@ def test_a_test_comparing_a_handed_over_mode_is_excluded_but_keeps_its_packages(
     )
     assert manifest["tasks"][tid]["reasons"] == ["mode_changed_by_hand_over"]
     assert "tesseract-ocr" in base["apt.txt"].split()
+
+
+IN_PROCESS = b"""
+import sys
+sys.path.insert(0, "/app/src")
+from solution import answer
+
+def test_answer():
+    assert answer() == 42
+"""
+SUBPROCESS = b"""
+import subprocess
+
+def test_cli():
+    assert subprocess.run(["python3", "/app/cli.py"]).returncode == 0
+"""
+
+
+@pytest.mark.parametrize("source, evidence", [
+    (IN_PROCESS, "sys.path"),
+    (b"import importlib.util\nspec = importlib.util.spec_from_file_location('m', '/app/m.py')\n",
+     "spec_from_file_location"),
+    (b"namespace = {}\nexec(compile(open('/app/x.py').read(), 'x', 'exec'), namespace)\n",
+     "exec"),
+    (b"import importlib\nm = importlib.import_module('pkg')\n", "import_module"),
+    (b"from app.module import f\n", "import app"),
+    (b"def broken(:\n", "unparseable"),
+])
+def test_in_process_agent_code_is_found_statically(source, evidence):
+    found = tmax_select.in_process_agent_code({"test_outputs.py": source, "test.sh": b"exit 0\n"})
+    assert any(evidence in item for item in found)
+
+
+def test_subprocess_only_tests_are_not_in_process():
+    assert tmax_select.in_process_agent_code({"test_outputs.py": SUBPROCESS}) == []

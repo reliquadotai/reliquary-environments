@@ -1,8 +1,10 @@
 """Resolve MiMo-V2.6's terminal images to registry digests for signed-episode sandboxes.
 
-The verifiers taskset provisions them by tag (`xiaomimimo/mimo-v2.6-rl-oss:<tag>`); a
-sandbox task names its image by digest (reliquary_terminal.sandbox). HEAD on the
-manifest, nothing pulled; the same registry call as reliquary-swe's pin scripts.
+The verifiers taskset provisions them by tag (`xiaomimimo/mimo-v2.6-rl-oss:<tag>`).
+Signed-episode sandboxes serve only the `tmax` split (docs/env-norm.md), so no package code
+reads `mimo_digests.json` today; it records the digests the MiMo rows were checked with.
+HEAD on the manifest, nothing pulled; the same registry call as reliquary-swe's pin
+scripts.
 
     uv run python scripts/pin_mimo_digests.py
 """

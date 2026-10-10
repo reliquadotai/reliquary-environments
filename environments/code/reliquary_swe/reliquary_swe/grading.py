@@ -277,8 +277,9 @@ class PristineBoxError(RuntimeError):
     """A grading box that is not what the corpus says, found before the agent's patch
     touches it (checking out the base, stripping history, setting hidden tests aside,
     listing the untracked paths at base): an error about us or the image, never a 0.
-    A RuntimeError like before; on a signed-episode sandbox `sandbox.grade` reports it as
-    the sandbox's `EnvInfraError` (the episode is aborted, not graded)."""
+    A RuntimeError like before; on a signed-episode sandbox it is raised by
+    `prepare_box`, which runs as the task's `grading_setup`, so the episode is aborted,
+    not graded."""
 
 
 def _paths_touched_by(patch: str) -> list[str]:

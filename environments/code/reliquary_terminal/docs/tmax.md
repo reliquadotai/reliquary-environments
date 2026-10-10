@@ -524,9 +524,10 @@ the last column counts the 5,964 left.
    build time and never at reward time, measured against River's labels.
 3. **Decontamination by embeddings.** Decision 7 is lexical (13-word
    shingles). A paraphrase of a Terminal-Bench task would pass it.
-4. **The consumers.** Nothing reads these splits yet. The signed-episode
-   sandbox serves `train` only, so a multi-turn `tmax_rl` task is to be
-   written. The SFT corpus job accepts `reliquary-swe` only.
+4. **The consumers.** A signed-episode sandbox serves `tmax` through its
+   generic bridge (docs/env-norm.md at the repository root); `tmax_sft` and
+   `tmax_rl` are not served there. The SFT corpus job accepts
+   `reliquary-swe` only.
 5. **`SFT_FRACTION`** (0.5) must be confirmed before the SFT job starts.
 
 ## Open questions

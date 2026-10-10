@@ -16,46 +16,17 @@ because the policy is enforced, but because nothing ever enforced it.
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import shutil
 import subprocess
-import sys
-import types
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import pytest
 import verifiers.v1 as vf
 from reliquary_swe.env import SweEnv, SweEnvConfig
 from reliquary_swe.taskset import SweTask
 from verifiers.v1.runtimes import provision_runtime
-
-
-def _install_episode_task_shim() -> None:
-    """reliquary-sandbox is private and absent in CI: when its `episode_task` cannot be
-    imported, put the test-only copy (`episode_task_shim.py`, stdlib only) in its place so
-    the hook tests run anyway. `test_episode_task_shim.py` checks the copy against the
-    real module wherever that is installed."""
-    try:
-        import reliquary_sandbox.episode_task  # noqa: F401
-    except ImportError:
-        name = "reliquary_sandbox.episode_task"
-        spec = importlib.util.spec_from_file_location(
-            name, Path(__file__).with_name("episode_task_shim.py"))
-        module = importlib.util.module_from_spec(spec)
-        parent = sys.modules.get("reliquary_sandbox")
-        if parent is None:
-            parent = types.ModuleType("reliquary_sandbox")
-            parent.__path__ = []
-            sys.modules["reliquary_sandbox"] = parent
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-        parent.episode_task = module
-
-
-_install_episode_task_shim()
 
 
 def _docker_available() -> bool:

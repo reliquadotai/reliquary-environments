@@ -10,13 +10,14 @@ recomputes it from those inputs.
 
 from __future__ import annotations
 
+import ast
 import collections
 import hashlib
 import json
 import lzma
 import re
 import urllib.request
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -145,6 +146,46 @@ class TaskFacts:
     domain: str | None = None
 
 
+_LOADERS = frozenset({
+    "spec_from_file_location", "spec_from_loader", "module_from_spec", "exec_module",
+    "load_module", "load_source", "SourceFileLoader", "run_path", "run_module",
+    "import_module", "__import__", "exec", "eval"})
+
+
+def in_process_agent_code(files: Mapping[str, bytes]) -> list[str]:
+    """Static evidence that a task's tests run the agent's code inside pytest's
+    process, as `<file>: <what>` for every Python file given: a use of `sys.path`, a
+    dynamic load or exec (`_LOADERS`), an `import app...`, or a file that does not
+    parse. Conservative: whether the path is `/app` is not resolved, so a test that
+    only adds its own fixtures to `sys.path` is tagged too."""
+    found = []
+    for name, source in sorted(files.items()):
+        if not name.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            found.append(f"{name}: unparseable")
+            continue
+        what = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Attribute) and node.attr == "path"
+                    and isinstance(node.value, ast.Name) and node.value.id == "sys"):
+                what.add("sys.path")
+            elif isinstance(node, ast.Call):
+                func = node.func
+                called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if called in _LOADERS:
+                    what.add(called)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                modules = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                           else [node.module or ""])
+                if any(m == "app" or m.startswith("app.") for m in modules):
+                    what.add("import app")
+        found.extend(f"{name}: {item}" for item in sorted(what))
+    return found
+
+
 def task_facts(source: tmax.Source, task_id: str) -> TaskFacts:
     facts = TaskFacts(task_id)
     definition = tmax.parse_definition(source.text(task_id, "container.def"))
@@ -177,11 +218,7 @@ def task_facts(source: tmax.Source, task_id: str) -> TaskFacts:
         line = test[test.rfind("\n", 0, match.start()) + 1 : test.find("\n", match.end())]
         facts.reasons["docker_in_test"] = line.strip()[:300]
     # The test would run the agent's code inside pytest's own process, where
-    # it can write a passing report and exit: refused on signed-episode
-    # sandboxes by default, so never kept here either. Imported here because
-    # `sandbox` imports the taskset, which imports this module.
-    from reliquary_terminal.sandbox import in_process_agent_code
-
+    # it can write a passing report and exit: never kept.
     evidence = in_process_agent_code({tmax.FINAL_TEST: test.encode()})
     if evidence:
         facts.reasons["in_process_agent_code"] = "; ".join(evidence)[:300]

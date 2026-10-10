@@ -40,9 +40,6 @@ addopts = ["-q", "--strict-markers"]
 asyncio_mode = "auto"
 markers = [
   "docker: tests that provision a Docker container",
-  # Episodes on a local signed-episode gateway with gVisor: the sandbox test host only,
-  # with RUN_SANDBOX_PARITY=1 (docs/sandbox-tasks.md).
-  "sandbox_live: runs episodes on a local signed-episode gateway (test host only)",
 ]
 
 [tool.uv]

@@ -1,8 +1,8 @@
 """Resolve MiMo polyglot images to registry digests for signed-episode sandboxes.
 
-The verifiers taskset provisions polyglot boxes by tag; a sandbox task must name its
-image by digest (reliquary_swe.sandbox.image_of), and `sandbox.row_for` refuses a task
-whose tag has none. Same registry call as pin_swesmith_digests.py (HEAD on the
+The verifiers taskset provisions polyglot boxes by tag; a sandbox serves an image only
+when the package's `sandbox-images.lock.json` pins it, and `scripts/pin_sandbox_lock.py`
+builds that lock from this file. Same registry call as pin_swesmith_digests.py (HEAD on the
 manifest, nothing pulled). Merges into polyglot_digests.json: `--num-tasks N` pins the
 split's first N tasks (the whole split is 2,698), `--instance` adds named ones (the
 goldens) and fails on a name the corpus does not have.

@@ -1,9 +1,20 @@
-"""Task images for signed-episode sandbox hosts: pull, check, approve, build.
+"""Task images for signed-episode sandbox hosts: list, pull, check, approve, build.
 
-Image lists come from the env packages, never from here:
+Image lists come from each env package's image lock (`sandbox-images.lock.json`, tag ->
+`repo@sha256:<digest>`) and its own image listing, never from here:
 
-    python -m reliquary_swe.sandbox images --split r2e --num-tasks 300 > r2e.json
-    python -m reliquary_terminal.sandbox images --split train > terminal.json
+    python -m reliquary_swe.images --split r2e --num-tasks 300 > r2e.tags
+    python scripts/sandbox_images.py from-lock \
+        environments/code/reliquary_swe/reliquary_swe/sandbox-images.lock.json --tags r2e.tags > r2e.json
+
+`from-lock` prints `{"images": [digests]}` for the tags (or digests) listed one per line
+in `--tags` (every image the lock pins when `--tags` is absent) and refuses, exit 2, a tag
+the lock does not pin: a gateway serves only pinned images. reliquary-terminal's lock
+(`environments/code/reliquary_terminal/reliquary_terminal/sandbox-images.lock.json`) comes
+with its base image in a registry (docs/tmax.md); then:
+
+    python scripts/sandbox_images.py from-lock \
+        environments/code/reliquary_terminal/reliquary_terminal/sandbox-images.lock.json > terminal.json
 
 Then, on the sandbox host (the gateway never pulls; spec §7):
 
@@ -16,15 +27,17 @@ Then, on the sandbox host (the gateway never pulls; spec §7):
 `sandbox-images.checked.json` in the current directory); `approve` refuses unless every
 image of its manifests has a recorded last check that passed.
 
-SWE-smith, R2E, polyglot and MiMo images are upstream images pinned by digest: once the
+SWE-smith, R2E and polyglot images are upstream images pinned by digest: once the
 harness runs on the miner, nothing installs at run time, so nothing needs baking. The one
-image we build is tmax's shared base; it goes to a registry the operator names:
+image we build is tmax's shared base. The validated base image goes to a registry as
+is, never rebuilt (docs/tmax.md): a rebuild is a new image and needs a new validation.
+`build-tmax` exists for that case:
 
     python scripts/sandbox_images.py build-tmax --registry <REGISTRY> --push
 
 without --push it only prints the command. It runs the terminal package's `scripts/tmax_validate.py build --repository
-<REGISTRY>/reliquary-tmax-base` (docs/tmax.md) and prints the pushed digest to record
-in `tmax_manifest.json`'s `base_image`. Run Docker commands only on a container host.
+<REGISTRY>/reliquary-tmax-base` (docs/tmax.md) and prints the pushed digest. Run Docker
+commands only on a container host.
 """
 
 from __future__ import annotations
@@ -54,6 +67,24 @@ def load_images(paths: Sequence[Path]) -> list[str]:
                 raise ValueError(f"{path}: {image!r} is not pinned by digest")
             images.append(image)
     return list(dict.fromkeys(images))
+
+
+def from_lock(lock_path: Path, tags: Sequence[str] | None) -> dict[str, list[str]]:
+    """The digests the lock pins for `tags` (tags or digests it pins); all of them when
+    `tags` is None. A tag the lock does not pin raises KeyError naming it."""
+    images = json.loads(Path(lock_path).read_text())["images"]
+    digests = set(images.values())
+    if tags is None:
+        return {"images": sorted(digests)}
+    missing = [t for t in tags if t not in images and t not in digests]
+    if missing:
+        raise KeyError(", ".join(missing))
+    return {"images": sorted({images.get(t, t) for t in tags})}
+
+
+def _read_tags(path: Path) -> list[str]:
+    """One tag or digest per line; blank lines ignored."""
+    return [line.strip() for line in Path(path).read_text().splitlines() if line.strip()]
 
 
 def _docker(host: str | None) -> list[str]:
@@ -141,12 +172,24 @@ def main(argv: list[str] | None = None, run: Run = subprocess.run) -> int:
     commands.choices["pull"].add_argument("--jobs", type=int, default=3)
     commands.choices["check"].add_argument("--runtime", default="runsc")
     commands.choices["check"].add_argument("--require", action="append", default=[])
+    listed = commands.add_parser("from-lock", help="the digests an env's image lock pins")
+    listed.add_argument("lock", type=Path)
+    listed.add_argument("--tags", type=Path,
+                        help="one tag or digest per line (default: every image the lock pins)")
     build = commands.add_parser("build-tmax")
     build.add_argument("--registry", required=True)
     build.add_argument("--terminal-package", type=Path, default=TERMINAL)
     build.add_argument("--push", action="store_true",
                        help="actually build and push; without it the command is only printed")
     args = parser.parse_args(argv)
+    if args.command == "from-lock":
+        try:
+            result = from_lock(args.lock, None if args.tags is None else _read_tags(args.tags))
+        except KeyError as missing:
+            print(f"not pinned by the lock: {missing.args[0]}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, indent=1))
+        return 0
     if args.command == "build-tmax":
         command = build_tmax_command(args.registry, args.terminal_package)
         if not args.push:

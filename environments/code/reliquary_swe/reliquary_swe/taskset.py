@@ -196,8 +196,7 @@ _R2E_HIDE_TESTS = " ; ".join(
 
 
 def cleanup_script(split: str) -> str:
-    """The shell cleanup `SweTask.setup` runs before the agent starts (and the sandbox's
-    `prepare`, reliquary_swe.sandbox): checkout, SWE-smith's guard and re-root, R2E's
+    """The shell cleanup `SweTask.setup` runs before the agent starts: checkout, SWE-smith's guard and re-root, R2E's
     leak guard, ref stripping and gc, R2E's hidden-test removal, in that order."""
     steps = [_R2E_CHECKOUT if split == "r2e" else _CHECKOUT]
     # `split` -- already on the wire, and the honest discriminator for this
