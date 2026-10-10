@@ -87,8 +87,14 @@ _READS_MODE = re.compile(r"\boct\(|st_mode|S_IMODE|%a\b")
 _MASKED = re.compile(r"[&|~]\s*\(?\s*$")
 _SETS_MODE = re.compile(r"\b(?:chmod|fchmod|lchmod|mkdir|makedirs|umask|open|mkfifo|mknod)\s*\(")
 # The test reads a set-id bit, which the hand-over drops: `st_mode & stat.S_ISUID`,
-# `st_mode & 0o4000`. Not when it only checks the bit is gone (`not ...`).
+# `st_mode & 0o4000`. Checking the bit is gone (`not ...`) is no exemption: the hand-over
+# clears it on every file of the roots, so that check passes for an agent doing nothing.
 _SETID_READ = re.compile(r"S_IS[UG]ID|&\s*0o[246]000\b")
+# The test checks that the owner cannot read (`mode & 0o400 == 0`, `not mode & S_IRUSR`):
+# the hand-over gives the owner read, so that check fails for a correct agent.
+_OWNER_READ_MASK = re.compile(r"&\s*\(?\s*(?:0o[4-7]00\b|(?:stat\.)?S_IRUSR\b|(?:stat\.)?S_IRWXU\b)")
+_STRING = re.compile(r"""f?(?:"[^"]*"|'[^']*')""")
+_NEGATIVE = re.compile(r"\bnot\b|==\s*0\b|==\s*0o0+\b")
 
 
 def mode_changed_by_hand_over(test: str) -> list[str]:
@@ -104,7 +110,10 @@ def mode_changed_by_hand_over(test: str) -> list[str]:
     evidence = []
     for line in test.splitlines():
         code = line.split("#", 1)[0]
-        hit = _SETID_READ.search(code) and not re.search(r"\bnot\b", code)
+        hit = bool(_SETID_READ.search(code)) or (
+            bool(_OWNER_READ_MASK.search(code))
+            and bool(_NEGATIVE.search(_STRING.sub('""', code)))  # not the message's "not"
+        )
         if not _SETS_MODE.search(code):
             hit = hit or any(
                 changed(m.group(1))

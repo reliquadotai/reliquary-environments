@@ -67,15 +67,15 @@
  "counts": {
   "tasks": 14601,
   "status": {
-   "excluded": 9611,
-   "kept": 4990
+   "excluded": 9612,
+   "kept": 4989
   },
   "part": {
    "sft": {
     "kept": 2401
    },
    "rl": {
-    "kept": 2589
+    "kept": 2588
    }
   },
   "reason": {
@@ -88,7 +88,7 @@
    "docker_in_test": 12,
    "in_process_agent_code": 201,
    "environment_in_artifact_roots": 20,
-   "mode_changed_by_hand_over": 19,
+   "mode_changed_by_hand_over": 20,
    "decontaminated": 4,
    "setup_failed": 46,
    "setup_nondeterministic": 151,
@@ -110,7 +110,7 @@
    "setup_network": 78,
    "in_process_agent_code": 85,
    "environment_in_artifact_roots": 1,
-   "mode_changed_by_hand_over": 10,
+   "mode_changed_by_hand_over": 11,
    "decontaminated": 1,
    "setup_failed": 46,
    "setup_nondeterministic": 151,
@@ -5928,7 +5928,7 @@
   "task_006467_8d293bf4": {"hidden": [], "part": "rl", "protected": [], "run": 0, "status": "kept"},
   "task_003455_5d74c0ca": {"hidden": [], "part": "rl", "protected": ["/home/user/project/data/file1.txt", "/home/user/project/data/file2.txt", "/home/user/project/data/file3.txt", "/home/user/project/data/file4.txt"], "run": 0, "status": "kept"},
   "task_003809_d810a0a0": {"reasons": ["no_successful_run"], "status": "excluded"},
-  "task_002746_262e77cc": {"hidden": [], "part": "rl", "protected": [], "run": 0, "status": "kept"},
+  "task_002746_262e77cc": {"reasons": ["mode_changed_by_hand_over"], "status": "excluded"},
   "task_004095_e1d28e2e": {"reasons": ["no_successful_run"], "status": "excluded"},
   "task_004105_5eccba35": {"reasons": ["no_successful_run"], "status": "excluded"},
   "task_002865_5dde26e6": {"reasons": ["no_successful_run"], "status": "excluded"},

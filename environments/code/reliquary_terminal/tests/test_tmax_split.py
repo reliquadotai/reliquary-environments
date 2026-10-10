@@ -104,14 +104,15 @@ def test_the_shipped_manifest_is_the_validated_one():
     manifest = tmax_select.load_manifest()
     assert manifest["source"]["revision"] == tmax.SOURCE_REVISION
     assert len(manifest["tasks"]) == manifest["counts"]["tasks"] == 14601
-    assert manifest["counts"]["status"] == {"excluded": 9611, "kept": 4990}
-    assert manifest["counts"]["part"] == {"sft": {"kept": 2401}, "rl": {"kept": 2589}}
+    assert manifest["counts"]["status"] == {"excluded": 9612, "kept": 4989}
+    assert manifest["counts"]["part"] == {"sft": {"kept": 2401}, "rl": {"kept": 2588}}
     # Every static reason is applied, those added after the box phase included, so
     # `__len__` and `task_at` never count a task the static stage refuses.
     assert manifest["counts"]["reason"]["environment_in_artifact_roots"] == 20
-    assert manifest["counts"]["reason"]["mode_changed_by_hand_over"] == 19
+    assert manifest["counts"]["reason"]["mode_changed_by_hand_over"] == 20
     assert manifest["tasks"]["task_007472_ddf365ce"]["reasons"] == ["environment_in_artifact_roots"]
     assert manifest["tasks"]["task_009356_631c219d"]["reasons"] == ["mode_changed_by_hand_over"]
+    assert manifest["tasks"]["task_002746_262e77cc"]["reasons"] == ["mode_changed_by_hand_over"]
     # A 0o400 the hand-over now leaves alone: kept.
     assert manifest["tasks"]["task_005459_ff74e53b"]["status"] == "kept"
     # Every task has a verdict: nothing is left pending.
@@ -133,11 +134,11 @@ def test_the_shipped_parts_are_disjoint_and_cover_the_kept_tasks():
     sft = [t for t, _ in tmax_select.kept_tasks(manifest, "sft")]
     rl = [t for t, _ in tmax_select.kept_tasks(manifest, "rl")]
     everything = [t for t, _ in tmax_select.kept_tasks(manifest)]
-    assert (len(sft), len(rl), len(everything)) == (2401, 2589, 4990)
+    assert (len(sft), len(rl), len(everything)) == (2401, 2588, 4989)
     assert not set(sft) & set(rl) and set(sft) | set(rl) == set(everything)
     descriptor = tomllib.loads((Path(__file__).parent.parent / "environment.toml").read_text())
     rows = [v for section in descriptor.values() if isinstance(section, dict) for k, v in section.items() if k == "tmax_rows"]
-    assert rows == [4990]
+    assert rows == [4989]
 
 
 def test_tmax_rejects_a_zip_that_is_not_the_pinned_one(tmp_path, monkeypatch, tmax_env):

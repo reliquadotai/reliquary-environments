@@ -67,6 +67,7 @@ def test_hand_over_opens_closed_directories_and_adds_only_read_to_files(tmp_path
     assert str(closed / "tool") in owned and str(shut / "inner") in owned
     assert mode_of(closed) == 0o700
     assert mode_of(shut) == 0o500  # u+rx: listed and entered, still not writable
+    shut.chmod(0o700)  # pytest must be able to remove its tmp dir
     assert mode_of(closed / "tool") == 0o450  # u+r only: no x, no w added
     assert mode_of(closed / "data") == 0o404
     assert mode_of(app / "suid") == 0o755  # no set-id bit survives the hand-over

@@ -349,6 +349,11 @@ def test_repin_base_image_from_a_local_id_to_the_pushed_digest():
     "    if st.st_mode & 0o4000:  # SUID bit",
     "    is_sgid = bool(st.st_mode & stat.S_ISGID)",
     "    assert oct(st.st_mode)[-3:] == '000'",
+    # Checks that the hand-over's own changes make true or false for any agent.
+    "    assert not (st.st_mode & stat.S_ISUID), 'SUID bit was not removed'",
+    "    assert not st.st_mode & 0o2000",
+    "    assert perms & 0o400 == 0",
+    "    assert not (st.st_mode & stat.S_IRUSR)",
 ])
 def test_a_test_comparing_a_mode_the_hand_over_changes_is_flagged(line):
     test = f"import os, stat\n\ndef test_mode():\n    st = os.stat('/home/user/f')\n{line}\n"
@@ -360,7 +365,9 @@ def test_a_test_comparing_a_mode_the_hand_over_changes_is_flagged(line):
     "    assert perms == 0o500",
     "    assert perms == 0o600",
     "    assert perms & 0o077 == 0",  # a mask, not a mode
-    "    assert not (st.st_mode & stat.S_ISUID), 'SUID bit was not removed'",
+    "    assert st.st_mode & stat.S_IRUSR",  # owner reads: true after the hand-over, not negative
+    "    assert not (st.st_mode & stat.S_IXGRP)",
+    '    assert bool(st.st_mode & stat.S_IRUSR), f"Owner does not have read on {path}"',
     "    os.chmod(path, 0o000)",  # the test's own file
     "    assert oct(st.st_mode)[-3:] == '640'",
     '    assert content == "100"',  # not a mode
