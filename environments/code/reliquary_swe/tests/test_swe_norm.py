@@ -436,13 +436,53 @@ def commands(case):
     return [call[1]["command"] for call in case["calls"]]
 
 
-def test_the_forced_venv_path_is_un_ignored_so_the_capture_carries_it():
-    # An image whose .venv ignores itself (R2E: `.venv/.gitignore` = `*`) would keep a
-    # merely force-added file out of the capture: the gold alone would travel, scoring 1.
+def _forced_venv_command():
     cases = {c["name"]: c for c in conformance.golden_cases(0, b"G", "/testbed", python=False)}
-    forced = commands(cases["gold_with_forced_ignored_path_0"])[-1]
-    assert "echo '!zz_reliquary.pth' >> .venv/.gitignore" in forced
+    return commands(cases["gold_with_forced_ignored_path_0"])[-1]
+
+
+def test_the_forced_venv_path_is_un_ignored_before_it_is_added():
+    forced = _forced_venv_command()
     assert forced.index(".venv/.gitignore") < forced.index("git add -f .venv/zz_reliquary.pth")
+
+
+@pytest.mark.parametrize("root_ignore, venv_ignore", [
+    (None, None),
+    (".venv/\n", None),  # a root rule on the directory
+    (".venv/", "*"),  # no trailing newline anywhere, R2E's own `*`
+    ("*.pyc\n.venv", "*.log"),  # last lines without a newline
+    (None, "*\n"),
+])
+def test_the_forced_venv_file_reaches_a_fresh_index_capture(tmp_path, root_ignore, venv_ignore):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), "-c", "user.email=a@b", "-c", "user.name=n",
+                               *args], check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q")
+    (repo / "src.py").write_text("x = 1\n")
+    if root_ignore is not None:
+        (repo / ".gitignore").write_text(root_ignore)
+    git("add", "-A")
+    git("commit", "-q", "-m", "base")
+    if venv_ignore is not None:
+        (repo / ".venv").mkdir()
+        (repo / ".venv" / ".gitignore").write_text(venv_ignore)
+    command = _forced_venv_command().replace("cd /testbed", f"cd {repo}", 1)
+    subprocess.run(["sh", "-c", command], check=True, capture_output=True)
+    # What a capture sees: a fresh index and `git add -A`, which honours every ignore rule.
+    env = {**__import__("os").environ, "GIT_INDEX_FILE": str(tmp_path / "fresh-index")}
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True, env=env)
+    names = subprocess.run(["git", "-C", str(repo), "ls-files"], check=True, env=env,
+                           capture_output=True, text=True).stdout.split()
+    assert ".venv/zz_reliquary.pth" in names
+    # No last line is glued to a rule: every rule line stands alone.
+    if venv_ignore is not None:
+        lines = (repo / ".venv" / ".gitignore").read_text().splitlines()
+        assert venv_ignore.rstrip("\n") in lines and "!zz_reliquary.pth" in lines
 
 
 def test_the_planted_patch_cases_break_or_arm_the_agents_git():

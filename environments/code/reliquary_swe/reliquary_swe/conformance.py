@@ -104,6 +104,17 @@ def _passing_overrides(fail_to_pass: tuple[str, ...]) -> dict[str, str]:
     return overrides
 
 
+# Makes `.venv/zz_reliquary.pth` visible to a capture whatever the image ignores: a root
+# `.gitignore` rule for `.venv/` (a negation cannot re-include under an excluded
+# directory, so the directory is un-ignored at the root, the later rule winning) and a
+# `.venv/.gitignore` of `*` (R2E). `printf` starts on a fresh line, so a last line with
+# no trailing newline is not glued to the rule.
+VENV_UNIGNORE = (
+    "printf '\\n!.venv/\\n!.venv/zz_reliquary.pth\\n' >> .gitignore && "
+    "printf '\\n!zz_reliquary.pth\\n' >> .venv/.gitignore"
+)
+
+
 def golden_cases(index: int, gold: bytes, workdir: str, *, python: bool,
                  fail_to_pass: tuple[str, ...] = ()) -> list[dict]:
     q = shlex.quote(workdir)
@@ -120,8 +131,7 @@ def golden_cases(index: int, gold: bytes, workdir: str, *, python: bool,
                 # out of the capture, and the gold alone would rightly score 1.
                 _bash(
                     f"cd {q} && mkdir -p .venv && echo 'import os' > "
-                    ".venv/zz_reliquary.pth && echo '!zz_reliquary.pth' >> .venv/.gitignore"
-                    " && git add -f .venv/zz_reliquary.pth"
+                    ".venv/zz_reliquary.pth && " + VENV_UNIGNORE + " && git add -f .venv/zz_reliquary.pth"
                 ),
             ],
         },
