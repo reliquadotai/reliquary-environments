@@ -143,12 +143,22 @@ _PR_SET_NO_NEW_PRIVS = 38
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 
+def handed_mode(mode: int, directory: bool) -> int:
+    """The permission bits `hand_over` leaves on an entry whose mode was `mode`: only what
+    the test uid needs to read it. A directory gets u+rx (to be listed and entered); a
+    file gets u+r and loses its set-id bits. Nothing gains w, and a file never gains x."""
+    mode = stat.S_IMODE(mode)
+    if directory:
+        return mode | stat.S_IRUSR | stat.S_IXUSR
+    return (mode & ~(stat.S_ISUID | stat.S_ISGID)) | stat.S_IRUSR
+
+
 def hand_over(roots: list, uid: int, root: str = "/", lchown=os.lchown, chmod=os.chmod) -> None:
     """Give every entry under each existing root (the root included) to `uid`: the link
-    itself, never its target, and a linked root is not entered. Directories get u+rwx
-    (before they are listed), other files u+rw, and u+x where any x bit was set; set-id
-    bits are dropped. A device node goes to root with mode 0. A file with more links than
-    the roots hold shares its inode with the rest of the box and is left alone."""
+    itself, never its target, and a linked root is not entered. Modes change only as far
+    as reading needs (`handed_mode`); a directory is opened before it is listed. A device
+    node goes to root with mode 0. A file with more links than the roots hold shares its
+    inode with the rest of the box and is left alone."""
     found = []
     seen = {}
     for top in roots:
@@ -160,7 +170,7 @@ def hand_over(roots: list, uid: int, root: str = "/", lchown=os.lchown, chmod=os
             info = os.lstat(path)
             if stat.S_ISDIR(info.st_mode):
                 lchown(path, uid, uid)
-                chmod(path, stat.S_IMODE(info.st_mode) | stat.S_IRWXU)
+                chmod(path, handed_mode(info.st_mode, True))
                 pending += [entry.path for entry in os.scandir(path)]
                 continue
             found.append((path, info))
@@ -176,9 +186,8 @@ def hand_over(roots: list, uid: int, root: str = "/", lchown=os.lchown, chmod=os
         lchown(path, uid, uid)
         if stat.S_ISLNK(info.st_mode):
             continue
-        mode = stat.S_IMODE(info.st_mode) & ~(stat.S_ISUID | stat.S_ISGID)
-        extra = stat.S_IRUSR | stat.S_IWUSR | (stat.S_IXUSR if mode & 0o111 else 0)
-        chmod(path, mode | extra)
+        # Always written, even when unchanged: chown may or may not clear set-id bits.
+        chmod(path, handed_mode(info.st_mode, False))
 
 
 def test_argv(report: str) -> list:

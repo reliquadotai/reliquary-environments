@@ -69,11 +69,11 @@ license = "Terminal-Bench: Apache-2.0; MiMo-V2.6-RL-oss: Apache-2.0 per its data
 # tasks, converted to run on one shared base image (`tmax_base/`) and graded
 # in a fresh box that receives /app and /home/user (docs/tmax.md). Which
 # tasks are kept is `reliquary_terminal/tmax_manifest.json`. Of 14,601, the
-# static stage excludes 8,625 (8,407 have no successful recorded run) and
-# the box phase (scripts/tmax_validate.py, 2026-10-05/08) 978 more: 4,998
+# static stage excludes 8,636 (8,407 have no successful recorded run) and
+# the box phase (scripts/tmax_validate.py, 2026-10-05/08) 975 more: 4,990
 # are kept. They come in two disjoint parts, `--taskset.split tmax_sft`
-# (2,406, the SFT corpus job) and `tmax_rl` (2,592, RL); `tmax` is both.
+# (2,401, the SFT corpus job) and `tmax_rl` (2,589, RL); `tmax` is both.
 # The base image is pinned by the local id it was validated on: it is not in
 # a registry yet (docs/tmax.md, "What is left").
 tmax = "hf:allenai/TMax-15K@e3ded940596cc611c9815684ba51a7e8ee0cffc9"
-tmax_rows = 4998
+tmax_rows = 4990

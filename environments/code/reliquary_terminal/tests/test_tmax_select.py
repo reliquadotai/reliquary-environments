@@ -338,3 +338,48 @@ def test_repin_base_image_from_a_local_id_to_the_pushed_digest():
         tmax_select.repin_base_image(manifest, pushed, "sha256:" + "5" * 64)
     with pytest.raises(ValueError, match="nothing to repin"):
         tmax_select.repin_base_image(out, pushed, local)
+
+
+@pytest.mark.parametrize("line", [
+    "    assert stat.S_IMODE(st.st_mode) == 0o000",
+    '    "hidden.enc": 0o000,',
+    "    assert perms == 0o200, oct(perms)",
+    "    assert perms == 0o4755",
+    "    if st.st_mode & stat.S_ISUID:",
+    "    if st.st_mode & 0o4000:  # SUID bit",
+    "    is_sgid = bool(st.st_mode & stat.S_ISGID)",
+    "    assert oct(st.st_mode)[-3:] == '000'",
+])
+def test_a_test_comparing_a_mode_the_hand_over_changes_is_flagged(line):
+    test = f"import os, stat\n\ndef test_mode():\n    st = os.stat('/home/user/f')\n{line}\n"
+    assert tmax_select.mode_changed_by_hand_over(test) == [line.strip()]
+
+
+@pytest.mark.parametrize("line", [
+    "    assert stat.S_IMODE(st.st_mode) == 0o400",  # u+r already: unchanged
+    "    assert perms == 0o500",
+    "    assert perms == 0o600",
+    "    assert perms & 0o077 == 0",  # a mask, not a mode
+    "    assert not (st.st_mode & stat.S_ISUID), 'SUID bit was not removed'",
+    "    os.chmod(path, 0o000)",  # the test's own file
+    "    assert oct(st.st_mode)[-3:] == '640'",
+    '    assert content == "100"',  # not a mode
+    "    # expected 0o000 once locked",
+])
+def test_a_mode_the_hand_over_keeps_is_not_flagged(line):
+    test = f"import os, stat\n\ndef test_mode():\n    st = os.stat('/home/user/f')\n{line}\n"
+    assert tmax_select.mode_changed_by_hand_over(test) == []
+
+
+def test_a_test_comparing_a_handed_over_mode_is_excluded_but_keeps_its_packages(tmp_path):
+    src = tmp_path / "src"
+    tid = make_task(src, "task_000001_aaaaaaaa")
+    (src / tid / "test_final_state.py").write_text(
+        "import os, stat\n\ndef test_locked():\n"
+        "    assert stat.S_IMODE(os.stat('/home/user/q.txt').st_mode) == 0o000\n"
+    )
+    manifest, base = tmax_select.build_manifest(
+        tmax.Source(src), tmax_select.AptIndex.parse([PACKAGES]), tmax_select.Contamination({})
+    )
+    assert manifest["tasks"][tid]["reasons"] == ["mode_changed_by_hand_over"]
+    assert "tesseract-ocr" in base["apt.txt"].split()

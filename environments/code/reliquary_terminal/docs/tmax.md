@@ -13,8 +13,10 @@ selection manifest, decontamination, grading and split wiring, with tests that
 run without Docker. **The box phase** runs `scripts/tmax_validate.py` on a
 container host. It builds the shared base image, validates every task that
 passed the static stage, and feeds its results back into the manifest. It ran
-from 2026-10-05 to 2026-10-08 ("Full run" below): **4,998 tasks are kept**,
-2,406 in `tmax_sft` and 2,592 in `tmax_rl`. What is still missing before
+from 2026-10-05 to 2026-10-08 ("Full run" below): **4,998 tasks were kept**;
+the static reasons added since (`environment_in_artifact_roots`,
+`mode_changed_by_hand_over`) leave **4,990**, 2,401 in `tmax_sft` and 2,589
+in `tmax_rl`. What is still missing before
 anyone trains on them is listed under "What is left".
 
 ## What TMax ships, and why it is not a Harbor dataset
@@ -176,11 +178,13 @@ run.
 | `setup_network` | 630 | 78 | the data half still fetches something (curl/wget to a URL, `git clone`, rustup, `go get/install`, npm/yarn, `cargo install/fetch`, `pip download`, `add-apt-repository`, `apt-key`, ...) |
 | `docker_in_test` | 12 | 0 | the final test calls docker |
 | `in_process_agent_code` | 201 | 85 | the final test loads the agent's code into pytest's process (`sys.path`, `importlib` loaders, `eval`; `sandbox.in_process_agent_code`): that code could write a passing report and exit. Added 2026-10-07, after the base was built: these tasks' packages stay in the base |
-| `environment_in_artifact_roots` | not yet counted | not yet counted | `%environment` points PATH, `LD_*`, `BASH_ENV`, `ENV`, `PYTHON*`, `HOME`, `XDG_*`, `GIT_*`, `NODE_*`, `PERL5*`, `RUBY*`, `JAVA_*`, `CLASSPATH` or `*_OPTIONS` at `/app` or `/home/user` (or at a relative entry): a grading command would run or load the agent's files. Added 2026-10-09, after the base was built; also refused at load |
+| `environment_in_artifact_roots` | 20 | 1 | `%environment` points PATH, `LD_*`, `BASH_ENV`, `ENV`, `PYTHON*`, `HOME`, `XDG_*`, `GIT_*`, `NODE_*`, `PERL5*`, `RUBY*`, `JAVA_*`, `CLASSPATH` or `*_OPTIONS` at `/app` or `/home/user` (or at a relative entry): a grading command would run or load the agent's files. Added 2026-10-09, after the base was built; also refused at load. The one kept task it removed is `task_007472_ddf365ce` (`BASH_ENV`) |
+| `mode_changed_by_hand_over` | 19 | 10 | the final test compares a mode the grading box's hand-over to the test uid changes (decision 11, `tmax_box.handed_mode`): an owner digit without `r` (`0o000`), or a set-id bit (`S_ISUID`, `& 0o4000`, `0o4755`). A regex over the final test (`tmax_select.mode_changed_by_hand_over`), so a lower bound: a mode read through `stat -c` or built at run time is missed. Added 2026-10-10, after the base was built; it removed 7 kept tasks, and 3 the box phase had excluded now carry this reason instead |
 | `pip_pin_conflict`, `apt_unknown`, `apt_conflict` | 0 | 0 | see 5 |
 | `decontaminated` | 4 | 1 | overlaps Terminal-Bench 2.0 or 2.1 (see 7) |
 
-The result: 8,540 excluded and **6,061 pending** for the box phase (8,625 and 5,976 since `in_process_agent_code`). Their
+The result: 8,540 excluded and **6,061 pending** for the box phase (8,625 and 5,976 since `in_process_agent_code`; 8,636 and 5,965 since
+`environment_in_artifact_roots` and `mode_changed_by_hand_over`). Their
 domains are data_querying 871, data_science 778, software_engineering 735,
 file_operations 705, data_processing 697, debugging 690, scientific_computing
 663, security 592 and system_administration 330. 3,785 of them are 8/8 in
@@ -218,7 +222,7 @@ That check targets River's weak tests, so expect fewer.
 
 ### 8. The split
 
-`--taskset.split tmax` loads the manifest's 4,998 kept tasks (`tmax_sft` and
+`--taskset.split tmax` loads the manifest's 4,990 kept tasks (`tmax_sft` and
 `tmax_rl` one part of them, decision 10) in ascending sha256 of
 the task id, the same fixed order as `r2e`. `--taskset.num-tasks N` takes the
 first N. Each task's grading box is the same base image with no network. 2 CPU
@@ -258,21 +262,21 @@ union, for validation and evaluation; a training source names a part.
   2,891 SFT and 3,170 RL (47.7 %). Anchors are large and dealt whole, so
   domains differ. Hashing anchors one by one instead gave 27 % to 62 % per
   domain; hashing every task on its id gives 48-52 % but splits anchors.
-- **Final balance** (the 4,998 kept tasks): 2,406 SFT and 2,592 RL
+- **Final balance** (the 4,990 kept tasks): 2,401 SFT and 2,589 RL
   (48.1 %). All 38 anchors still have kept tasks, each in one part only.
 
   | domain | kept | `tmax_sft` | `tmax_rl` | SFT share |
   |---|---|---|---|---|
   | data_querying | 853 | 464 | 389 | 54 % |
   | data_science | 669 | 280 | 389 | 42 % |
-  | data_processing | 645 | 294 | 351 | 46 % |
+  | data_processing | 644 | 293 | 351 | 45 % |
   | software_engineering | 560 | 269 | 291 | 48 % |
   | file_operations | 528 | 254 | 274 | 48 % |
   | scientific_computing | 526 | 280 | 246 | 53 % |
   | debugging | 524 | 245 | 279 | 47 % |
-  | security | 467 | 206 | 261 | 44 % |
-  | system_administration | 226 | 114 | 112 | 50 % |
-  | **all** | **4,998** | **2,406** | **2,592** | **48 %** |
+  | security | 461 | 203 | 258 | 44 % |
+  | system_administration | 225 | 113 | 112 | 50 % |
+  | **all** | **4,990** | **2,401** | **2,589** | **48 %** |
 - `SFT_FRACTION` must be fixed before the SFT job starts; changing it
   re-deals the anchors.
 
@@ -334,8 +338,12 @@ runs `relay`, then `exec`s `tmax_box.py run-tests`, which, as root:
   process;
 - hands `/app` and `/home/user` to the test uid (61000): every entry, the
   root included, gets that owner (a link itself, never its target; a linked
-  root is not entered), directories `u+rwx` before they are listed, files
-  `u+rw` and `u+x` where any `x` bit was set, set-id bits dropped. A device
+  root is not entered). Modes change only as far as reading needs
+  (`tmax_box.handed_mode`): a directory gets `u+rx` before it is listed, a
+  file `u+r`, and a file's set-id bits are dropped; nothing gains `w`, and a
+  file never gains `x`, so a `0o400` or `0o500` the agent set stays as it
+  is. A final test that compares a mode this still changes is excluded
+  (`mode_changed_by_hand_over`, decision 6). A device
   node goes to root with mode 0, and a file whose inode has links outside
   the roots is left alone;
 - names the test uid in `/etc/passwd` and `/etc/group` (`reliquary-test`,
@@ -369,7 +377,13 @@ it is alive when root writes the verdict.
 read the agent's trees as their owner, not as root. pytest runs under `-I`, so
 `PYTHONPATH` and the other `PYTHON*` variables no longer reach the test
 process itself (they still reach what it starts). HOME is no longer `/root`:
-a test that relied on root's home or root's privileges fails.
+a test that relied on root's home or root's privileges fails. That includes
+writing where the owner may not: a file the agent left without `u+w`, or a
+directory without `u+w`. The hand-over adds no `w`: no kept task's setup or
+reference makes a directory read-only for its owner (they only do so for
+files, 26 tasks, such as `chmod 0400`), and no final test compares a
+directory mode without `u+w`, so `u+w` on directories would buy nothing
+measured and could only change a mode a test reads.
 
 **What is left.** The verdict is root's view of pytest's exit status. The
 CTRF report is not: pytest writes it as the test uid, so code the test
@@ -449,15 +463,17 @@ rerun. Wall time per task: median 45 s, mean 67 s.
 All 6,061 tasks pending on 2026-10-05 were validated. 85 of them are now
 excluded by the static stage (`in_process_agent_code`, decision 6, added
 2026-10-07): their final test runs the agent's code inside pytest's process,
-and signed-episode sandboxes refuse such rows. The manifest counts the other
-5,976.
+and signed-episode sandboxes refuse such rows. The manifest counted the other
+5,976. Since then the static stage also removes 11 for
+`environment_in_artifact_roots` (1) and `mode_changed_by_hand_over` (10);
+the last column counts the 5,965 left.
 
-| | all 6,061 validated | the 5,976 in the manifest |
+| | all 6,061 validated | the 5,965 in the manifest |
 |---|---|---|
-| **kept** | 5,067 (83.6 %) | **4,998 (83.6 %)** |
-| `solution_fails` | 524 | 514 |
+| **kept** | 5,067 (83.6 %) | **4,990 (83.7 %)** |
+| `solution_fails` | 524 | 512 |
 | `mutation_passes` | 162 | 162 |
-| `setup_nondeterministic` | 152 | 152 |
+| `setup_nondeterministic` | 152 | 151 |
 | `initial_state_fails` | 51 | 51 |
 | `setup_failed` | 46 | 46 |
 | `artifact_cap` | 41 | 41 |

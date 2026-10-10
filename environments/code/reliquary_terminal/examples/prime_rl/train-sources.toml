@@ -4,7 +4,7 @@
 # checks nothing here names either.
 #
 # - `train`: MiMo-V2.6's 64 terminal tasks; the box receives the agent's /app.
-# - `tmax_rl`: the RL part of TMax-15K's kept tasks, 2,592 of 4,998
+# - `tmax_rl`: the RL part of TMax-15K's kept tasks, 2,589 of 4,990
 #   (docs/tmax.md); the box receives /app and /home/user. Its base image is
 #   pinned by a local id until it is pushed to a registry, so this source
 #   only runs on a host that has that image (docs/tmax.md, "What is left").

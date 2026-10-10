@@ -42,11 +42,11 @@ def test_hand_over_gives_every_entry_to_the_uid_and_never_follows_links(tmp_path
     assert names == {"home/user", "home/user/sub", "home/user/sub/secret.txt",
                      "home/user/link"}
     assert all(uid == gid == 61000 for _, uid, gid in owned)
-    assert mode_of(secret) & 0o600 == 0o600
+    assert mode_of(secret) == 0o400  # readable, and no more
     assert mode_of(outside) == 0o040  # never through the link
 
 
-def test_hand_over_opens_closed_directories_and_keeps_execute_where_it_was(tmp_path):
+def test_hand_over_opens_closed_directories_and_adds_only_read_to_files(tmp_path):
     app = tmp_path / "app"
     closed = app / "closed"
     closed.mkdir(parents=True)
@@ -56,15 +56,48 @@ def test_hand_over_opens_closed_directories_and_keeps_execute_where_it_was(tmp_p
     (closed / "data").chmod(0o004)
     (app / "suid").write_text("s")
     (app / "suid").chmod(0o4755)
+    shut = app / "shut"
+    shut.mkdir()
+    (shut / "inner").write_text("i")
+    shut.chmod(0)
     closed.chmod(0o600)  # no x: nothing under it can be reached
     owned = []
     tmax_box.hand_over(["/app"], 61000, root=str(tmp_path),
                        lchown=lambda path, uid, gid: owned.append(path))
-    assert str(closed / "tool") in owned and str(closed / "data") in owned
+    assert str(closed / "tool") in owned and str(shut / "inner") in owned
     assert mode_of(closed) == 0o700
-    assert mode_of(closed / "tool") == 0o750
-    assert mode_of(closed / "data") == 0o604
+    assert mode_of(shut) == 0o500  # u+rx: listed and entered, still not writable
+    assert mode_of(closed / "tool") == 0o450  # u+r only: no x, no w added
+    assert mode_of(closed / "data") == 0o404
     assert mode_of(app / "suid") == 0o755  # no set-id bit survives the hand-over
+
+
+def test_hand_over_keeps_the_modes_an_agent_set_that_reading_allows(tmp_path):
+    app = tmp_path / "app"
+    app.mkdir()
+    modes = {"ro": 0o400, "rx": 0o500, "shared": 0o444, "private": 0o600, "none": 0o000,
+             "wo": 0o200, "suid_ro": 0o4500, "sgid": 0o2644}
+    for name, mode in modes.items():
+        (app / name).write_text(name)
+        (app / name).chmod(mode)
+    sticky = app / "sticky"
+    sticky.mkdir()
+    sticky.chmod(0o2555)  # a set-gid directory with no w for its owner: kept as it is
+    tmax_box.hand_over(["/app"], 61000, root=str(tmp_path), lchown=lambda *a: None)
+    assert {name: mode_of(app / name) for name in modes} == {
+        "ro": 0o400, "rx": 0o500, "shared": 0o444, "private": 0o600, "none": 0o400,
+        "wo": 0o600, "suid_ro": 0o500, "sgid": 0o644}
+    assert mode_of(sticky) == 0o2555
+
+
+@pytest.mark.parametrize("mode, directory, handed", [
+    (0o400, False, 0o400), (0o000, False, 0o400), (0o200, False, 0o600),
+    (0o050, False, 0o450), (0o4755, False, 0o755), (0o6711, False, 0o711),
+    (0o600, True, 0o700), (0o000, True, 0o500), (0o555, True, 0o555),
+    (0o2750, True, 0o2750), (0o100644, False, 0o644), (0o040300, True, 0o700),
+])
+def test_handed_mode_adds_only_what_reading_needs(mode, directory, handed):
+    assert tmax_box.handed_mode(mode, directory) == handed
 
 
 def test_hand_over_leaves_a_file_shared_with_the_rest_of_the_box_alone(tmp_path):

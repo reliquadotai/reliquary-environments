@@ -9,7 +9,7 @@ section 4, option C):
 | --- | --- | --- | --- |
 | `eval` | Terminal-Bench 2.1, 89 tasks, pinned by digest | in the agent's own box, as it ships | the number stays comparable to published results |
 | `train` | MiMo-V2.6-RL-oss's 64 Terminal-Bench-format tasks | in a fresh box that receives only the agent's `/app` | a training reward must not be reachable by editing the grader |
-| `tmax` | TMax-15K, converted; the 4,998 kept tasks of `tmax_manifest.json`; `tmax_sft` (2,406) and `tmax_rl` (2,592) are its two disjoint parts | in a fresh box that receives `/app` and `/home/user`, with the task's inputs put back | the same; TMax's work lives in `/home/user` |
+| `tmax` | TMax-15K, converted; the 4,990 kept tasks of `tmax_manifest.json`; `tmax_sft` (2,401) and `tmax_rl` (2,589) are its two disjoint parts | in a fresh box that receives `/app` and `/home/user`, with the task's inputs put back | the same; TMax's work lives in `/home/user` |
 
 `--taskset.split` has no default, so a training source cannot fall back to
 the evaluation set by omission.
@@ -140,12 +140,12 @@ task is kept or left out, is in [docs/tmax.md](docs/tmax.md).
 
 - `scripts/tmax_manifest.py` recomputes the selection manifest and the base
   image files from pinned inputs. This is the static stage, with no
-  container. Of 14,601 tasks, 5,976 pass it.
+  container. Of 14,601 tasks, 5,965 pass it.
 - `scripts/tmax_validate.py` is the box phase. It builds the base image, then
   checks each pending task in containers: no-op 0, reference 1 in a separate
-  box ×3, mutants 0, deterministic setup. It ran on 2026-10-05/08 and keeps
-  **4,998** tasks.
-- `--taskset.split tmax_sft` (2,406 tasks) and `tmax_rl` (2,592) are two
+  box ×3, mutants 0, deterministic setup. It ran on 2026-10-05/08; with the
+  static reasons added since, **4,990** tasks are kept.
+- `--taskset.split tmax_sft` (2,401 tasks) and `tmax_rl` (2,589) are two
   disjoint parts, for an SFT corpus job and for RL. `tmax` is both, for
   validation. `--taskset.num-tasks N` takes the first N of the split.
 - **Not ready to train on yet:** the base image (10.3 GB) is pinned by the

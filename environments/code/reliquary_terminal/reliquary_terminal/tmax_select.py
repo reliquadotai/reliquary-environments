@@ -42,6 +42,7 @@ STATIC_REASONS = (
     "docker_in_test",
     "in_process_agent_code",
     "environment_in_artifact_roots",
+    "mode_changed_by_hand_over",
     "pip_pin_conflict",
     "apt_unknown",
     "apt_conflict",
@@ -49,7 +50,9 @@ STATIC_REASONS = (
 )
 # Static reasons added after the base image was built (2026-10-05): they
 # exclude a task but leave its packages in the base.
-POST_BASE_REASONS = frozenset({"in_process_agent_code", "environment_in_artifact_roots"})
+POST_BASE_REASONS = frozenset(
+    {"in_process_agent_code", "environment_in_artifact_roots", "mode_changed_by_hand_over"}
+)
 # Reason codes the box phase adds (`scripts/tmax_validate.py`).
 BOX_REASONS = (
     "base_missing_package",
@@ -74,6 +77,46 @@ BASE_APT = ("python3", "python3-pip", "ca-certificates")
 BASE_PIP = ("pytest", "pytest-json-ctrf")
 
 _DOCKER = re.compile(r"\bdocker(?:-compose)?\b(?![-_.]?file)")
+
+# A mode the final test names: an octal literal (`0o400`), or a quoted one on a line
+# that reads a mode (`oct(st.st_mode)[-3:] == "000"`). A literal right after `&`, `|`
+# or `~` is a mask, and one in a call that sets a mode is the test's own.
+_MODE_LITERAL = re.compile(r"(?<![\w.])0o([0-7]{3,5})\b")
+_QUOTED_MODE = re.compile(r"""["'](?:0o|0)?([0-7]{3,4})["']""")
+_READS_MODE = re.compile(r"\boct\(|st_mode|S_IMODE|%a\b")
+_MASKED = re.compile(r"[&|~]\s*\(?\s*$")
+_SETS_MODE = re.compile(r"\b(?:chmod|fchmod|lchmod|mkdir|makedirs|umask|open|mkfifo|mknod)\s*\(")
+# The test reads a set-id bit, which the hand-over drops: `st_mode & stat.S_ISUID`,
+# `st_mode & 0o4000`. Not when it only checks the bit is gone (`not ...`).
+_SETID_READ = re.compile(r"S_IS[UG]ID|&\s*0o[246]000\b")
+
+
+def mode_changed_by_hand_over(test: str) -> list[str]:
+    """The lines of a final test that compare a mode the grading box's hand-over changes
+    (`tmax_box.handed_mode`, file view): an owner digit without `r`, or a set-id bit. A
+    regex lower bound: a mode built at run time, or read through `stat -c`, is missed."""
+    from reliquary_terminal.tmax_box import handed_mode
+
+    def changed(digits: str) -> bool:
+        mode = int(digits, 8) & 0o7777
+        return handed_mode(mode, False) != mode
+
+    evidence = []
+    for line in test.splitlines():
+        code = line.split("#", 1)[0]
+        hit = _SETID_READ.search(code) and not re.search(r"\bnot\b", code)
+        if not _SETS_MODE.search(code):
+            hit = hit or any(
+                changed(m.group(1))
+                for m in _MODE_LITERAL.finditer(code)
+                if not _MASKED.search(code[: m.start()])
+            )
+            hit = hit or bool(_READS_MODE.search(code)) and any(
+                changed(m.group(1)) for m in _QUOTED_MODE.finditer(code)
+            )
+        if hit:
+            evidence.append(line.strip())
+    return evidence
 
 
 # --------------------------------------------------------------------------
@@ -133,6 +176,11 @@ def task_facts(source: tmax.Source, task_id: str) -> TaskFacts:
     evidence = in_process_agent_code({tmax.FINAL_TEST: test.encode()})
     if evidence:
         facts.reasons["in_process_agent_code"] = "; ".join(evidence)[:300]
+    # The grading box hands the agent's files to the test uid (tmax_box.hand_over),
+    # changing some modes: a test that compares one would fail an honest agent.
+    evidence = mode_changed_by_hand_over(test)
+    if evidence:
+        facts.reasons["mode_changed_by_hand_over"] = "; ".join(evidence)[:300]
     return facts
 
 
