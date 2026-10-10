@@ -45,7 +45,8 @@ adapters are gone.
     and repeated gradings agree. Passing it is what plugs an env in.
 
 Bridge budgets an env must fit: setup at most 600 s, each grading step (finalize, scoring)
-between 35 s and 810 s. `TaskData.resources` gives cpu, memory and disk; pids and the
+between 35 s and 810 s (at least 70 s for a task with `grading_setup`, which has its own
+earlier deadline inside the step). `TaskData.resources` gives cpu, memory and disk; pids and the
 per-call timeout come from the gateway's defaults for the env.
 
 ### What happens when a hook fails
@@ -57,7 +58,7 @@ Every hook runs in the sandbox's unprivileged scoring process, never in the gate
 | `setup` (agent's box) | the session open fails; no episode exists | ours |
 | `finalize` (agent's box) | an exception: graded 0 (`extract_failed`, counted per env); past its deadline: graded 0 (`extract_timeout`) | the agent's outcome |
 | `grading_setup` (pristine box, nothing of the agent in it yet) | the episode is aborted (void, may be re-run) | ours |
-| a reward (pristine box, artifacts restored) | graded 0 (`grading_failed`, logged and counted per env) | the agent's outcome |
+| a reward (pristine box, artifacts restored) | an exception: graded 0 (`grading_failed`, logged and counted per env); past its deadline: graded 0 (`grading_timeout`) | the agent's outcome |
 
 A real box or runtime fault keeps the sandbox's own label at any step. The rule for env
 code: an exception about us or the image belongs in `setup` or `grading_setup`; anything
