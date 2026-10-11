@@ -6,7 +6,7 @@
   "file": "tasks.zip",
   "sha256": "59e2efd8785d68214f4f8f61c383ef806dff9778d965af5d13cf45f02e3dc106"
  },
- "base_image": "sha256:3d10148ef334ddea2ad5c7f1ea5d541fe8aa7877fe97a35bd6f706238e253f15",
+ "base_image": "ghcr.io/reliquadotai/reliquary-tmax-base@sha256:3d10148ef334ddea2ad5c7f1ea5d541fe8aa7877fe97a35bd6f706238e253f15",
  "apt_snapshot": "20261004T000000Z",
  "terminal_bench": {
   "terminal-bench-2.0": "terminal-bench/terminal-bench-2@sha256:c6fc2e2382c1dbae99b2d5ecd2f4f4a60c3c01e0d84642d69b4afd92e99d078b",
@@ -127,6 +127,7 @@
   "base_pip_requirements": 92,
   "apt_left_out": []
  },
+ "base_image_id": "sha256:3d10148ef334ddea2ad5c7f1ea5d541fe8aa7877fe97a35bd6f706238e253f15",
  "tasks": {
   "task_008403_c5578864": {"hidden": [], "part": "rl", "protected": [], "run": 0, "status": "kept"},
   "task_004765_b1bed7f7": {"reasons": ["no_successful_run"], "status": "excluded"},

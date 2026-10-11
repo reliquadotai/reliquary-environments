@@ -117,9 +117,12 @@ def test_the_shipped_manifest_is_the_validated_one():
     assert manifest["tasks"]["task_005459_ff74e53b"]["status"] == "kept"
     # Every task has a verdict: nothing is left pending.
     assert {e["status"] for e in manifest["tasks"].values()} == {"kept", "excluded"}
-    # Validated on a local image id; `tmax_manifest.py --base-image` repins it
-    # once the image is in a registry (docs/tmax.md).
-    assert manifest["base_image"] == "sha256:3d10148ef334ddea2ad5c7f1ea5d541fe8aa7877fe97a35bd6f706238e253f15"
+    # Validated on a local image id, then pushed and repinned by digest
+    # (docs/tmax.md). The validated id is an OCI manifest digest (containerd
+    # image store), and the push kept that manifest: the digest is the id.
+    validated = "sha256:3d10148ef334ddea2ad5c7f1ea5d541fe8aa7877fe97a35bd6f706238e253f15"
+    assert manifest["base_image_id"] == validated
+    assert manifest["base_image"] == "ghcr.io/reliquadotai/reliquary-tmax-base@" + validated
     known = set(tmax_select.STATIC_REASONS) | set(tmax_select.BOX_REASONS)
     for entry in manifest["tasks"].values():
         if entry["status"] == "excluded":

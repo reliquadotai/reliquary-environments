@@ -130,8 +130,8 @@ shows up there, not as voided episodes.
 - Resources: 2 CPUs, 4 GB; scoring 600 s. Recommended gateway options: tool `bash` only,
   split `tmax` mapped to itself.
 - Image: one shared base image, served by digest from the package's
-  `sandbox-images.lock.json` once that image is in a registry (`environments/code/reliquary_terminal/docs/tmax.md`, "What is
-  left"). The validated image is pushed as is; a rebuild is a new image and needs a new
+  `sandbox-images.lock.json` (`environments/code/reliquary_terminal/docs/tmax.md`, "Full
+  run"). The validated image was pushed as is; a rebuild is a new image and needs a new
   validation.
 
 ## 4. Conformance cases and reference solutions

@@ -148,9 +148,10 @@ task is kept or left out, is in [docs/tmax.md](docs/tmax.md).
 - `--taskset.split tmax_sft` (2,401 tasks) and `tmax_rl` (2,588) are two
   disjoint parts, for an SFT corpus job and for RL. `tmax` is both, for
   validation. `--taskset.num-tasks N` takes the first N of the split.
-- **Not ready to train on yet:** the base image (10.3 GB) is pinned by the
-  local id it was validated on and is in no registry, so the split only runs
-  on a host that has it. See "What is left" in docs/tmax.md.
+- The base image (10.3 GB) is pinned by its registry digest
+  (`ghcr.io/reliquadotai/reliquary-tmax-base@sha256:…`, the image the
+  validation ran on), and `reliquary_terminal/sandbox-images.lock.json` pins
+  it for sandboxes. What is left before training is in docs/tmax.md.
 
 ## Test
 

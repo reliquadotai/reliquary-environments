@@ -10,8 +10,8 @@ Image lists come from each env package's image lock (`sandbox-images.lock.json`,
 `from-lock` prints `{"images": [digests]}` for the tags (or digests) listed one per line
 in `--tags` (every image the lock pins when `--tags` is absent) and refuses, exit 2, a tag
 the lock does not pin: a gateway serves only pinned images. reliquary-terminal's lock
-(`environments/code/reliquary_terminal/reliquary_terminal/sandbox-images.lock.json`) comes
-with its base image in a registry (docs/tmax.md); then:
+(`environments/code/reliquary_terminal/reliquary_terminal/sandbox-images.lock.json`) pins
+its one base image by registry digest (docs/tmax.md):
 
     python scripts/sandbox_images.py from-lock \
         environments/code/reliquary_terminal/reliquary_terminal/sandbox-images.lock.json > terminal.json

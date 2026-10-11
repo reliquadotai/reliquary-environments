@@ -425,8 +425,9 @@ It refuses a task that did not raise in every directory given.
 If the run used a local image id (`build --no-push`, as on 2026-10-05), push
 that image, then pass `--base-image REPOSITORY@sha256:<digest> --validated-id
 sha256:<local id>` to `tmax_manifest.py`: the manifest is repinned to the
-pushed digest and keeps the local id as `base_image_id`. **This has not been
-done** ("What is left").
+pushed digest and keeps the local id as `base_image_id`. Done on 2026-10-11
+for the 2026-10-05 image, without a rebuild: the image the validation ran on
+was tagged and pushed as is (Full run, below).
 
 A regenerated manifest changes pinned numbers in four places:
 `tests/test_tmax_split.py` (the shipped-manifest tests), `tmax_rows` in
@@ -468,6 +469,17 @@ and signed-episode sandboxes refuse such rows. The manifest counted the other
 `environment_in_artifact_roots` (1) and `mode_changed_by_hand_over` (11);
 the last column counts the 5,964 left.
 
+The base image is in a registry since 2026-10-11:
+`ghcr.io/reliquadotai/reliquary-tmax-base@sha256:3d10148e…253f15`, the
+manifest's `base_image`, and the only image `sandbox-images.lock.json` pins.
+It is the validated image itself, tagged and pushed without a rebuild (a
+rebuild from `tmax_base/` gives another image, since most packages there are
+unpinned, and would need a new validation). The host it was validated on
+keeps images in containerd's store, where an image's id is its manifest
+digest, so the pushed digest is the validated id (`base_image_id`). On a
+daemon with the classic store the same pull shows another id (the config
+digest): compare by digest, not by id.
+
 | | all 6,061 validated | the 5,964 in the manifest |
 |---|---|---|
 | **kept** | 5,067 (83.6 %) | **4,989 (83.7 %)** |
@@ -506,29 +518,16 @@ the last column counts the 5,964 left.
 
 ## What is left
 
-1. **The base image in a registry.** The manifest pins the local id the
-   validation ran on, so `tmax`, `tmax_sft` and `tmax_rl` only run on a host
-   that has that image. Push it to a public registry, then:
-
-   ```bash
-   uv run python scripts/tmax_manifest.py --validation validation/ --errors errors-try1/ errors-try2/ \
-       --base-image <registry>/reliquary-tmax-base@sha256:<digest> \
-       --validated-id sha256:3d10148ef334ddea2ad5c7f1ea5d541fe8aa7877fe97a35bd6f706238e253f15
-   ```
-
-   Pushing keeps the image's id, so the validation still holds. A rebuild
-   from `tmax_base/` gives another image, since most packages there are
-   unpinned, and the tasks would have to be validated again.
-2. **The weak-test filter.** The mutation check is too lenient (above). The
+1. **The weak-test filter.** The mutation check is too lenient (above). The
    plan is an audit of each kept task's final test by the 27B teacher, at
    build time and never at reward time, measured against River's labels.
-3. **Decontamination by embeddings.** Decision 7 is lexical (13-word
+2. **Decontamination by embeddings.** Decision 7 is lexical (13-word
    shingles). A paraphrase of a Terminal-Bench task would pass it.
-4. **The consumers.** A signed-episode sandbox serves `tmax` through its
+3. **The consumers.** A signed-episode sandbox serves `tmax` through its
    generic bridge (docs/env-norm.md at the repository root); `tmax_sft` and
    `tmax_rl` are not served there. The SFT corpus job accepts
    `reliquary-swe` only.
-5. **`SFT_FRACTION`** (0.5) must be confirmed before the SFT job starts.
+4. **`SFT_FRACTION`** (0.5) must be confirmed before the SFT job starts.
 
 ## Open questions
 
