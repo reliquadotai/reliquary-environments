@@ -15,7 +15,7 @@ deterministically.
 | --- | --- |
 | [`reliquary-stateful-tools`](environments/tool_use/reliquary_stateful_tools) | A deterministic multi-turn CRM world with exact state-based rewards. |
 | [`reliquary-logic`](environments/reasoning/reliquary_logic) | Twelve families of procedurally generated logic puzzle, graded on typed JSON rather than free text. |
-| [`reliquary-telecom-solo`](environments/tool_use/reliquary_telecom_solo) | τ²-bench's telecom domain in solo mode: 2,285 support tickets scored by predicates over the device and the carrier's records. |
+| [`reliquary-telecom-solo`](environments/tool_use/reliquary_telecom_solo) | τ²-bench's telecom domain in solo mode: 2,285 support tickets scored by predicates over the device and the carrier's records, with τ²-bench's own 134 benchmark tickets held out as a split of their own. |
 | [`reliquary-instruction-following`](environments/instruction_following/reliquary_instruction_following) | 37,196 prompts carrying verifiable constraints, checked by deterministic verifiers rather than by a judge. |
 | [`reliquary-dapo-math`](environments/reasoning/reliquary_dapo_math) | 17,171 competition problems whose answers are integers, so a comparison cannot be lost to surface form. |
 | [`reliquary-science`](environments/reasoning/reliquary_science) | 13,547 science problems — physics, chemistry, CS — whose answer is one number, graded within 2% of the reference without a judge model. |

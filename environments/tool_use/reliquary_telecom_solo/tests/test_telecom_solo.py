@@ -179,21 +179,191 @@ def test_splits_are_disjoint_and_cover_the_corpus() -> None:
                 assert not keys[left] & keys[right]
 
 
-def test_splits_preserve_the_family_mix() -> None:
+def test_the_benchmark_is_upstreams_and_nowhere_else() -> None:
+    """Upstream's `base`, `test` and `small`, and nothing it did not name.
+
+    `base` contains upstream's `train` and `test` and `small` sits beside it,
+    so the union is 134 — and every one of them is a ticket the policy must
+    never have seen when a τ²-bench number is reported for it.
+    """
+    import gzip
+
+    body = gzip.decompress(
+        importlib.resources.files("reliquary_telecom_solo")
+        .joinpath(corpus.BENCHMARK_FILE)
+        .read_bytes()
+    )
+    assert hashlib.sha256(body).hexdigest() == corpus.BENCHMARK_SHA256
+    sets = json.loads(body)
+    assert {name: len(ids) for name, ids in sets.items()} == {
+        "base": 114,
+        "train": 74,
+        "test": 40,
+        "small": 20,
+        "full": 2285,
+    }
+    assert set(sets["full"]) == {task.key for task in corpus.tasks()}
+    held = set(sets["base"]) | set(sets["test"]) | set(sets["small"])
+    assert held == corpus.benchmark_keys()
+    assert len(held) == corpus.BENCHMARK_COUNT == 134
+
+    assert {task.key for task in corpus.rows("benchmark")} == held
+    for split in ("train", "eval", "qualification"):
+        environment = TelecomSoloEnvironment(split)
+        served = {
+            environment.task(index)["metadata"]["key"]
+            for index in range(len(environment))
+        }
+        assert not served & held, split
+    # What v2 exists to fix: v1 trained on 114 of them.
+    assert len({task.key for task in corpus.v1_rows("train")} & held) == 114
+
+
+# Rows per family per split, as environment.toml and the README state them.
+SPLIT_FAMILIES = {
+    "train": {"mobile_data_issue": 166, "service_issue": 10, "mms_issue": 1537},
+    "eval": {"mobile_data_issue": 23, "service_issue": 1, "mms_issue": 195},
+    "qualification": {"mobile_data_issue": 21, "service_issue": 1, "mms_issue": 197},
+    "benchmark": {"mobile_data_issue": 44, "service_issue": 35, "mms_issue": 55},
+}
+
+
+def test_each_split_holds_what_the_manifest_says() -> None:
+    for split, expected in SPLIT_FAMILIES.items():
+        counts: dict[str, int] = {}
+        for task in corpus.rows(split):
+            counts[task.family] = counts.get(task.family, 0) + 1
+        assert counts == expected, split
+        assert len(TelecomSoloEnvironment(split)) == sum(expected.values())
+
+
+def test_the_other_splits_are_v1s_without_the_benchmark() -> None:
+    """The benchmark is lifted out after v1's draw, so nothing moves between
+    train and the held-out splits: a score taken on v1's eval still means
+    what it meant."""
+    held = corpus.benchmark_keys()
+    for split in corpus.V1_SPLITS:
+        v1 = {task.key for task in corpus.v1_rows(split)}
+        assert {task.key for task in corpus.rows(split)} == v1 - held, split
+    for split in ("eval", "qualification"):
+        assert corpus.rows(split) == tuple(
+            task for task in corpus.v1_rows(split) if task.key not in held
+        )
+
+
+# What reliquary_telecom_solo_v1 served: sha256 over the split's task keys in
+# order, joined by newlines, taken from the v1 code before v2 was written.
+V1_ROWS_SHA256 = {
+    "train": (1827, "e680f4e40d109baf178cf28d0e93c362f02df6850e97d060149c659315ada437"),
+    "eval": (228, "27579c19fe8adbad7b10623acfdf0354009c47d6b5b775e6ea691a521a71f31d"),
+    "qualification": (230, "c880a8a50bebdb0fd272fb13bea5963dd3478c0160dea52810a584fe44d3d68b"),
+}
+
+
+def test_v1s_rows_are_unchanged() -> None:
+    for split, (count, digest) in V1_ROWS_SHA256.items():
+        keys = [task.key for task in corpus.v1_rows(split)]
+        assert len(keys) == count, split
+        assert hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest() == digest, split
+    with pytest.raises(ValueError):
+        corpus.v1_rows("benchmark")
+
+
+def test_v1s_splits_preserve_the_family_mix() -> None:
     """Drawn inside each family, so the mix is exact rather than probable.
 
     A hash over the whole corpus would be unbiased in expectation and wrong in
     fact: 10% of the 47 service tickets is 4.7, and where that lands decides
-    whether the eval split holds two of them or nine.
+    whether the eval split holds two of them or nine. v2 keeps the draw and
+    then lifts the benchmark out, which moves the mix on purpose, so the
+    property is v1's and is measured there.
     """
     whole = {
         family: 100 * count / corpus.TASK_COUNT for family, count in FAMILIES.items()
     }
-    for split in corpus.SPLITS:
-        pool = corpus.rows(split)
+    for split in corpus.V1_SPLITS:
+        pool = corpus.v1_rows(split)
         for family, expected in whole.items():
             share = 100 * sum(1 for task in pool if task.family == family) / len(pool)
             assert abs(share - expected) < 1.0, (split, family, share, expected)
+
+
+def test_train_is_one_sft_range_then_one_rl_range() -> None:
+    from reliquary_telecom_solo.layout import use_of, use_range
+
+    train = corpus.rows("train")
+    sft, rl = use_range("sft"), use_range("rl")
+    assert (sft.start, sft.stop, rl.start, rl.stop) == (0, 1220, 1220, 1713)
+    assert sft.stop == rl.start and rl.stop == len(train)
+    assert set(sft).isdisjoint(rl) and set(sft) | set(rl) == set(range(len(train)))
+    assert all(use_of(train[i].key) == "sft" for i in sft)
+    assert all(use_of(train[i].key) == "rl" for i in rl)
+
+    # Family blocks, in the order and of the sizes the manifest documents.
+    blocks: list[list] = []
+    for index, task in enumerate(train):
+        if not blocks or blocks[-1][0] != task.family or index == sft.stop:
+            blocks.append([task.family, index, index])
+        blocks[-1][2] = index + 1
+    assert [tuple(block) for block in blocks] == [
+        ("mobile_data_issue", 0, 83),
+        ("mms_issue", 83, 1220),
+        ("service_issue", 1220, 1230),
+        ("mobile_data_issue", 1230, 1313),
+        ("mms_issue", 1313, 1713),
+    ]
+    # Mobile data splits in half, rounded toward SFT.
+    mobile = SPLIT_FAMILIES["train"]["mobile_data_issue"]
+    assert dict(corpus.SFT_ROWS)["mobile_data_issue"] == (mobile + 1) // 2
+
+    environment = TelecomSoloEnvironment("train")
+    assert environment.task(sft.start)["metadata"]["use"] == "sft"
+    assert environment.task(rl.start)["metadata"]["use"] == "rl"
+    assert "use" not in TelecomSoloEnvironment("eval").task(0)["metadata"]
+    with pytest.raises(ValueError):
+        use_range("train")
+    with pytest.raises(ValueError):
+        use_of(corpus.rows("benchmark")[0].key)
+
+    manifest = tomllib.loads((Path(__file__).parents[1] / "environment.toml").read_text())
+    data = manifest["data"]
+    assert (data["train_sft_start"], data["train_sft_count"]) == (sft.start, len(sft))
+    assert (data["train_rl_start"], data["train_rl_count"]) == (rl.start, len(rl))
+    assert data["benchmark_rows"] == corpus.BENCHMARK_COUNT
+    assert data["benchmark_sha256"] == corpus.BENCHMARK_SHA256
+
+
+def test_the_layout_is_deterministic() -> None:
+    """Rebuilt from nothing, the layout comes out the same: nothing in it
+    depends on a set's iteration order or on what was cached first."""
+    before = {split: [task.key for task in corpus.rows(split)] for split in corpus.SPLITS}
+    for cached in (corpus.rows, corpus.v1_rows, corpus._uses, corpus._family_order, corpus.benchmark_keys):
+        cached.cache_clear()
+    after = {split: [task.key for task in corpus.rows(split)] for split in corpus.SPLITS}
+    assert before == after
+
+    # And in another process under another string-hash seed.
+    import os
+    import subprocess
+    import sys
+
+    script = (
+        "import hashlib; from reliquary_telecom_solo import corpus; "
+        "print(hashlib.sha256('\\n'.join(t.key for s in corpus.SPLITS "
+        "for t in corpus.rows(s)).encode()).hexdigest())"
+    )
+    here = hashlib.sha256(
+        "\n".join(key for split in corpus.SPLITS for key in after[split]).encode()
+    ).hexdigest()
+    for seed in ("1", "2"):
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout.strip() == here
 
 
 def test_the_agent_cannot_call_its_own_marker() -> None:
@@ -477,7 +647,7 @@ def test_a_reference_solution_scores_and_a_truncated_one_does_not() -> None:
 
 def test_the_reference_solution_scores_on_every_split() -> None:
     """The same, sampled across train and eval, which are too large to sweep here."""
-    for split in ("train", "eval"):
+    for split in ("train", "eval", "benchmark"):
         environment = TelecomSoloEnvironment(split)
         for index in range(0, len(environment), 37):
             assert (
@@ -583,7 +753,7 @@ def test_the_task_identity_follows_the_ticket() -> None:
             hashlib.sha256(key.encode("utf-8")).hexdigest() for key in expected
         ]
     ids = {task["id"] for issued in tasks.values() for task in issued}
-    assert len(ids) == 15
+    assert len(ids) == 5 * len(corpus.SPLITS)
     assert all(len(task_id) <= 128 for task_id in ids)
 
 
