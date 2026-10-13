@@ -27,10 +27,15 @@ from reliquary_telecom_solo.corpus import (
     policy,
     rows,
     tool_schemas,
+    use_of,
 )
 from reliquary_telecom_solo.grading import CHECKER_VERSION, grade, transcript_digest
 
-ENVIRONMENT = "reliquary_telecom_solo_v1"
+# v2 serves the same tickets, prompt, tools and grading as v1, and differs only
+# in which split a ticket is in: τ²-bench's own benchmark tickets are a split of
+# their own, and train is laid out as one SFT range then one RL range. The task
+# family names the grading, which did not change, so it stays at v1.
+ENVIRONMENT = "reliquary_telecom_solo_v2"
 TASK_FAMILY = "telecom_solo_v1"
 
 # Upstream's stop tool, name and return value both. `LLMSoloAgent` adds it to
@@ -222,6 +227,7 @@ class TelecomSoloEnvironment:
                 "reference_actions": len(task.gold),
                 "checker_version": CHECKER_VERSION,
                 "split": self.split,
+                **({"use": use_of(task.key)} if self.split == "train" else {}),
             },
         }
 

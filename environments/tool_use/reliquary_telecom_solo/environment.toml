@@ -1,6 +1,6 @@
 schema = "reliquary/environment-source/v2"
 id = "reliquary/telecom-solo"
-version = "0.1.0a1"
+version = "0.2.0a1"
 taskset = "reliquary-telecom-solo"
 entrypoint = "reliquary_telecom_solo:TelecomSoloTaskset"
 compatibility_entrypoint = "reliquary_telecom_solo:TelecomSoloEnvironment"
@@ -34,9 +34,13 @@ maximum = 1.0
 components = ["env_assertions", "actions"]
 
 [data]
-train = "tau2-telecom:v1:train"
-eval = "tau2-telecom:v1:eval"
-qualification = "tau2-telecom:v1:qualification"
+train = "tau2-telecom:v2:train"
+eval = "tau2-telecom:v2:eval"
+qualification = "tau2-telecom:v2:qualification"
+# τ²-bench's own benchmark tickets — the union of upstream's `base`, `test` and
+# `small` sets, 134 ids — held out of every other split. v1 had them in all
+# three: 114 in train. The other splits are v1's, minus these.
+benchmark = "tau2-telecom:v2:benchmark"
 redistributable = true
 license = "MIT"
 # Shipped in the wheel rather than fetched. The tickets, the starting databases
@@ -53,6 +57,29 @@ user_db_sha256 = "4886107ea0c16f8e16d74bef91cfb557de61822afe9361f5a9b241806aea2e
 main_policy_sha256 = "781296ae5419169cb64aac0c4fa2aa6129c78f3c1592f64abd80df6fbabb7042"
 workflow_policy_sha256 = "b174d1f9705b5d7df49468daf99560a5633f86d23e10499a1166a7753706a412"
 tool_schemas_sha256 = "92124e2900cbdc2820c4944494d8146daf862b73cd37a66365c51ae61d9276d9"
+benchmark_source_path = "data/tau2/domains/telecom/split_tasks.json"
+benchmark_source_commit = "4ce7c0397c1eb65c9bbe59aeacfe1ca44a1cd699"
+benchmark_sets = ["base", "test", "small"]
+benchmark_rows = 134
+benchmark_sha256 = "605b488bb9a6acb3c7f4505240a855fdc8681d09aadb16a8f38b2efcfc5c3aec"
+# Rows per split, by family (mobile_data_issue / service_issue / mms_issue):
+#   train          1,713 = 166 / 10 / 1,537
+#   eval             219 =  23 /  1 /   195
+#   qualification    219 =  21 /  1 /   197
+#   benchmark        134 =  44 / 35 /    55
+# Train is shared by ticket (layout.use_of): SFT first, then RL, each one
+# contiguous range of the split, so a corpus job is [start, start + count).
+#   [   0,   83)  mobile_data_issue  SFT    83  first half of its train rows
+#   [  83, 1220)  mms_issue          SFT  1137
+#   [1220, 1230)  service_issue      RL     10  all of them
+#   [1230, 1313)  mobile_data_issue  RL     83  second half
+#   [1313, 1713)  mms_issue          RL    400
+# Within a family, rows run in the salted rank that drew them into train: a
+# shuffle, since upstream lists tickets roughly easiest first.
+train_sft_start = 0
+train_sft_count = 1220
+train_rl_start = 1220
+train_rl_count = 493
 
 [provenance]
 source_repository = "https://github.com/reliquadotai/reliquary-environments"

@@ -41,7 +41,7 @@ class TelecomSoloState(vf.State):
     """
 
     index: int = 0
-    split: Literal["train", "eval", "qualification"] = "train"
+    split: Literal["train", "eval", "qualification", "benchmark"] = "train"
     calls: list[dict[str, Any]] = Field(default_factory=list)
     ended: bool = False
 
@@ -376,7 +376,7 @@ class TelecomSoloData(vf.TaskData):
     reward_basis: tuple[str, ...]
     assertions: int
     reference_actions: int
-    split: Literal["train", "eval", "qualification"]
+    split: Literal["train", "eval", "qualification", "benchmark"]
 
 
 class TelecomSoloTaskConfig(vf.TaskConfig):
@@ -473,7 +473,7 @@ class TelecomSoloTask(
 
 
 class TelecomSoloConfig(vf.TasksetConfig):
-    split: Literal["train", "eval", "qualification"] = "train"
+    split: Literal["train", "eval", "qualification", "benchmark"] = "train"
     task: TelecomSoloTaskConfig = TelecomSoloTaskConfig()
 
 

@@ -18,6 +18,13 @@ uv run pytest
 uv run python -c "import verifiers.v1 as vf; c=vf.taskset_config_type('reliquary-telecom-solo'); print(next(iter(vf.load_taskset(c(id='reliquary-telecom-solo')))).key)"
 ```
 
+After changing any file the wheel ships, or `environment.toml`, rewrite the
+goldens and the artifact manifest that pins them:
+
+```bash
+uv run python scripts/write_goldens.py
+```
+
 To evaluate a model:
 
 ```bash
@@ -199,24 +206,65 @@ Nothing else in the vendored code samples.
 
 ## Splits
 
-`train`, `eval` and `qualification` take 80%, 10% and 10% — drawn **inside each
-task family**, by ranking the family's task ids on a hash and slicing.
+This is `reliquary_telecom_solo_v2`. It serves the same tickets, prompt, tools
+and grading as v1 and differs only in which split a ticket is in.
 
-| family | corpus | train | eval | qualification |
-| --- | --- | --- | --- | --- |
-| `mms_issue` | 1,984 | 1,587 | 198 | 199 |
-| `mobile_data_issue` | 254 | 203 | 25 | 26 |
-| `service_issue` | 47 | 37 | 5 | 5 |
-| total | 2,285 | 1,827 | 228 | 230 |
+**The benchmark is held out.** τ²-bench publishes its telecom scores on its own
+sets — `base` (114 tickets, which upstream subdivides into a `train` of 74 and
+a `test` of 40), `test` and `small` (20) in
+[`split_tasks.json`](https://github.com/sierra-research/tau2-bench/blob/4ce7c0397c1eb65c9bbe59aeacfe1ca44a1cd699/data/tau2/domains/telecom/split_tasks.json).
+Their union is 134 tickets, and v1 had 114 of them in its train. v2 makes them
+a fourth split, `benchmark`, which nothing else draws from. The file ships in
+the wheel, byte for byte (`data/split_tasks.json.gz`, sha256
+`605b488b…5c3aec` over the decompressed body), rather than being fetched.
+
+**Everything else is drawn as v1 drew it**: 80%, 10% and 10%, **inside each
+task family**, by ranking the family's task ids on a salted hash and slicing.
+The benchmark is lifted out after the draw, not before, so every other ticket
+stays where v1 put it — nothing that was in v1's eval or qualification is in
+v2's train, and v2's eval and qualification are v1's minus the benchmark.
+
+| family | corpus | train | eval | qualification | benchmark |
+| --- | --- | --- | --- | --- | --- |
+| `mms_issue` | 1,984 | 1,537 | 195 | 197 | 55 |
+| `mobile_data_issue` | 254 | 166 | 23 | 21 | 44 |
+| `service_issue` | 47 | 10 | 1 | 1 | 35 |
+| total | 2,285 | 1,713 | 219 | 219 | 134 |
 
 Its sibling environments hash the row key over the whole corpus and let the mix
 come out right in expectation. That does not work here: the families are
 lopsided, 10% of 47 service tickets is 4.7, and where that lands decides
 whether the eval split holds two of them or nine. Slicing each family
-separately makes the mix exact — no family's share moves by as much as half a
-point between splits, which `test_splits_preserve_the_family_mix` measures
-rather than assumes. Hashing, rather than slicing the file, still keeps a task
-in the split it has always been in whatever order the corpus arrives in.
+separately made v1's mix exact. v2 gives some of that up on purpose: upstream's
+benchmark holds 35 of the 47 service tickets, so lifting it out leaves one
+service ticket each in eval and qualification. Hashing, rather than slicing
+the file, still keeps a task in the split it has always been in whatever order
+the corpus arrives in.
+
+### Train: SFT, then RL
+
+Train is shared between SFT and RL the way `reliquary-competitive-code`'s is:
+each use is one contiguous range, declared in `environment.toml` as
+`train_sft_start`/`train_sft_count` and `train_rl_start`/`train_rl_count`, and
+`reliquary_telecom_solo.layout.use_of(key)` says which use a train ticket
+serves. Train tasks carry it as `metadata.use`.
+
+| rows | family | use | count |
+| --- | --- | --- | --- |
+| `[0, 83)` | `mobile_data_issue` | SFT | 83, the first half of its train rows |
+| `[83, 1220)` | `mms_issue` | SFT | 1,137 |
+| `[1220, 1230)` | `service_issue` | RL | 10, all of them |
+| `[1230, 1313)` | `mobile_data_issue` | RL | 83, the second half |
+| `[1313, 1713)` | `mms_issue` | RL | 400 |
+
+SFT is `[0, 1220)` and RL is `[1220, 1713)`. Within a family, rows run in the
+salted rank that drew them into train — a shuffle, and a deliberate one:
+upstream lists tickets roughly by how many faults they inject, so the first
+half of the file order would be the easy half.
+
+v1's rule is kept as `corpus.v1_rows` and `corpus.v1_split_of`, and a test pins
+the digest of what it serves. The v1 artifact itself is the 0.1.0a1 wheel; this
+package is 0.2.0a1.
 
 ## Two surfaces
 
