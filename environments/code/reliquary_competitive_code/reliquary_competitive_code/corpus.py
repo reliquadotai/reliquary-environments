@@ -32,15 +32,16 @@ class DatasetPin:
 # DeepCoder-Preview-Dataset @177913a7 (see the dataset's build_report.json).
 PINNED: DatasetPin | None = DatasetPin(
     repository="ReliquaryForge/competitive-code-curated",
-    revision="1f6e4f1268c840ddfd6f20c3a9b0045078664b77",
+    revision="4ae529419ce2a1d2cc0d56fd1b061fc10af3322a",
     files={
-        "problems-train.parquet": "e9efae4c77d31a6b2c4150553dce797b342f3a38bdf212cf339eb311550bd248",
+        "problems-train.parquet": "c80d22ad0bc7054cc1ae5c0492bcc10fd0d96d3fe06f64a18cb413dd84f3a4b7",
         "problems-eval.parquet": "c6188cbb32d4eeae233470ac7061511b4e89953508da6506686845d1331e85f2",
         "problems-qualification.parquet": "a6b4edd4534d299772870970c9de856e2f690ea5504f6112ead0505d1a2deb6e",
-        "references.parquet": "da4fe91e3edafdb374411f88051ccc739d8c7a6488925f6ba427dcd816d87aa7",
+        "references.parquet": "f86db0b03e4dc8bda2fa74f691be5f7046830e68e26f3382dee60cc0b0a50a27",
     },
 )
-_CACHED_ROW_GROUPS = 4
+# v1.1 row groups hold up to 64 problems x 4 MiB of tests: keep two decoded.
+_CACHED_ROW_GROUPS = 2
 
 
 @dataclass(frozen=True, slots=True)
