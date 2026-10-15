@@ -146,6 +146,14 @@ def test_decide_applies_the_yes_no_and_example_rules() -> None:
     assert extend.decide(_entry(), row, POLICY) == "example_mismatch"
 
 
+def test_decide_drops_a_figure_only_problem_without_a_reference() -> None:
+    pictured = "Count the squares in the figure.\n\n&lt;image&gt;\n"
+    row = SourceRow("ccplus", "x", pictured, TESTS, (), upstream_tests=True, time_limit_s=1.0)
+    assert extend.decide(_entry(), row, POLICY) == "image_without_reference"
+    referenced = SourceRow("ccplus", "x", pictured, TESTS, (SUM,), upstream_tests=True, time_limit_s=1.0)
+    assert extend.decide(_entry(), referenced, POLICY).reference_kind == PYTHON_REFERENCE
+
+
 def test_sample_takes_whole_contests_and_dense_row_groups() -> None:
     entries = [{"pid": str(i), "group": "openr1", "members": [{"contest_id": str(i // 3)}]} for i in range(30)]
     entries += [{"pid": f"c{i}", "group": "ccplus", "members": [{"file": "f", "row_group": i % 4}]} for i in range(20)]

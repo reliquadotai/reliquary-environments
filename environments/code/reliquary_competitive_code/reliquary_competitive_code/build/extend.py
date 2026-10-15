@@ -536,7 +536,21 @@ def decide(entry: dict, row: SourceRow, policy: Policy) -> Curated | str:
     if example_disagrees(row):
         return "example_mismatch"
     outcome = curate(row, policy)
-    return outcome if isinstance(outcome, Curated) else outcome.reason
+    if not isinstance(outcome, Curated):
+        return outcome.reason
+    if outcome.reference_kind == "upstream_tests_only" and refers_to_image(outcome.statement):
+        return "image_without_reference"
+    return outcome
+
+
+IMAGE_PLACEHOLDERS = ("<image>", "&lt;image&gt;")
+
+
+def refers_to_image(statement: str) -> bool:
+    """The statement points at a figure the model never sees. With no reference
+    to vouch that the text alone determines the answer, the teacher would be
+    guessing, so such a problem is dropped."""
+    return any(p in statement for p in IMAGE_PLACEHOLDERS)
 
 
 def curate_stage(args: argparse.Namespace) -> None:
