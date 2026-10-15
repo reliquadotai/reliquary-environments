@@ -16,7 +16,7 @@ from reliquary_competitive_code.extraction import extract_program
 from reliquary_competitive_code.judge import judge, output_cap
 from reliquary_competitive_code.judge.guest import ALLOWED_IMPORT_ROOTS
 from reliquary_competitive_code.judge.runner import HARNESS_OVERLOAD
-from reliquary_competitive_code.layout import SPLITS, use_of
+from reliquary_competitive_code.layout import SPLITS
 
 ENVIRONMENT = "reliquary_competitive_code_v1"
 TASK_FAMILY = "competitive_programming_stdio_v1"
@@ -72,7 +72,7 @@ class CompetitiveCodeEnvironment:
                 "judge_version": JUDGE_VERSION,
                 "time_limit_s": problem.time_limit_s,
                 "split": self.split,
-                **({"use": use_of(problem.problem_id)} if self.split == "train" else {}),
+                **({"use": problem.use} if self.split == "train" else {}),
             },
         }
 
@@ -132,9 +132,13 @@ class CompetitiveCodeEnvironment:
             for test in tests
         ]
 
-    def reference_completion(self, index: int) -> str:
+    def reference_completion(self, index: int) -> str | None:
+        """The reference as a completion, or None for a problem shipped on its
+        upstream tests alone (v1.1 `upstream_tests_only`: no Python program
+        passed them; the teacher's answers are graded instead)."""
         _, problem = self._problem(index)
-        return f"```python\n{self._corpus.reference(problem.problem_id)}\n```"
+        code = self._corpus.reference(problem.problem_id)
+        return f"```python\n{code}\n```" if code else None
 
 
 __all__ = ["ENVIRONMENT", "INSTRUCTION", "JUDGE_VERSION", "TASK_FAMILY", "CompetitiveCodeEnvironment", "render_prompt"]

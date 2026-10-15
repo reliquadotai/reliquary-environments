@@ -32,14 +32,26 @@ _PI_SUFFIX = re.compile(
 )
 
 
-def rows(root: Path) -> Iterator[SourceRow]:
+def rows(root: Path, wanted: set[str] | None = None) -> Iterator[SourceRow]:
+    """Every row, or only those whose upstream id is in `wanted`. Read one
+    row group at a time, so a pass holds one group's tests, not a file's."""
     for config in CONFIGS:
         for path in sorted((Path(root) / config).glob("train-*.parquet")):
-            table = pq.read_table(path, columns=["problem", "tests", "solutions"])
-            for offset, record in enumerate(table.to_pylist()):
-                row = convert(config, f"{config}/{path.name}#{offset}", record)
-                if row is not None:
-                    yield row
+            parquet = pq.ParquetFile(path)
+            offset = 0
+            for group in range(parquet.num_row_groups):
+                size = parquet.metadata.row_group(group).num_rows
+                ids = [f"{config}/{path.name}#{offset + i}" for i in range(size)]
+                offset += size
+                if wanted is not None and not wanted.intersection(ids):
+                    continue
+                table = parquet.read_row_group(group, columns=["problem", "tests", "solutions"])
+                for upstream_id, record in zip(ids, table.to_pylist()):
+                    if wanted is not None and upstream_id not in wanted:
+                        continue
+                    row = convert(config, upstream_id, record)
+                    if row is not None:
+                        yield row
 
 
 def convert(config: str, upstream_id: str, record: dict) -> SourceRow | None:

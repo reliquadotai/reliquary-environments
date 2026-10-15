@@ -8,6 +8,16 @@ banding, then confirmed at an estimated Jaccard of 0.8. MinHash cannot see
 that "n <= 10" and "n <= 3000" differ, so a confirmed edge must also have the
 same digits (all digit runs joined, so "10^5" and "10<sup>5</sup>" agree) and
 must not pair an easy version with a hard one.
+
+`ContainmentGuard` (v1.1) closes the gap MinHash leaves: a reformatted copy
+(statement rewritten around the same paragraphs, a legend added) can share
+under 0.8 of its shingles yet most of its 13-word runs. Measured on open-r1:
+about 360 rows the 0.8 rule calls new have 30% or more of their 13-grams in
+the v1 pool, 322 of them 60% or more. A new problem is dropped when that share
+reaches the threshold (0.3 by default), against the v1 pool and every new
+problem kept before it. An easy/hard version pair is caught too (they share
+the legend): the later one goes, the conservative side, since the two would
+otherwise straddle the SFT, RL and eval splits.
 """
 
 from __future__ import annotations
@@ -19,12 +29,14 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from reliquary_competitive_code.build.filters import _ngrams
 from reliquary_competitive_code.sources.common import SourceRow, normalise, problem_id
 
 SHINGLE = 5
 PERMUTATIONS = 64
 BANDS = 16
 THRESHOLD = 0.8
+CONTAINMENT_THRESHOLD = 0.3
 _NUMBER = re.compile(r"\d+")
 _EASY = re.compile(r"\b(?:easy|easier) version\b")
 _HARD = re.compile(r"\b(?:hard|harder) version\b")
@@ -69,7 +81,13 @@ def _merge(members: list[SourceRow]) -> SourceRow:
     others = sorted((r for r in members if problem_id(r.statement) != lead_id), key=key)
     references = tuple(dict.fromkeys(ref for row in [lead, *siblings, *others] for ref in row.references))
     dates = sorted(row.contest_date for row in members if row.contest_date)
-    return SourceRow(lead.source, lead.upstream_id, lead.statement, lead.tests, references, dates[0] if dates else None)
+    return SourceRow(
+        lead.source, lead.upstream_id, lead.statement, lead.tests, references, dates[0] if dates else None,
+        upstream_tests=lead.upstream_tests,
+        time_limit_s=lead.time_limit_s,
+        rating=lead.rating if lead.rating is not None else next((r.rating for r in members if r.rating is not None), None),
+        converted=frozenset().union(*(row.converted for row in members)),
+    )
 
 
 def deduplicate(rows: Sequence[SourceRow]) -> list[SourceRow]:
@@ -107,3 +125,33 @@ def deduplicate(rows: Sequence[SourceRow]) -> list[SourceRow]:
         clusters[find(i)].extend(exact[key])
     merged = [_merge(members) for members in clusters.values()]
     return sorted(merged, key=lambda row: problem_id(row.statement))
+
+
+class ContainmentGuard:
+    """13-gram containment: the share of a statement's 13-word runs already
+    seen. `add` what is kept, `contained` what is offered."""
+
+    def __init__(self, statements=(), threshold: float = CONTAINMENT_THRESHOLD) -> None:
+        if not 0.0 < threshold <= 1.0:
+            raise ValueError("threshold must be in (0, 1]")
+        self.threshold = threshold
+        self._grams: set[int] = set()
+        for statement in statements:
+            self.add(statement)
+
+    @staticmethod
+    def _hashed(statement: str) -> set[int]:
+        # Hashes, not word tuples: the v1 pool is about 3M 13-grams.
+        return {hash(gram) for gram in _ngrams(statement)}
+
+    def share(self, statement: str) -> float:
+        grams = self._hashed(statement)
+        if not grams:
+            return 0.0
+        return len(grams & self._grams) / len(grams)
+
+    def contained(self, statement: str) -> bool:
+        return self.share(statement) >= self.threshold
+
+    def add(self, statement: str) -> None:
+        self._grams |= self._hashed(statement)

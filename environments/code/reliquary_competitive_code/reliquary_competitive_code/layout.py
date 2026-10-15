@@ -20,3 +20,16 @@ SFT_ID_BOUND = 2**64 * 6 // 10
 
 def use_of(problem_id: str) -> str:
     return "sft" if int(problem_id, 16) < SFT_ID_BOUND else "rl"
+
+
+# v1.1 appends its problems after v1's train, all for SFT, so that every v1
+# index keeps naming the same problem: such a row says so in its origin
+# (`"use": "sft"`). A row without that key is v1's and follows `use_of`. Train
+# is then [v1 SFT][v1 RL][appended SFT], each use a few contiguous ranges.
+def use_of_row(problem_id: str, origin: dict) -> str:
+    use = origin.get("use")
+    if use is None:
+        return use_of(problem_id)
+    if use not in USES:
+        raise ValueError(f"unknown use {use!r} for {problem_id}")
+    return use

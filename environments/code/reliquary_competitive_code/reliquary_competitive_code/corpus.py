@@ -18,7 +18,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from reliquary_competitive_code.judge import TestCase
-from reliquary_competitive_code.layout import REFERENCES_FILE, SPLITS, USES, problems_file, use_of
+from reliquary_competitive_code.layout import REFERENCES_FILE, SPLITS, USES, problems_file, use_of_row
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +49,10 @@ class Problem:
     statement: str
     time_limit_s: float
     origin: dict
+
+    @property
+    def use(self) -> str:
+        return use_of_row(self.problem_id, self.origin)
 
 
 class Corpus:
@@ -94,16 +98,33 @@ class Corpus:
     def problems(self, split: str) -> list[Problem]:
         return self._problems[split]
 
-    def use_range(self, use: str) -> range:
-        """The indices of train that serve `use` ("sft" or "rl"): one
-        contiguous range, since train is sorted by problem id."""
+    def use_ranges(self, use: str) -> tuple[range, ...]:
+        """The indices of train that serve `use` ("sft" or "rl"), as maximal
+        contiguous ranges in index order: v1 is SFT then RL, sorted by
+        problem id; v1.1 appends a second SFT range after them."""
         if use not in USES:
             raise ValueError(f"use must be one of {USES}")
-        uses = [use_of(p.problem_id) for p in self._problems["train"]]
-        if uses != sorted(uses, key=USES.index):
-            raise RuntimeError("train is not ordered sft then rl")
-        start = uses.index(use) if use in uses else (len(uses) if use == "rl" else 0)
-        return range(start, start + uses.count(use))
+        ranges, start = [], None
+        uses = [p.use for p in self._problems["train"]]
+        for index, current in enumerate([*uses, None]):
+            if current == use and start is None:
+                start = index
+            elif current != use and start is not None:
+                ranges.append(range(start, index))
+                start = None
+        return tuple(ranges)
+
+    def use_range(self, use: str) -> range:
+        """The one contiguous range of train that serves `use`; raises when
+        there are several (use `use_ranges`)."""
+        ranges = self.use_ranges(use)
+        if len(ranges) > 1:
+            raise RuntimeError(f"{use} is served by {len(ranges)} ranges of train: use use_ranges")
+        if ranges:
+            return ranges[0]
+        uses = [p.use for p in self._problems["train"]]
+        start = len(uses) if use == "rl" else 0
+        return range(start, start)
 
     def tests(self, split: str, index: int) -> tuple[TestCase, ...]:
         starts = self._row_groups[split]

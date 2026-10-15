@@ -40,8 +40,11 @@ class CompetitiveCodeTask(vf.Task[CompetitiveCodeData, vf.State, CompetitiveCode
         """The reference passes and a program printing nothing useful does not."""
         del runtime
         environment = self._environment()
-        good = await asyncio.to_thread(environment.grade, self.data.idx, environment.reference_completion(self.data.idx))
         bad = await asyncio.to_thread(environment.grade, self.data.idx, "```python\nprint('reliquary-wrong')\n```")
+        reference = environment.reference_completion(self.data.idx)
+        if reference is None:  # shipped on upstream tests: nothing of ours to replay
+            return bad["reward"] == 0.0
+        good = await asyncio.to_thread(environment.grade, self.data.idx, reference)
         return good["reward"] == 1.0 and bad["reward"] == 0.0
 
 

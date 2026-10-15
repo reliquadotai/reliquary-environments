@@ -75,13 +75,19 @@ data = tomllib.loads(declared.read_text())["data"]
 served = sum(len(CompetitiveCodeEnvironment(split)) for split in SPLITS)
 assert served == data["virtual_length"], f"{served} tasks served, declared {data['virtual_length']}"
 
-# The SFT and RL shares of train: the contiguous ranges environment.toml declares.
+# The SFT and RL shares of train: the contiguous ranges environment.toml
+# declares, v1's SFT then RL, then (v1.1) the SFT problems appended after them.
 from reliquary_competitive_code.corpus import pinned_corpus
 
-for use in ("sft", "rl"):
-    span = pinned_corpus().use_range(use)
-    declared_span = (data[f"train_{use}_start"], data[f"train_{use}_count"])
-    assert (span.start, len(span)) == declared_span, f"{use}: served {span}, declared {declared_span}"
+declared_ranges = {
+    "sft": [(data["train_sft_start"], data["train_sft_count"])],
+    "rl": [(data["train_rl_start"], data["train_rl_count"])],
+}
+if "train_sft_v11_start" in data:
+    declared_ranges["sft"].append((data["train_sft_v11_start"], data["train_sft_v11_count"]))
+for use, declared_spans in declared_ranges.items():
+    served = [(span.start, len(span)) for span in pinned_corpus().use_ranges(use)]
+    assert served == declared_spans, f"{use}: served {served}, declared {declared_spans}"
 
 prompts = {
     CompetitiveCodeEnvironment(split).task(index)["prompt"]
