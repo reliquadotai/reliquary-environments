@@ -18,7 +18,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from reliquary_competitive_code.judge import TestCase
-from reliquary_competitive_code.layout import REFERENCES_FILE, SPLITS, USES, problems_file, use_of
+from reliquary_competitive_code.layout import REFERENCES_FILE, SPLITS, USES, problems_file, use_of_row
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,15 +32,16 @@ class DatasetPin:
 # DeepCoder-Preview-Dataset @177913a7 (see the dataset's build_report.json).
 PINNED: DatasetPin | None = DatasetPin(
     repository="ReliquaryForge/competitive-code-curated",
-    revision="1f6e4f1268c840ddfd6f20c3a9b0045078664b77",
+    revision="4ae529419ce2a1d2cc0d56fd1b061fc10af3322a",
     files={
-        "problems-train.parquet": "e9efae4c77d31a6b2c4150553dce797b342f3a38bdf212cf339eb311550bd248",
+        "problems-train.parquet": "c80d22ad0bc7054cc1ae5c0492bcc10fd0d96d3fe06f64a18cb413dd84f3a4b7",
         "problems-eval.parquet": "c6188cbb32d4eeae233470ac7061511b4e89953508da6506686845d1331e85f2",
         "problems-qualification.parquet": "a6b4edd4534d299772870970c9de856e2f690ea5504f6112ead0505d1a2deb6e",
-        "references.parquet": "da4fe91e3edafdb374411f88051ccc739d8c7a6488925f6ba427dcd816d87aa7",
+        "references.parquet": "f86db0b03e4dc8bda2fa74f691be5f7046830e68e26f3382dee60cc0b0a50a27",
     },
 )
-_CACHED_ROW_GROUPS = 4
+# v1.1 row groups hold up to 64 problems x 4 MiB of tests: keep two decoded.
+_CACHED_ROW_GROUPS = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +50,10 @@ class Problem:
     statement: str
     time_limit_s: float
     origin: dict
+
+    @property
+    def use(self) -> str:
+        return use_of_row(self.problem_id, self.origin)
 
 
 class Corpus:
@@ -94,16 +99,33 @@ class Corpus:
     def problems(self, split: str) -> list[Problem]:
         return self._problems[split]
 
-    def use_range(self, use: str) -> range:
-        """The indices of train that serve `use` ("sft" or "rl"): one
-        contiguous range, since train is sorted by problem id."""
+    def use_ranges(self, use: str) -> tuple[range, ...]:
+        """The indices of train that serve `use` ("sft" or "rl"), as maximal
+        contiguous ranges in index order: v1 is SFT then RL, sorted by
+        problem id; v1.1 appends a second SFT range after them."""
         if use not in USES:
             raise ValueError(f"use must be one of {USES}")
-        uses = [use_of(p.problem_id) for p in self._problems["train"]]
-        if uses != sorted(uses, key=USES.index):
-            raise RuntimeError("train is not ordered sft then rl")
-        start = uses.index(use) if use in uses else (len(uses) if use == "rl" else 0)
-        return range(start, start + uses.count(use))
+        ranges, start = [], None
+        uses = [p.use for p in self._problems["train"]]
+        for index, current in enumerate([*uses, None]):
+            if current == use and start is None:
+                start = index
+            elif current != use and start is not None:
+                ranges.append(range(start, index))
+                start = None
+        return tuple(ranges)
+
+    def use_range(self, use: str) -> range:
+        """The one contiguous range of train that serves `use`; raises when
+        there are several (use `use_ranges`)."""
+        ranges = self.use_ranges(use)
+        if len(ranges) > 1:
+            raise RuntimeError(f"{use} is served by {len(ranges)} ranges of train: use use_ranges")
+        if ranges:
+            return ranges[0]
+        uses = [p.use for p in self._problems["train"]]
+        start = len(uses) if use == "rl" else 0
+        return range(start, start)
 
     def tests(self, split: str, index: int) -> tuple[TestCase, ...]:
         starts = self._row_groups[split]

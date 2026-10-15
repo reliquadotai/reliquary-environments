@@ -152,12 +152,15 @@ class HeldOutIndex:
         return len(grams & self._grams) / len(grams)
 
 
-def load_lcb_statements(root: Path) -> list[str]:
+def load_lcb_statements(root: Path, since: str | None = HELD_OUT_FROM) -> list[str]:
+    """LiveCodeBench statements dated from `since` (every version's files,
+    test.jsonl to test6.jsonl at the pinned revision); `since=None` takes them
+    all, as v1.1 sources are decontaminated against every version."""
     statements = []
     for path in sorted(Path(root).glob("test*.jsonl")):
         with path.open(encoding="utf-8") as handle:
             for line in handle:
                 record = json.loads(line)
-                if str(record.get("contest_date", ""))[:10] >= HELD_OUT_FROM:
+                if since is None or str(record.get("contest_date", ""))[:10] >= since:
                     statements.append(record["question_content"])
     return statements

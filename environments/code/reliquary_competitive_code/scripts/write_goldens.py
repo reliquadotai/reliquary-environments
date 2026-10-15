@@ -80,13 +80,17 @@ def _grade(environment, index: int, completion: str) -> dict[str, object]:
 
 def discrimination(split: str, count: int) -> list[dict[str, object]]:
     environment = CompetitiveCodeEnvironment(split)
-    stride = max(1, len(environment) // count)
+    # Strided over the problems that have a reference: a v1.1
+    # `upstream_tests_only` problem has none to discriminate with.
+    corpus = environment._corpus
+    referenced = [i for i, p in enumerate(corpus.problems(split)) if corpus.reference(p.problem_id)]
+    stride = max(1, len(referenced) // count)
     items = []
-    for index in range(stride // 2, len(environment), stride):
+    for index in referenced[stride // 2 :: stride]:
         if len(items) == count:
             break
         task = environment.task(index)
-        reference = environment._corpus.reference(task["metadata"]["problem_id"])
+        reference = corpus.reference(task["metadata"]["problem_id"])
         cases = {
             "reference": (f"```python\n{reference}\n```", 1.0, "ok"),
             "wrong": (_wrong(reference), 0.0, "wrong_answer"),

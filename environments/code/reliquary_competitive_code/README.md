@@ -59,6 +59,71 @@ whose upstream solutions are Python 2 (`print x`, `raw_input`), 1,143 of the
 3,100 primeintellect problems. Three of the 276 problems of the 300-row smoke
 are absent because dedup merged them with their primeintellect copies.
 
+## v1.1 sources: new problems appended for SFT
+
+`python -m reliquary_competitive_code.build.extend` (stages `select`, `fetch`,
+`curate`, `write`; see the module docstring) adds problems to the published v1
+dataset without moving any of it: eval and qualification are copied byte for
+byte, train keeps its 6,899 rows at their indices and the new problems follow,
+sorted by id, every one for SFT (`origin.use = "sft"`). Train is then v1 SFT
+`[0, 4181)`, v1 RL `[4181, 6899)` and the appended SFT `[6899, 6899 + n)`,
+`Corpus.use_ranges("sft")` giving both SFT ranges.
+
+Sources:
+
+- open-r1/codeforces @`fbe3f6e9` (CC-BY-4.0), Python submissions from
+  open-r1/codeforces-submissions @`07e7bf31`: rating 1200 to 2400, contest
+  before 2024-08-01, stdin/stdout, not interactive, no checker; official plus
+  generated tests.
+- ByteDance-Seed/Code-Contests-Plus `ccplus_1x` @`96c85054` (CC-BY-4.0):
+  testlib stock checkers our comparison reproduces (`ncmp`, `wcmp`, `lcmp`,
+  huge integers, `rcmp6`, and the case-insensitive YES/NO checker, which our
+  comparison already matches: kept with no grader change, each expected
+  output checked to hold only yes/no tokens); `rcmp4`, `rcmp9` and custom
+  checkers dropped. Its Codeforces problems take open-r1's date and rating.
+- The v1 rejects with a Python 2 reference (DeepCoder), converted by 2to3
+  without `fix_input` plus a literal-reading `_py2_input` (`sources/py2.py`).
+  Python 2 submissions of the two sources above are converted the same way
+  and tried after the Python 3 ones.
+
+Each new problem carries `origin.reference_kind`:
+
+| kind | meaning | time limit |
+| --- | --- | --- |
+| `python_reference` | a Python 3 reference passes every kept test (v1's check) | max(v1 rule, upstream x factor) |
+| `py2to3` | the passing reference is a 2to3 conversion | as above (v1 rule alone for DeepCoder rows, which have no upstream limit) |
+| `upstream_tests_only` | no Python reference passed; the tests are the judge's or upstream-validated (open-r1 official/generated; CC+ with true positive rate 1.0) | upstream x factor |
+
+The factor (`--python-time-factor`, default 4) turns a C++-calibrated limit
+into a Python one, between 1 s and `--max-time-limit` (10 s). Measured on the
+24 sampled problems with a passing Python reference (accepted submissions,
+CPU on our runner over the upstream limit): median 0.05, p90 0.75, p95 1.08,
+max 1.17. v1 gives a reference 4x its own CPU; 4x the upstream limit gives a
+teacher program the same headroom over the slowest accepted Python. An
+`upstream_tests_only` problem has no reference in `references.parquet` (""),
+`reference_completion` returns None, and the miners' teacher answers are what
+gets graded at export: a problem no answer passes yields nothing. A Python
+reference that runs to a wrong answer drops the problem even when the tests
+are upstream's (an accepted submission failing the official tests means the
+tests or the comparison are not what we think), a 2to3 conversion excepted.
+
+Dedup and decontamination of new problems: exact and MinHash (as v1) against
+the 21,294 DeepCoder rows and across new sources; then a 13-gram containment
+guard (`--containment`, default 0.3) against that pool and every new problem
+kept before, which drops reformatted copies MinHash misses; then 13-gram
+overlap >= 0.10 with any LiveCodeBench statement (every version, test.jsonl to
+test6.jsonl) or any v1 eval or qualification statement.
+
+Test budget (`--test-bytes`, default 4 MiB of stdin plus expected stdout per
+problem, the same value for `fetch` and `curate`; `--max-tests`, default 32):
+open-r1's generated tests reach the constraints' maximum sizes (often 1 to 2
+MB each), so a small budget leaves fewer than 5 tests. On the 50 sampled
+open-r1 problems, those keeping 5 tests or more: 31 at 1 MiB, 34 at 2, 36 at
+4, 39 at 6, 41 at 8 (Code-Contests-Plus: 48 to 49 throughout). The count cap
+bounds grading time where no reference CPU budget applies. Measured on the
+sample: median 29 KB, mean 0.95 MB of tests per new problem, so a decoded
+row group of 64 new problems is about 60 MiB on average, 256 MiB at most.
+
 ## SFT and RL shares of train
 
 A train problem is for SFT when its id falls in the first 60% of the 64-bit id
