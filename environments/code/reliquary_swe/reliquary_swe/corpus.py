@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 from collections import Counter
 from dataclasses import dataclass
 
@@ -508,8 +509,22 @@ def _scan_swesmith(num_images: int, max_test_count: int | None, keep) -> tuple:
     return tuple(rows)
 
 
-@functools.lru_cache(maxsize=None)
+# One build at a time: a gateway resolves tasks from several threads, and concurrent first calls of an
+# `lru_cache` each build the order (9.2 GB peak apiece).
+_SWESMITH_ORDER_LOCK = threading.Lock()
+
+
 def swesmith_order(
+    num_images: int = DEFAULT_SWESMITH_IMAGES,
+    max_test_count: int | None = None,
+) -> tuple[tuple[int, str], ...]:
+    """`_swesmith_order`, built once per argument pair even when called from many threads at once."""
+    with _SWESMITH_ORDER_LOCK:
+        return _swesmith_order(num_images, max_test_count)
+
+
+@functools.lru_cache(maxsize=None)
+def _swesmith_order(
     num_images: int = DEFAULT_SWESMITH_IMAGES,
     max_test_count: int | None = None,
 ) -> tuple[tuple[int, str], ...]:

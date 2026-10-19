@@ -9,7 +9,7 @@ section 4, option C):
 | --- | --- | --- | --- |
 | `eval` | Terminal-Bench 2.1, 89 tasks, pinned by digest | in the agent's own box, as it ships | the number stays comparable to published results |
 | `train` | MiMo-V2.6-RL-oss's 64 Terminal-Bench-format tasks | in a fresh box that receives only the agent's `/app` | a training reward must not be reachable by editing the grader |
-| `tmax` | TMax-15K, converted; the 4,998 kept tasks of `tmax_manifest.json`; `tmax_sft` (2,406) and `tmax_rl` (2,592) are its two disjoint parts | in a fresh box that receives `/app` and `/home/user`, with the task's inputs put back | the same; TMax's work lives in `/home/user` |
+| `tmax` | TMax-15K, converted; the 4,989 kept tasks of `tmax_manifest.json`; `tmax_sft` (2,401) and `tmax_rl` (2,588) are its two disjoint parts | in a fresh box that receives `/app` and `/home/user`, with the task's inputs put back | the same; TMax's work lives in `/home/user` |
 
 `--taskset.split` has no default, so a training source cannot fall back to
 the evaluation set by omission.
@@ -140,17 +140,18 @@ task is kept or left out, is in [docs/tmax.md](docs/tmax.md).
 
 - `scripts/tmax_manifest.py` recomputes the selection manifest and the base
   image files from pinned inputs. This is the static stage, with no
-  container. Of 14,601 tasks, 5,976 pass it.
+  container. Of 14,601 tasks, 5,964 pass it.
 - `scripts/tmax_validate.py` is the box phase. It builds the base image, then
   checks each pending task in containers: no-op 0, reference 1 in a separate
-  box ×3, mutants 0, deterministic setup. It ran on 2026-10-05/08 and keeps
-  **4,998** tasks.
-- `--taskset.split tmax_sft` (2,406 tasks) and `tmax_rl` (2,592) are two
+  box ×3, mutants 0, deterministic setup. It ran on 2026-10-05/08; with the
+  static reasons added since, **4,989** tasks are kept.
+- `--taskset.split tmax_sft` (2,401 tasks) and `tmax_rl` (2,588) are two
   disjoint parts, for an SFT corpus job and for RL. `tmax` is both, for
   validation. `--taskset.num-tasks N` takes the first N of the split.
-- **Not ready to train on yet:** the base image (10.3 GB) is pinned by the
-  local id it was validated on and is in no registry, so the split only runs
-  on a host that has it. See "What is left" in docs/tmax.md.
+- The base image (10.3 GB) is pinned by its registry digest
+  (`ghcr.io/reliquadotai/reliquary-tmax-base@sha256:…`, the image the
+  validation ran on), and `reliquary_terminal/sandbox-images.lock.json` pins
+  it for sandboxes. What is left before training is in docs/tmax.md.
 
 ## Test
 
@@ -173,25 +174,33 @@ on the host — both are meant as components of a mix (e.g. with
 
 ## Signed sandboxes
 
-`reliquary_terminal.sandbox:sandbox_task` serves the `train` split on a signed-episode
-sandbox gateway (`episode_envs = {"reliquary-terminal": "reliquary_terminal.sandbox:sandbox_task"}`).
+`TerminalTaskset`'s tasks follow the env norm, so a signed-episode sandbox serves them
+through its generic verifiers bridge (`verifiers:reliquary-terminal==0.3.0`), one task at a
+time (`task_at(index)`).
 
-- Served: `train` rows only, 17 of the 64. Refused: `eval` (graded in the agent's box by
-  design), rows that need the network, three rows that put `/app` on `PYTHONPATH`, and rows
-  whose tests run agent code inside pytest (`in_process_agent_code`). tmax is not served yet.
-- State handed to the grader: the artifact roots that exist (`/app`), through the sandbox's
-  `archive`, framed with the list of present roots; a deleted root is graded, not an error.
-  The grading box restores them once, then stages `/tests`.
-- Grading refuses links into `/tests`, `/logs`, `/proc`, `/dev` and `/sys`, ignores
-  `reward.json`, requires a complete CTRF report for a reward of 1, and stops stray processes
-  after `test.sh`. Residual: a subprocess left by a served row can race that stop; only separate
-  uids close it.
-- Needs reliquary-sandbox at `e0217aa` or later (`stop_processes`), and `verifiers` at the
-  pinned commit with its Harbor `taskset` and `env` modules unchanged; import fails otherwise.
-- Our own failures before the restore (a state header `extract` cannot have written, the
-  row's test files not parsing, an absent root that cannot be cleared), and grading that
-  never ran `test.sh` through the stopping runtime, abort the episode (`EnvInfraError`)
-  instead of grading. Graded facts carry `stop_ran: true`.
-- `served_indexes("train")` lists the indexes served on sandboxes.
+- Served: the `tmax` split only (`tmax_sft`/`tmax_rl` are not served). `eval` is graded in
+  the agent's box by design and never served; MiMo's `train` rows are not served on
+  sandboxes. 201 TMax tasks are excluded statically as `in_process_agent_code` (their final
+  test loads the agent's code into pytest's process), and tasks whose `%environment` points
+  PATH, `LD_*`, `BASH_ENV`, `ENV`, `PYTHON*`, `HOME`, `XDG_*`, `GIT_*`, `NODE_*`, `PERL5*`,
+  `RUBY*`, `JAVA_*`, `CLASSPATH` or `*_OPTIONS` at `/app` or `/home/user` are refused
+  (`environment_in_artifact_roots`). Every root command of the grading box runs through
+  `/usr/bin/env` with a fixed PATH, `sh`/`bash` by absolute path, HOME outside the roots,
+  PYTHONNOUSERSITE=1, and the loader variables (every `LD_*` and `PYTHON*` name off a small
+  allow-list) unset unless the task's own value stays outside the roots.
+- `TerminalTask.grading_setup` runs the task's setup in the grade role in the pristine
+  grading box before the agent's `/app` and `/home/user` are restored there; the reward,
+  `solved`, stages the tests and grades in that box. `finalize` collects nothing: the
+  sandbox archives the declared roots itself.
+- In a `tmax` grading box the final-state test runs as its own uid (61000), not root:
+  `test.sh` hands `/app` and `/home/user` to that uid (never following a link), runs
+  pytest as it under `python3 -I` with a HOME outside the roots, kills every process of
+  that uid, and only then writes `reward.txt` as root. Decision 11 of
+  [docs/tmax.md](docs/tmax.md).
+- The task's hash leaves out where its files were written, so every machine computes the
+  same one.
+- `reliquary_terminal.conformance_cases("tmax")` and `reference_calls("tmax", index)` give
+  the sandbox's conformance suite and reference sweep plain data.
 
-Failure contract, limits and the parity table: `docs/sandbox-tasks.md` (repository root).
+How the package meets the env norm, the failure contract under the bridge and image
+lists: `docs/env-norm.md` (repository root).

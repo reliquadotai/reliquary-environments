@@ -24,6 +24,13 @@ was added after a real, distinct bypass was found running against it, not
 derived from a general survey of every way a test command can be told what
 to read.
 
+`grade` runs in two halves, `prepare_box` (the pristine box, before the patch
+is applied: anything that fails there is about us or the image,
+`PristineBoxError`) and `grade_prepared` (the patch). A signed-episode
+sandbox runs `prepare_box` as the task's `grading_setup`, before the agent's
+artifacts reach the box, and `grade_prepared` from the task's reward; `grade`
+runs both, as before.
+
 What it does NOT guarantee, and cannot: a patch confined entirely to
 *source* files -- not a test, not a conftest.py, not any of the config files
 above, a file the fix under test legitimately needs to keep -- can still
@@ -34,11 +41,11 @@ can defend this specific shape, because restoring source is the one thing
 the grader must never do -- it is the fix under test. Closing that vector
 needs a check that does not depend on file identity at all (an injected
 canary test, at a path the agent cannot predict, that must FAIL and one that
-must PASS) -- deliberately out of scope here; see task-4-report.md for where
+must PASS) -- deliberately out of scope here; `grade_prepared` marks where
 it would land.
 
 Receives a live `Runtime` and never provisions one: provisioning, retries and
-timeouts belong to Task 5's `env.py`. That seam is what lets this module be
+timeouts belong to `env.py`. That seam is what lets this module be
 tested against any box and keeps the retry policy in one place.
 """
 
@@ -62,6 +69,7 @@ from reliquary_swe.taskset import (
     SweData,
 )
 
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
 _DIFF_TARGET = re.compile(r"^\+\+\+ b/(.+)$", re.MULTILINE)
 
 # Every filename pytest's own `locate_config` treats as a config file
@@ -152,6 +160,79 @@ _R2E_TEST_TIMEOUT_SECONDS = 300
 _ANSI_OUTPUT = re.compile(r"\x1b\[[0-9;]*m|\r")
 _ANSI_KEY = re.compile(r"\x1b\[\d+m")
 
+# The diff header lines that carry a file mode, as `git apply` reads them
+# (apply.c's `gitdiff_*` handlers; `index <a>..<b>` carries one after a further
+# space).
+_MODE_HEADERS = (b"old mode ", b"new mode ", b"deleted file mode ", b"new file mode ")
+# `strtoul(text, &end, 8)`'s reading: C blanks (a newline included), a sign, octal digits.
+_STRTOUL_OCTAL = re.compile(rb"[ \t\n\v\f\r]*([+-]?)([0-7]*)")
+_S_IFMT, _S_IFREG, _S_IFLNK = 0o170000, 0o100000, 0o120000
+
+
+def _git_file_type(raw: bytes, pos: int) -> int | None:
+    """The file type git gives the mode written at `raw[pos:]`: `strtoul(.., 8)`
+    (leading blanks -- a newline too, so the digits may sit on the next line --
+    a sign, any number of zeros; saturating at ULONG_MAX), kept in an
+    `unsigned int`. None where git reads no digits and refuses the patch."""
+    match = _STRTOUL_OCTAL.match(raw, pos)
+    if not match.group(2):
+        return None
+    value = int(match.group(2), 8)
+    if value >= 1 << 64:
+        value = (1 << 64) - 1
+    elif match.group(1) == b"-":
+        value = -value % (1 << 64)
+    return value & 0xFFFFFFFF & _S_IFMT
+
+
+def patch_shape_violations(raw: bytes) -> list[str]:
+    """What the env norm refuses in an agent's patch, read from its header
+    lines only (a hunk's content lines start with ' ', '+' or '-', so they
+    never match): a symlink (file type 120000), a submodule, a binary hunk.
+
+    Modes are read as git reads them (`_git_file_type`), and only a regular
+    file passes: git's `canon_mode` turns any type it does not know into a
+    gitlink, so everything that is neither a regular file nor a link counts
+    as a submodule. Every line of the patch is read as a possible header: a
+    false refusal costs a malformed patch its 0, a missed one would let a link
+    into the box the tests run in. A binary hunk is refused in both of git's
+    spellings (`GIT binary patch`; `Binary files ... differ`, which git applies
+    from the object store when the header carries full blob ids).
+
+    The capture runs in the agent's box with git configuration the agent
+    controls, so this is checked here, in the grading box, never trusted
+    from the capture."""
+    found: set[str] = set()
+    pos = 0
+    while pos < len(raw):
+        newline = raw.find(b"\n", pos)
+        end = len(raw) if newline < 0 else newline
+        line = raw[pos:end]
+        mode_at = None
+        for header in _MODE_HEADERS:
+            if line.startswith(header):
+                mode_at = pos + len(header)
+                break
+        if mode_at is None and line.startswith(b"index "):
+            # gitdiff_index: the first '.' must open '..'; a mode follows the
+            # first space after it.
+            dot = line.find(b".")
+            space = line.find(b" ", dot + 2) if dot >= 0 and line[dot + 1:dot + 2] == b"." else -1
+            if space >= 0:
+                mode_at = pos + space + 1
+        if mode_at is not None:
+            kind = _git_file_type(raw, mode_at)
+            if kind == _S_IFLNK:
+                found.add("symlink")
+            elif kind is not None and kind != _S_IFREG:
+                found.add("submodule")
+        if line.startswith(b"GIT binary patch") or (
+            line.startswith((b"Binary files ", b"Files ")) and b" differ" in line
+        ):
+            found.add("binary")
+        pos = end + 1
+    return sorted(found)
+
 
 @dataclass(frozen=True, slots=True)
 class Report:
@@ -169,7 +250,7 @@ class Report:
     fail_to_pass_passed: int
     pass_to_pass_passed: int
     results: dict[str, str] = field(default_factory=dict)
-    # Monitoring fields, not reward inputs -- IMPORTANT 3. All nine defects
+    # Monitoring fields, not reward inputs. All nine defects
     # found while building this package shared one shape: the test command
     # ran but produced nothing `parse_results` could read, and `results == {}`
     # scored identically to "the tests ran and genuinely failed" -- silent by
@@ -196,8 +277,9 @@ class PristineBoxError(RuntimeError):
     """A grading box that is not what the corpus says, found before the agent's patch
     touches it (checking out the base, stripping history, setting hidden tests aside,
     listing the untracked paths at base): an error about us or the image, never a 0.
-    A RuntimeError like before; on a signed-episode sandbox `sandbox.grade` reports it as
-    the sandbox's `EnvInfraError` (the episode is aborted, not graded)."""
+    A RuntimeError like before; on a signed-episode sandbox it is raised by
+    `prepare_box`, which runs as the task's `grading_setup`, so the episode is aborted,
+    not graded."""
 
 
 def _paths_touched_by(patch: str) -> list[str]:
@@ -245,7 +327,7 @@ async def _checkout(runtime: vf.Runtime, base_commit: str, path: str) -> bool:
     that adds a file, and 13 of those also carry an *existing* test file in
     the same patch (astropy-7336, django-11141/11749/13516/15525/16256/16454,
     pylint-6528, sphinx-10614/10673/11510/8269/8548 -- not sphinx-8595, which
-    is add-only, both of its paths new: see IMPORTANT 6 in task-4-report.md)
+    is add-only, both of its paths new)
     -- on every one of those 13, restoring the existing file this way would
     have silently restored nothing at all, because the added path's missing
     pathspec poisoned the whole command. One path per call means one bad
@@ -527,7 +609,7 @@ async def _restore_r2e(runtime: vf.Runtime, data: SweData) -> bool:
     """The R2E strategy: put the image's own hidden tests back where R2E's
     runner expects them, whatever the agent's patch did.
 
-    `grade()` moved `/r2e_tests` and `run_tests.sh` into `_R2E_STASH` of
+    `prepare_box()` moved `/r2e_tests` and `run_tests.sh` into `_R2E_STASH` of
     this fresh box before the patch was applied, so they are the pristine
     image's -- the `_restore_from_pristine_image` idea, with the image's
     file system as the source instead of a git commit, because neither is
@@ -545,7 +627,7 @@ async def _restore_r2e(runtime: vf.Runtime, data: SweData) -> bool:
     expected tests report PASSED (that task's exact expected map, so a
     paid 1.0), and a root `pytest.py` replaced pytest outright and printed
     whatever summary it liked. So every root entry that was not there before
-    the patch (`_R2E_STASH/root-entries`, listed by `grade()`) is deleted --
+    the patch (`_R2E_STASH/root-entries`, listed by `prepare_box()`) is deleted --
     shadowing `pytest`, `_pytest`, `pluggy` or any other module pytest
     imports after start-up takes a new root entry -- and `conftest.py` and
     pytest's five config files (`_TEST_CONFIG_FILES`) that the image does
@@ -644,16 +726,109 @@ def _forbidden_patch_paths(
     ]
 
 
+_CHECKING_PATCH = "Checking patch "
+_C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+_OCTAL_ESCAPE = re.compile(r"[0-3][0-7]{2}")
+
+
+def _unquote_c(name: str) -> str:
+    """A name as git's `quote_c_style` printed it, unquoted (bytes that are not
+    UTF-8 come back as U+FFFD, which `_patch_violations` refuses)."""
+    if len(name) < 2 or name[0] != '"' or name[-1] != '"':
+        return name
+    body, out, i = name[1:-1], bytearray(), 0
+    while i < len(body):
+        if body[i] == "\\" and _OCTAL_ESCAPE.match(body, i + 1):
+            out.append(int(body[i + 1 : i + 4], 8))
+            i += 4
+        elif body[i] == "\\" and body[i + 1 : i + 2] in _C_ESCAPES:
+            out.append(_C_ESCAPES[body[i + 1]])
+            i += 2
+        else:
+            out += body[i].encode()
+            i += 1
+    return out.decode("utf-8", "replace")
+
+
+def _checked_patch_names(output: str) -> list[str]:
+    """Every name git reads or writes for a patch, from the `Checking patch`
+    lines of `git apply --check -v`: `old => new` for a rename, a copy, or a
+    hunk whose two sides name different files (git reads the old one and
+    keeps its mode), the bare name otherwise. `--numstat` names only the
+    written side. An unquoted name may itself hold ` => `, so every split is
+    kept: a superset, never a miss."""
+    names: list[str] = []
+    for line in output.split("\n"):
+        if not line.startswith(_CHECKING_PATCH) or not line.endswith("..."):
+            continue
+        body = line[len(_CHECKING_PATCH) : -3]
+        names.append(_unquote_c(body))
+        at = body.find(" => ")
+        while at >= 0:
+            names += [_unquote_c(body[:at]), _unquote_c(body[at + 4 :])]
+            at = body.find(" => ", at + 1)
+    return names
+
+
+# One shell over every path a patch names: a symlink in the box's worktree,
+# then the index entry of each (git's own mode: 120000 link, 160000 gitlink).
+_SPECIAL_PATHS_SH = (
+    'for p; do if [ -L "$p" ]; then printf "symlink %s\\0" "$p"; fi; done; '
+    'exec git --literal-pathspecs ls-files -s -z -- "$@"'
+)
+
+
+def _special_paths(output: str) -> list[str]:
+    """`_SPECIAL_PATHS_SH`'s output, as refusals: every symlink and gitlink."""
+    found: list[str] = []
+    for record in output.split("\0"):
+        if record.startswith("symlink "):
+            found.append(f"{record[len('symlink '):]} (symlink)")
+            continue
+        meta, tab, path = record.partition("\t")
+        mode = meta.split(" ", 1)[0]
+        if tab and mode == "120000":
+            found.append(f"{path} (symlink)")
+        elif tab and mode == "160000":
+            found.append(f"{path} (submodule)")
+    return list(dict.fromkeys(found))
+
+
 async def _patch_violations(runtime: vf.Runtime, data: SweData) -> list[str]:
     """`_forbidden_patch_paths` for the patch at /tmp/agent.diff, asked of
-    this box before the patch is applied. A patch git cannot parse yields
-    no paths here and fails to apply right after, scoring 0 there."""
+    this box before the patch is applied, after refusing any path it reads
+    or writes that is not UTF-8, is a symlink (worktree or index) or a
+    gitlink. A patch header need not say a mode: a modeless hunk on a
+    tracked link, or a copy or rename from one, makes git read through the
+    link and keep its mode -- `patch_shape_violations` cannot see those.
+    A patch git cannot parse yields no paths here and fails to apply right
+    after, scoring 0 there."""
     numstat = await runtime.run(["git", "apply", "--numstat", "-z", "/tmp/agent.diff"], {})
     if numstat.exit_code != 0:
         return []
-    paths = _numstat_paths(numstat.stdout or "")
+    checked = await runtime.run(
+        ["sh", "-c", "LC_ALL=C git apply --check -v /tmp/agent.diff 2>&1"], {}
+    )
+    paths = list(
+        dict.fromkeys(
+            [
+                *_numstat_paths(numstat.stdout or ""),
+                *_checked_patch_names((checked.stdout or "") + (checked.stderr or "")),
+            ]
+        )
+    )
     if not paths:
         return []
+    undecodable = [path for path in paths if "\ufffd" in path]
+    if undecodable:
+        return [f"{path} (not UTF-8)" for path in undecodable]
+    special = await runtime.run(["sh", "-c", _SPECIAL_PATHS_SH, "sh", *paths], {})
+    if special.exit_code != 0:
+        detail = (special.stderr or special.stdout).strip()[-200:]
+        return [f"{path} (mode check exit {special.exit_code}: {detail})" for path in paths]
+    found = _special_paths(special.stdout or "")
+    if found:
+        return found
     others = await runtime.run(["git", "ls-files", "-z", "--others", "--directory"], {})
     if others.exit_code != 0:
         raise PristineBoxError(
@@ -768,7 +943,7 @@ def _restore_strategy_for(data: SweData) -> RestoreTests:
     return _restore_from_pristine_image
 
 
-async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
+async def grade(runtime: vf.Runtime, data: SweData, patch: str | bytes) -> Report:
     """Apply `patch` in `runtime`, restore the tests, run them, and score.
 
     `runtime` must be a freshly provisioned box from this instance's image.
@@ -778,7 +953,7 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     pass, or it's zero. A fractional reward would pay for a half-repair, and a
     half-repair is not a repair.
 
-    All nine implementation defects recorded in this project's progress log
+    All nine implementation defects found while building this package
     presented as exactly this function returning an all-`0` report with an
     empty `results` map, each caught by a human noticing a zero on real data,
     one at a time, on separate nights -- conda not being on `PATH`, the 128 KiB
@@ -791,6 +966,13 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     separate nights, because a real adapter break zeroes p2p for every
     instance at once and a patch that is merely bad does not.
     """
+    return await grade_prepared(runtime, await prepare_box(runtime, data), patch)
+
+
+async def prepare_box(runtime: vf.Runtime, data: SweData) -> SweData:
+    """The pristine-box half of `grade`: everything before the agent's patch is
+    written (raises `PristineBoxError`). Returns `data` with `base_commit`
+    resolved where the strip changed what it names."""
     # `--detach` for the reason `taskset._CHECKOUT` documents: a polyglot
     # `base_commit` is the symbolic `HEAD`, which the strip below would
     # otherwise leave pointing at a deleted branch.
@@ -831,9 +1013,9 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             )
         # The ref `data.base_commit` names (e.g. "origin/<id>~1") no longer
         # exists after the strip above -- every restoration checkout from
-        # here on must use the resolved SHA instead. Rebinding `data` (a
-        # local name, not the caller's object) means every function below
-        # that reads `data.base_commit` picks this up with no other change.
+        # here on must use the resolved SHA instead. The rebound `data` (a
+        # copy, not the caller's object) is what this function returns, so
+        # every restoration in `grade_prepared` reads the SHA.
         resolved = await runtime.run(["git", "rev-parse", "HEAD"], {})
         if resolved.exit_code != 0:
             # Unchecked, this was a real path to a wrongly-paid reward: a
@@ -926,10 +1108,55 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
                 f"could not strip history for {data.instance_id}: "
                 f"{(strip.stderr or strip.stdout).strip()[-500:]}"
             )
+    return data
 
+
+async def prepared_data(runtime: vf.Runtime, data: SweData) -> SweData:
+    """`data` as `prepare_box` returned it, re-read from a box it already prepared:
+    the strip replaced what `base_commit` names by the box's HEAD for every split
+    but SWE-bench Verified. Nothing the agent sent can move HEAD here (only its
+    patch file reached the box, outside the repository)."""
+    if data.split not in ("train", "polyglot", "r2e"):
+        return data
+    resolved = await runtime.run(["git", "rev-parse", "HEAD"], {})
+    if resolved.exit_code != 0:
+        raise PristineBoxError(
+            f"could not resolve HEAD for {data.instance_id} in the prepared box: "
+            f"{(resolved.stderr or resolved.stdout).strip()[-500:]}"
+        )
+    return data.model_copy(update={"base_commit": resolved.stdout.strip()})
+
+
+async def grade_prepared(runtime: vf.Runtime, data: SweData, patch: str | bytes) -> Report:
+    """`grade` once `prepare_box` ran in this box (`data` as it returned it).
+
+    A `bytes` patch is written to the box unchanged: an honest patch of a
+    non-UTF-8 source file must apply as captured. A patch whose shape the env
+    norm refuses (`patch_shape_violations`) scores 0 and is never applied.
+    """
+    if data.split in ("train", "polyglot", "r2e") and not _FULL_SHA.fullmatch(data.base_commit):
+        # Restoration checks paths out of `base_commit`: only the commit
+        # `prepare_box` resolved names the box's base, never a ref.
+        raise PristineBoxError(
+            f"base_commit {data.base_commit!r} for {data.instance_id} is not the full "
+            "commit prepare_box resolved"
+        )
+    raw = patch if isinstance(patch, bytes) else patch.encode()
     applied = True
-    if patch.strip():
-        await runtime.write("/tmp/agent.diff", patch.encode())
+    if raw.strip():
+        shape = patch_shape_violations(raw)
+        if shape:
+            return Report(
+                0.0,
+                False,
+                True,
+                0,
+                0,
+                {},
+                test_output_tail="patch refused (env norm: no binary, symlink or submodule): "
+                + ", ".join(shape),
+            )
+        await runtime.write("/tmp/agent.diff", raw)
         violations = await _patch_violations(runtime, data)
         if violations:
             # Not applied, on purpose, whatever the split: see
@@ -941,8 +1168,8 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
                 0,
                 0,
                 {},
-                test_output_tail="patch touches paths outside the tracked tree: "
-                + ", ".join(violations)[:1900],
+                test_output_tail="patch refused (env norm: no path outside the tracked tree, "
+                "no symlink, submodule or non-UTF-8 name): " + ", ".join(violations)[:1900],
             )
         result = await runtime.run(["git", "apply", "-v", "/tmp/agent.diff"], {})
         applied = result.exit_code == 0
@@ -958,12 +1185,24 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
     # error attributed to us rather than a result attributed to the patch.
     # `restored` carries the signal instead -- see Report.restored.
     restored = await _restore_strategy_for(data)(runtime, data)
+    if not restored:
+        # Any restoration failure leaves a box whose verdict could be the
+        # patch's, on every split: score it 0 and run nothing.
+        return Report(
+            0.0,
+            applied,
+            False,
+            0,
+            0,
+            {},
+            test_output_tail="restoration failed; nothing was run",
+        )
 
     # A canary check -- one injected test that must FAIL and one that must
     # PASS, at a path the agent cannot predict -- would slot in here, after
     # restoration and before the real test run, and is the only defense that
     # would touch the source-monkeypatch vector this module's own docstring
-    # names. Deliberately not built now; see task-4-report.md.
+    # names. Deliberately not built now.
     if data.split == "polyglot":
         # The corpus's own verdict, unchanged: `mimo_test_command.sh` exits
         # 0 or it does not. No test lists exist to count against.
@@ -980,19 +1219,6 @@ async def grade(runtime: vf.Runtime, data: SweData, patch: str) -> Report:
             test_output_tail=((run.stdout or "") + (run.stderr or ""))[-2000:],
         )
 
-    if data.split == "r2e" and not restored:
-        # Any restoration failure -- the hidden tests, the root entries, the
-        # root conftest/config files -- leaves a box whose verdict could be
-        # the patch's: score it 0 and run nothing.
-        return Report(
-            0.0,
-            applied,
-            False,
-            0,
-            0,
-            {},
-            test_output_tail="restoration failed; nothing was run",
-        )
     if data.split == "r2e":
         # Run nothing unless the hidden tests and their runner are exactly
         # where `_restore_r2e` put them: whatever else sits at run_tests.sh

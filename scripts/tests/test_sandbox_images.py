@@ -131,3 +131,25 @@ def test_build_tmax_pushes_only_with_registry_and_push(tmp_path):
     assert len(calls) == 1 and calls[0][-2:] == ["--repository", "r.example/team/reliquary-tmax-base"]
     with pytest.raises(SystemExit):
         si.main(["build-tmax", "--push"])
+
+
+def test_from_lock_lists_the_digests_of_the_tags_asked_for(tmp_path, capsys):
+    lock = tmp_path / "sandbox-images.lock.json"
+    a, b = "r/a@sha256:" + "1" * 64, "r/b@sha256:" + "2" * 64
+    lock.write_text(json.dumps({"version": 1, "images": {"r/a:1": a, "r/b:2": b}}))
+    tags = tmp_path / "tags.txt"
+    tags.write_text("r/b:2\n\n" + b + "\n")
+    assert si.main(["from-lock", str(lock), "--tags", str(tags)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"images": [b]}
+    assert si.main(["from-lock", str(lock)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"images": [a, b]}
+
+
+def test_from_lock_refuses_a_tag_the_lock_does_not_pin(tmp_path, capsys):
+    lock = tmp_path / "sandbox-images.lock.json"
+    lock.write_text(json.dumps({"version": 1, "images": {"r/a:1": "r/a@sha256:" + "1" * 64}}))
+    tags = tmp_path / "tags.txt"
+    tags.write_text("r/a:9\n")
+    assert si.main(["from-lock", str(lock), "--tags", str(tags)]) == 2
+    captured = capsys.readouterr()
+    assert "r/a:9" in captured.err and captured.out == ""

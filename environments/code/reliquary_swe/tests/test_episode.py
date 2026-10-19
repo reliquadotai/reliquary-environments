@@ -1,7 +1,7 @@
 import pytest
 import verifiers.v1 as vf
 
-from reliquary_swe.taskset import SweTask
+from reliquary_swe.taskset import BASE_REF, SweTask
 
 docker = pytest.mark.docker
 
@@ -59,18 +59,6 @@ def test_every_phase_has_a_deadline():
         assert task.data.timeout.scoring is not None
 
 
-async def test_finalize_without_setup_raises_instead_of_capturing_against_bare_head():
-    # The "one more silent-zero" fix: `_heads.pop(id(runtime), "")` used to
-    # fall back to "", which `capture_patch` turns into bare `HEAD` --
-    # upstream's own docstring says this misses any commit the agent made.
-    # No real runtime is needed: finalize() must raise before it ever
-    # touches one, from a missing bookkeeping entry alone.
-    task = _first_task()
-    trace = _trace(task)
-    with pytest.raises(RuntimeError, match="no base commit recorded"):
-        await task.finalize(trace, object())
-
-
 def test_the_taskset_resolves_to_sweenv_by_default():
     # `SweEnv` grades in a second, isolated box; `SingleAgentEnv` (the
     # fallback for a taskset that exports no `Env`) would instead default to
@@ -104,8 +92,9 @@ async def test_setup_removes_history_after_the_base_commit(runtime):
     # base_commit remains reachable through any ref that does.
     task = _first_task()
     await task.setup(_trace(task), runtime)
-    refs = await runtime.run(["sh", "-c", "git for-each-ref | wc -l"], {})
-    assert refs.stdout.strip() == "0"
+    # The one ref setup leaves is its own record of the base (BASE_REF -> HEAD).
+    refs = await runtime.run(["git", "for-each-ref", "--format=%(refname)"], {})
+    assert refs.stdout.split() == [BASE_REF]
     reachable = await runtime.run(
         [
             "sh",

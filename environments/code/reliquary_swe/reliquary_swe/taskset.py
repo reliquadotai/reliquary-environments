@@ -12,17 +12,33 @@ strategy stops being welded to a single harness's quirks.
 
 from __future__ import annotations
 
+import copy
+import uuid
 from collections.abc import Iterator
-from typing import ClassVar, Literal
+from types import SimpleNamespace
+from typing import Literal
 
 import verifiers.v1 as vf
 from pydantic import field_validator
-from verifiers.v1.utils.git import snapshot_untracked
+from verifiers.v1.utils.git import PATCH_CAP_BYTES
 
 from reliquary_swe import corpus, swe_adapter, swesmith_adapter
 
 WORKDIR = "/testbed"
 PATCH_PATH = f"{vf.ARTIFACTS_DIR}/patch.diff"
+BASE_REF = "refs/reliquary/base"
+"""Where setup records the base the agent's diff is taken against: in the box, so no host
+memory outlives an episode (a gateway restarts; one Task serves concurrent episodes). The
+agent can move it: grading recomputes everything from the image and refuses what a forged
+diff could name, so the capture is never trusted."""
+UNTRACKED_FILE = ".git/reliquary-untracked"
+"""The image's untracked files at setup (NUL-separated, relative to the workdir), which
+finalize leaves out of the diff."""
+MAX_UNTRACKED_BYTES = 1024 * 1024
+MAX_PATCH_BYTES = PATCH_CAP_BYTES
+_RECORD_BASE = f' && git -C "$WORKDIR" update-ref {BASE_REF} HEAD'
+"""Appended with `&&`, never `;`: R2E's cleanup ends on a `test` list `set -e` does not
+exit on, so after a `;` a later command's success would hide a hidden-test leak."""
 
 PROMPT = """\
 You are working in a checked-out repository at {workdir}.
@@ -133,7 +149,7 @@ _STRIP_AND_GC = " ; ".join(
 # commit is the base the agent's diff is taken against and the base grading
 # restores from (`grade()` runs the same step). On a clean image (coveragepy,
 # tornado) it is an empty commit. Untracked files (`run_tests.sh`,
-# `install.sh`, build output) stay untracked, as `snapshot_untracked`
+# `install.sh`, build output) stay untracked, as setup's untracked list
 # expects.
 _R2E_CHECKOUT = " ; ".join(
     [
@@ -180,8 +196,7 @@ _R2E_HIDE_TESTS = " ; ".join(
 
 
 def cleanup_script(split: str) -> str:
-    """The shell cleanup `SweTask.setup` runs before the agent starts (and the sandbox's
-    `prepare`, reliquary_swe.sandbox): checkout, SWE-smith's guard and re-root, R2E's
+    """The shell cleanup `SweTask.setup` runs before the agent starts: checkout, SWE-smith's guard and re-root, R2E's
     leak guard, ref stripping and gc, R2E's hidden-test removal, in that order."""
     steps = [_R2E_CHECKOUT if split == "r2e" else _CHECKOUT]
     # `split` -- already on the wire, and the honest discriminator for this
@@ -215,6 +230,130 @@ def cleanup_script(split: str) -> str:
     return " ; ".join(steps)
 
 
+_SANDBOX = "reliquary-sandbox"
+"""The runtime type of a signed-episode sandbox: the only runtime the reward grades on
+(the sandbox calls it only in its grading box)."""
+_CAPTURE_DIR = "/tmp/reliquary-capture"
+"""Prefix of finalize's scratch repository (a host nonce follows: the agent cannot
+pre-create it)."""
+_NO_HOME = "/tmp/reliquary-no-home"
+"""Prefix of the HOME git runs with outside the scratch repository: a host nonce
+follows and nothing creates it, so no git before 2.32 finds a config there."""
+_EXCLUDE = (
+    'x="$2/.git/info/exclude"; { [ -f "$x" ] && [ ! -L "$x" ]; } || x=/dev/null; '
+)
+"""The one excludes file both the untracked list and the capture read: the repository's
+`info/exclude` when it is a regular file (a FIFO would hang git), else none."""
+_PREPARE_CAPTURE = (
+    _EXCLUDE
+    + 'mkdir -m 700 -- "$1" && git init -q --bare --template= "$1"'
+    ' && git --git-dir="$1" config core.bare false'
+    ' && git --git-dir="$1" config core.excludesFile "$x"'
+    ' && base=$(git --git-dir="$1" rev-parse --verify -q "$3^{commit}")'
+    ' && git --git-dir="$1" update-ref --no-deref HEAD "$base"'
+    ' && git --git-dir="$1" read-tree HEAD'
+)
+"""The scratch repository finalize captures in: empty (no hook, no config, no remote of
+the agent's), the agent's objects reached read-only as an alternate, HEAD and index at
+the base, peeled here (a missing object fails, it is never fetched). The agent's own
+exclude file is kept: it only hides paths, as `.gitignore` does."""
+_LIST_UNTRACKED = (
+    _EXCLUDE + 'exec git -C "$2" -c core.excludesFile="$x" ls-files --others --exclude-standard -z'
+)
+"""setup's untracked list, under the capture's ignore rules (`.gitignore` files and the
+same excludes file, no global or system one)."""
+
+
+def _hardened_git_env(home: str) -> dict[str, str]:
+    """No system, global or XDG git config, no system attributes, no replace refs, no
+    lazy fetch from a promisor remote."""
+    return {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "HOME": home,  # git before 2.32 ignores GIT_CONFIG_GLOBAL
+        "XDG_CONFIG_HOME": home,
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_NO_LAZY_FETCH": "1",
+    }
+
+
+def _no_home() -> str:
+    return f"{_NO_HOME}-{uuid.uuid4().hex}"
+
+
+def _capture_env(workdir: str, scratch: str) -> dict[str, str]:
+    """The capture's git: the scratch repository over the agent's work tree. Every git
+    setting the agent can write (its `.git/config` and what it includes, hooks,
+    `.git/info/attributes`, fsmonitor, a redirected `core.worktree`, replace refs, a
+    `.git` file pointing elsewhere) lives in a repository this one never reads; the
+    in-tree `.gitattributes` it still reads names drivers only config defines, and
+    none is defined. What reaches it is plain data: the work tree and the objects."""
+    return {
+        **_hardened_git_env(scratch),
+        "GIT_DIR": scratch,
+        "GIT_WORK_TREE": workdir,
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": f"{workdir}/.git/objects",
+    }
+
+
+async def _resolve_base(runtime: vf.Runtime, workdir: str) -> str:
+    """The base ref's object name, else HEAD's, else "": read in the agent's repository
+    without peeling, so no object is read (a missing one in a partial clone would be
+    fetched through the agent's remote); its local config applies, but this `rev-parse`
+    runs no hook, filter, fsmonitor or transport. The scratch repository peels it."""
+    env = {**_hardened_git_env(_no_home()), "GIT_DIR": f"{workdir}/.git"}
+    for ref in (BASE_REF, "HEAD"):
+        result = await runtime.run(["git", "rev-parse", "--verify", "-q", ref], env)
+        sha = (result.stdout or "").strip()
+        if result.exit_code == 0 and sha:
+            return sha
+    return ""
+
+
+async def _capture(
+    sink: vf.Trace | SimpleNamespace,
+    runtime: vf.Runtime,
+    workdir: str,
+    ignore: list[str],
+    write_path: str | None = None,
+) -> None:
+    """verifiers' `capture_patch` against the base, in a scratch repository of ours
+    (`_capture_env`), removed after. Sets `sink.info["patch"]` or `["patch_error"]`."""
+    scratch = f"{_CAPTURE_DIR}-{uuid.uuid4().hex}"
+    base = await _resolve_base(runtime, workdir)
+    env = _capture_env(workdir, scratch)
+    if not base:
+        sink.info["patch_error"] = "no base: neither the base ref nor HEAD resolves"
+    else:
+        prepared = await runtime.run(
+            ["sh", "-c", _PREPARE_CAPTURE, "reliquary-capture", scratch, workdir, base],
+            {k: v for k, v in env.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")},
+        )
+        if prepared.exit_code != 0:
+            if (await runtime.run(["true"], {})).exit_code != 0:
+                raise vf.SandboxError("patch capture failed and the box stopped answering")
+            sink.info["patch_error"] = (
+                f"exit={prepared.exit_code} {(prepared.stderr or '').strip()[-500:]}"
+            )
+        else:
+            await vf.capture_patch(
+                sink, runtime, base_commit=base, env=env, ignore=ignore,  # type: ignore[arg-type]
+                write_path=write_path,
+            )
+    await runtime.run(["rm", "-rf", "--", scratch], {})
+
+
+async def _remove_patch(runtime: vf.Runtime) -> None:
+    result = await runtime.run(["rm", "-f", "--", PATCH_PATH], {})
+    if result.exit_code != 0:
+        # Kept, it would travel as the agent's patch: the extract fails instead (0).
+        raise RuntimeError(
+            f"could not remove {PATCH_PATH} (exit {result.exit_code}): "
+            f"{(result.stderr or '').strip()[-300:]}"
+        )
+
+
 class SweData(vf.TaskData):
     instance_id: str
     repo: str
@@ -241,20 +380,25 @@ class SweData(vf.TaskData):
 
 class SweTask(vf.Task[SweData]):
     NEEDS_CONTAINER = True
-
-    # Keyed by id(runtime); set in setup, read in finalize. Host memory only:
-    # a base commit kept inside the box is one the agent can rewrite.
-    _heads: ClassVar[dict[int, str]] = {}
-    _untracked: ClassVar[dict[int, list[str]]] = {}
+    _graded_elsewhere: bool = False
 
     @property
     def key(self) -> str:
         return self.data.instance_id
 
+    def graded_elsewhere(self) -> SweTask:
+        """A copy whose reward records nothing here: `SweEnv` grades the patch in a box of
+        its own (verifiers' Harbor pattern)."""
+        clone = copy.copy(self)
+        clone._graded_elsewhere = True
+        return clone
+
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        cleanup = cleanup_script(self.data.split)
+        """The cleanup (`cleanup_script`), then the base ref and the image's untracked
+        list, both kept in the box: a Task keeps no per-episode state of its own."""
+        script = cleanup_script(self.data.split) + _RECORD_BASE
         result = await runtime.run(
-            ["sh", "-c", cleanup],
+            ["sh", "-c", script],
             {"BASE_COMMIT": self.data.base_commit, "WORKDIR": self.data.workdir},
         )
         if result.exit_code != 0:
@@ -263,37 +407,118 @@ class SweTask(vf.Task[SweData]):
                 f"(exit {result.exit_code}): "
                 f"{(result.stderr or result.stdout).strip()[-500:]}"
             )
-        self._heads[id(runtime)] = await vf.resolve_head(runtime)
-        self._untracked[id(runtime)] = await snapshot_untracked(runtime)
+        workdir = self.data.workdir
+        listing = await runtime.run(
+            ["sh", "-c", _LIST_UNTRACKED, "reliquary-untracked", workdir],
+            _hardened_git_env(_no_home()),
+        )
+        if listing.exit_code != 0:
+            raise RuntimeError(
+                f"environment preparation failed for {self.data.instance_id}: listing the "
+                f"image's untracked files (exit {listing.exit_code}): "
+                f"{(listing.stderr or '').strip()[-500:]}"
+            )
+        untracked = [p for p in (listing.stdout or "").split("\0") if p]
+        listed = "\0".join(untracked).encode()
+        if len(listed) > MAX_UNTRACKED_BYTES:
+            # finalize reads at most this much back; a longer list would silently stop
+            # ignoring the image's files. An image this shape needs a closer look first.
+            raise RuntimeError(
+                f"environment preparation failed for {self.data.instance_id}: the image's "
+                f"untracked list is {len(listed)} bytes, over {MAX_UNTRACKED_BYTES}"
+            )
+        await runtime.write(f"{workdir}/{UNTRACKED_FILE}", listed)
+        # The capture reads none of the image's git config: an image its own git reads
+        # as clean but the capture does not (core.filemode, core.autocrlf, a filter
+        # defined outside the repository) would put that difference in every agent's
+        # patch, graded 0. Found here, on the untouched box, it is ours.
+        check = SimpleNamespace(info={})
+        await _capture(check, runtime, workdir, untracked)
+        if check.info.get("patch") != "":
+            detail = check.info.get("patch_error") or check.info.get("patch", "")[:300]
+            raise RuntimeError(
+                f"environment preparation failed for {self.data.instance_id}: the "
+                f"untouched box does not capture as an empty patch: {detail}"
+            )
 
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        """Snapshot the agent's diff while its box is still alive.
+        """The agent's diff against the base setup recorded in the box, without the
+        image's untracked files, written to PATCH_PATH (verifiers' artifact convention).
 
-        Diffed against the SHA recorded at setup rather than bare HEAD, so
-        commits the agent made are inside it. Edits to test files are captured
-        on purpose: grading discards them, and keeping them in the trace is
-        what makes reward hacking visible afterwards.
+        Diffed against that base rather than bare HEAD, so commits the agent made are
+        inside it. Edits to tests are captured on purpose: grading discards them, and
+        keeping them in the trace is what makes reward hacking visible afterwards. Only
+        box commands and file writes happen here (env norm): grading parses the patch,
+        never this. A base ref or an untracked list the agent removed or broke is its
+        own outcome: the diff is wider and fails to apply in the pristine box.
+
+        The capture runs in a scratch repository of ours (`_capture_env`), so no git
+        setting or hook the agent left runs; whenever it writes no patch, PATCH_PATH is
+        removed again and checked gone: a patch planted there never travels. A box that
+        stops answering raises (ours, not the agent's).
         """
+        await _remove_patch(runtime)  # a planted patch never travels
+        workdir = self.data.workdir
         try:
-            head = self._heads.pop(id(runtime))
-        except KeyError:
-            # No `"" ` fallback: `capture_patch` turns a falsy `base_commit`
-            # into bare `HEAD` (see its own docstring), which misses any
-            # commit the agent made -- a silent, wrong zero, not a real one.
-            # `setup()` always records an entry before the agent runs; a
-            # missing one means it never ran for this runtime, which is a
-            # bug worth raising loudly, not papering over.
-            raise RuntimeError(
-                f"no base commit recorded for {self.data.instance_id}'s "
-                "runtime -- setup() must run before finalize()"
-            ) from None
-        await vf.capture_patch(
-            trace,
-            runtime,
-            base_commit=head,
-            ignore=self._untracked.pop(id(runtime), []),
-            write_path=PATCH_PATH,
-        )
+            listed = await runtime.read(
+                f"{workdir}/{UNTRACKED_FILE}", max_bytes=MAX_UNTRACKED_BYTES
+            )
+            ignore = [p for p in listed.decode("utf-8", "replace").split("\0") if p]
+        except TimeoutError:
+            raise  # the step deadline (an OSError subclass)
+        except (OSError, vf.SandboxError):
+            # Missing, not a regular file or inflated by the agent (verifiers' capped
+            # read raises SandboxError for all three): its diff carries more.
+            ignore = []
+        await _capture(trace, runtime, workdir, ignore, write_path=PATCH_PATH)
+        if "patch" not in trace.info:
+            await _remove_patch(runtime)  # whatever ran during a failed capture planted
+
+    async def grading_setup(self, runtime: vf.Runtime) -> None:
+        """Env norm: the pristine grading box, before the agent's patch reaches it (the
+        history strip, R2E's hidden tests set aside). A failure is about us or the image."""
+        from reliquary_swe import grading
+
+        await grading.prepare_box(runtime, self.data)
+
+    @vf.reward(weight=1.0)
+    async def patch_passes_tests(
+        self, runtime: vf.Runtime, trace: vf.Trace
+    ) -> float | dict[str, float]:
+        """Env norm: `runtime` is a pristine box of the image that `grading_setup`
+        prepared and that received only the declared artifacts. The runtime type tells a
+        signed-episode sandbox from any other runtime; a sandbox calls the reward only in
+        its grading box. On any other runtime it records nothing: `SweEnv` grades in a
+        box of its own, and verifiers' default env would call it in the agent's box."""
+        from reliquary_swe import grading
+
+        box_type = getattr(getattr(runtime, "config", None), "type", None)
+        if self._graded_elsewhere or box_type != _SANDBOX:
+            return {}
+        try:
+            raw = await runtime.read(PATCH_PATH, max_bytes=MAX_PATCH_BYTES)
+        except FileNotFoundError:
+            raw = b""  # finalize wrote none (git refused): graded as an empty patch
+        except TimeoutError:
+            raise
+        except OSError:  # over the cap, or not a regular file: nothing to apply
+            trace.record_metrics({"patch_unreadable": 1.0})
+            return 0.0
+        data = await grading.prepared_data(runtime, self.data)
+        report = await grading.grade_prepared(runtime, data, raw)
+        metrics = {
+            "applied": float(report.applied),
+            "restored": float(report.restored),
+            "fail_to_pass_passed": float(report.fail_to_pass_passed),
+            "fail_to_pass_total": float(len(self.data.fail_to_pass)),
+            "pass_to_pass_passed": float(report.pass_to_pass_passed),
+            "pass_to_pass_total": float(len(self.data.pass_to_pass)),
+            "results_parsed": float(report.results_parsed),
+        }
+        if report.test_command_exit_code is not None:
+            metrics["test_command_exit_code"] = float(report.test_command_exit_code)
+        trace.record_metrics(metrics)
+        return report.reward
 
 
 class SweTasksetConfig(vf.TasksetConfig):
@@ -397,10 +622,12 @@ class SweTasksetConfig(vf.TasksetConfig):
 # point, it closes only after setup, and there is no cross-rollout cache
 # (`_uv_interpreters` lives on the per-rollout Runtime). That second term
 # is the one that dominates this budget, and it has not been measured --
-# 900s is sized by analogy with the other three phases below, not derived
-# from it. If a pilot hits this ceiling anyway, `--env.agent.timeout.setup`
+# the budget is sized by analogy with the other three phases below, not
+# derived from it. If a pilot hits this ceiling anyway, `--env.agent.timeout.setup`
 # overrides the task value at run time without a code change.
-_SETUP_TIMEOUT_SECONDS = 900.0
+# Capped by signed-episode sandboxes: setup at most 600 s, each grading step at most
+# 810 s (their verification window).
+_SETUP_TIMEOUT_SECONDS = 600.0
 
 # The agent's solve attempt -- the phase Important 1 is actually about.
 # Running the repository's own tests is the most natural thing a repair
@@ -413,24 +640,28 @@ _AGENT_TIMEOUT_SECONDS = 3600.0
 
 # `finalize()`'s `git add -A` + `git diff --cached --binary` against
 # whatever the agent's box holds. Measured on the container host: a single
-# 573 MB novel file costs 35.2s combined -- roughly 60s/GB. 900s covers
-# ~15 GB of agent-authored content, far past any legitimate edit, while
-# still bounding a disk-filling pathology to a fixed ceiling.
-_FINALIZE_TIMEOUT_SECONDS = 900.0
+# 573 MB novel file costs 35.2s combined -- roughly 60s/GB. 600s covers
+# ~10 GB of agent-authored content (the disk the task declares), far past any
+# legitimate edit, while still bounding a disk-filling pathology to a fixed
+# ceiling.
+# Capped by signed-episode sandboxes: setup at most 600 s, each grading step at most
+# 810 s (their verification window).
+_FINALIZE_TIMEOUT_SECONDS = 600.0
 
 # `env.py`'s `_grade` wraps provisioning-through-grading in
 # `asyncio.timeout(task.data.timeout.scoring)`; left at `TaskData`'s default
 # (`None`) this is unbounded, so a reachable-but-HANGING box would never
-# raise and never score (see task-5-report.md's Important finding). 1800s
-# (30 minutes) is sized past the measured tail with headroom, not guessed --
-# full reasoning, the measured times it is checked against, and the p90/max
+# raise and never score. 810s (13.5 minutes) is sized past the measured
+# tail with headroom, not guessed -- full reasoning, the measured times it is checked against, and the p90/max
 # corpus figures (independently re-measured, not just quoted) live in the
 # package README's "Timeouts" section rather than here.
-_SCORING_TIMEOUT_SECONDS = 1800.0
+# Capped by signed-episode sandboxes: setup at most 600 s, each grading step at most
+# 810 s (their verification window).
+_SCORING_TIMEOUT_SECONDS = 810.0
 
 
 class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
-    def load(self) -> Iterator[SweTask]:
+    def _split(self) -> str:
         if self.config.split is None:
             raise ValueError(
                 "reliquary-swe: --taskset.split is required (\"eval\" for "
@@ -440,6 +671,41 @@ class SweTaskset(vf.Taskset[SweTask, SweTasksetConfig]):
                 "default so that an operator wiring a real training source "
                 "cannot silently fall back to the evaluation set"
             )
+        return self.config.split
+
+    def __len__(self) -> int:
+        split = self._split()
+        if split == "train":
+            return len(corpus.swesmith_order(self.config.num_images, self.config.max_test_count))
+        if split == "r2e":
+            size = len(corpus.r2e_instance_ids())
+            return size if self.config.num_tasks is None else min(size, self.config.num_tasks)
+        if split == "polyglot":
+            return len(corpus.load_polyglot_rows(self.config.num_tasks))
+        return len(corpus.load_rows(split))
+
+    def task_at(self, index: int) -> SweTask:
+        """Task `index` of the split, built alone (`load` builds them all: SWE-smith's
+        default split weighs about 4 GB as rows). Equal to the index-th task `load`
+        yields."""
+        if type(index) is not int or not 0 <= index < len(self):
+            raise IndexError(index)
+        split = self._split()
+        if split == "train":
+            row = corpus.swesmith_row_at(
+                self.config.num_images, index, self.config.max_test_count
+            )
+            swesmith_adapter.ensure_python_profile(row.repo)
+        elif split == "r2e":
+            row = corpus.r2e_row_at(index)
+        elif split == "polyglot":
+            row = corpus.load_polyglot_rows(self.config.num_tasks)[index]
+        else:
+            row = corpus.load_rows(split)[index]
+        return task_for(row, index, split, self.config.task)
+
+    def load(self) -> Iterator[SweTask]:
+        self._split()
         if self.config.split == "train":
             rows = corpus.load_swesmith_rows(
                 self.config.num_images, self.config.max_test_count
@@ -485,6 +751,9 @@ def task_for(row: corpus.SweRow, index: int, split: str, task_config=None) -> Sw
                 finalize=_FINALIZE_TIMEOUT_SECONDS,
                 scoring=_SCORING_TIMEOUT_SECONDS,
             ),
+            # Provisional: no SWE box declared any before (Docker's default is
+            # unlimited); a signed-episode sandbox enforces both.
+            resources=vf.TaskResources(memory=4.0, disk=10.0),
             instance_id=row.instance_id,
             repo=row.repo,
             base_commit=row.base_commit,
@@ -500,4 +769,14 @@ def task_for(row: corpus.SweRow, index: int, split: str, task_config=None) -> Sw
         task_config,
     )
 
-__all__ = ["SweData", "SweTask", "SweTasksetConfig", "SweTaskset", "cleanup_script", "task_for"]
+__all__ = [
+    "BASE_REF",
+    "PATCH_PATH",
+    "UNTRACKED_FILE",
+    "SweData",
+    "SweTask",
+    "SweTasksetConfig",
+    "SweTaskset",
+    "cleanup_script",
+    "task_for",
+]

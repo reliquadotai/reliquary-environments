@@ -1,6 +1,6 @@
 schema = "reliquary/environment-source/v2"
 id = "reliquary/swe"
-version = "0.2.0"
+version = "0.3.0"
 taskset = "reliquary-swe"
 entrypoint = "reliquary_swe:SweTaskset"
 license = "MIT"
@@ -134,6 +134,6 @@ r2e_rows = 4578
 
 # There is no `[execution]` field for a scoring deadline: `vf.TaskData.timeout`
 # is set per task, not per environment, so it is not declared here. Every
-# task this taskset yields carries `timeout.scoring = 1800.0` seconds (30
-# minutes), set in `reliquary_swe/taskset.py` next to the measured tail it is
+# task this taskset yields carries `timeout.scoring = 810.0` seconds (13.5
+# minutes, the most a signed-episode sandbox accepts), set in `reliquary_swe/taskset.py` next to the measured tail it is
 # sized past -- see that module's comment, and the README's own section.

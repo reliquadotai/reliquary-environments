@@ -10,13 +10,14 @@ recomputes it from those inputs.
 
 from __future__ import annotations
 
+import ast
 import collections
 import hashlib
 import json
 import lzma
 import re
 import urllib.request
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,6 +42,8 @@ STATIC_REASONS = (
     "setup_network",
     "docker_in_test",
     "in_process_agent_code",
+    "environment_in_artifact_roots",
+    "mode_changed_by_hand_over",
     "pip_pin_conflict",
     "apt_unknown",
     "apt_conflict",
@@ -48,7 +51,9 @@ STATIC_REASONS = (
 )
 # Static reasons added after the base image was built (2026-10-05): they
 # exclude a task but leave its packages in the base.
-POST_BASE_REASONS = frozenset({"in_process_agent_code"})
+POST_BASE_REASONS = frozenset(
+    {"in_process_agent_code", "environment_in_artifact_roots", "mode_changed_by_hand_over"}
+)
 # Reason codes the box phase adds (`scripts/tmax_validate.py`).
 BOX_REASONS = (
     "base_missing_package",
@@ -74,6 +79,55 @@ BASE_PIP = ("pytest", "pytest-json-ctrf")
 
 _DOCKER = re.compile(r"\bdocker(?:-compose)?\b(?![-_.]?file)")
 
+# A mode the final test names: an octal literal (`0o400`), or a quoted one on a line
+# that reads a mode (`oct(st.st_mode)[-3:] == "000"`). A literal right after `&`, `|`
+# or `~` is a mask, and one in a call that sets a mode is the test's own.
+_MODE_LITERAL = re.compile(r"(?<![\w.])0o([0-7]{3,5})\b")
+_QUOTED_MODE = re.compile(r"""["'](?:0o|0)?([0-7]{3,4})["']""")
+_READS_MODE = re.compile(r"\boct\(|st_mode|S_IMODE|%a\b")
+_MASKED = re.compile(r"[&|~]\s*\(?\s*$")
+_SETS_MODE = re.compile(r"\b(?:chmod|fchmod|lchmod|mkdir|makedirs|umask|open|mkfifo|mknod)\s*\(")
+# The test reads a set-id bit, which the hand-over drops: `st_mode & stat.S_ISUID`,
+# `st_mode & 0o4000`. Checking the bit is gone (`not ...`) is no exemption: the hand-over
+# clears it on every file of the roots, so that check passes for an agent doing nothing.
+_SETID_READ = re.compile(r"S_IS[UG]ID|&\s*0o[246]000\b")
+# The test checks that the owner cannot read (`mode & 0o400 == 0`, `not mode & S_IRUSR`):
+# the hand-over gives the owner read, so that check fails for a correct agent.
+_OWNER_READ_MASK = re.compile(r"&\s*\(?\s*(?:0o[4-7]00\b|(?:stat\.)?S_IRUSR\b|(?:stat\.)?S_IRWXU\b)")
+_STRING = re.compile(r"""f?(?:"[^"]*"|'[^']*')""")
+_NEGATIVE = re.compile(r"\bnot\b|==\s*0\b|==\s*0o0+\b")
+
+
+def mode_changed_by_hand_over(test: str) -> list[str]:
+    """The lines of a final test that compare a mode the grading box's hand-over changes
+    (`tmax_box.handed_mode`, file view): an owner digit without `r`, or a set-id bit. A
+    regex lower bound: a mode built at run time, or read through `stat -c`, is missed."""
+    from reliquary_terminal.tmax_box import handed_mode
+
+    def changed(digits: str) -> bool:
+        mode = int(digits, 8) & 0o7777
+        return handed_mode(mode, False) != mode
+
+    evidence = []
+    for line in test.splitlines():
+        code = line.split("#", 1)[0]
+        hit = bool(_SETID_READ.search(code)) or (
+            bool(_OWNER_READ_MASK.search(code))
+            and bool(_NEGATIVE.search(_STRING.sub('""', code)))  # not the message's "not"
+        )
+        if not _SETS_MODE.search(code):
+            hit = hit or any(
+                changed(m.group(1))
+                for m in _MODE_LITERAL.finditer(code)
+                if not _MASKED.search(code[: m.start()])
+            )
+            hit = hit or bool(_READS_MODE.search(code)) and any(
+                changed(m.group(1)) for m in _QUOTED_MODE.finditer(code)
+            )
+        if hit:
+            evidence.append(line.strip())
+    return evidence
+
 
 # --------------------------------------------------------------------------
 # Per-task static checks.
@@ -90,6 +144,46 @@ class TaskFacts:
     successful_runs: int = 0
     anchor: str | None = None  # TMax's generator "anchor" (task.json): the part's group
     domain: str | None = None
+
+
+_LOADERS = frozenset({
+    "spec_from_file_location", "spec_from_loader", "module_from_spec", "exec_module",
+    "load_module", "load_source", "SourceFileLoader", "run_path", "run_module",
+    "import_module", "__import__", "exec", "eval"})
+
+
+def in_process_agent_code(files: Mapping[str, bytes]) -> list[str]:
+    """Static evidence that a task's tests run the agent's code inside pytest's
+    process, as `<file>: <what>` for every Python file given: a use of `sys.path`, a
+    dynamic load or exec (`_LOADERS`), an `import app...`, or a file that does not
+    parse. Conservative: whether the path is `/app` is not resolved, so a test that
+    only adds its own fixtures to `sys.path` is tagged too."""
+    found = []
+    for name, source in sorted(files.items()):
+        if not name.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            found.append(f"{name}: unparseable")
+            continue
+        what = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Attribute) and node.attr == "path"
+                    and isinstance(node.value, ast.Name) and node.value.id == "sys"):
+                what.add("sys.path")
+            elif isinstance(node, ast.Call):
+                func = node.func
+                called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if called in _LOADERS:
+                    what.add(called)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                modules = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                           else [node.module or ""])
+                if any(m == "app" or m.startswith("app.") for m in modules):
+                    what.add("import app")
+        found.extend(f"{name}: {item}" for item in sorted(what))
+    return found
 
 
 def task_facts(source: tmax.Source, task_id: str) -> TaskFacts:
@@ -110,6 +204,12 @@ def task_facts(source: tmax.Source, task_id: str) -> TaskFacts:
         facts.reasons["unsupported_section"] = ", ".join(definition.other_sections)
     if tmax.parse_environment(definition.environment) is None:
         facts.reasons["environment_unparsed"] = definition.environment.strip().splitlines()[0][:300]
+    else:
+        pointing = tmax.env_in_artifact_roots(tmax.parse_environment(definition.environment))
+        if pointing:
+            # PATH, a loader or Python variable naming the agent's files: a grading
+            # command would run what the agent left there.
+            facts.reasons["environment_in_artifact_roots"] = ", ".join(pointing)
     if tmax.resolve_files(task_id, definition.files, source.files(task_id)) is None:
         facts.reasons["files_unresolved"] = str(definition.files)[:300]
     test = source.text(task_id, tmax.FINAL_TEST)
@@ -118,14 +218,15 @@ def task_facts(source: tmax.Source, task_id: str) -> TaskFacts:
         line = test[test.rfind("\n", 0, match.start()) + 1 : test.find("\n", match.end())]
         facts.reasons["docker_in_test"] = line.strip()[:300]
     # The test would run the agent's code inside pytest's own process, where
-    # it can write a passing report and exit: refused on signed-episode
-    # sandboxes by default, so never kept here either. Imported here because
-    # `sandbox` imports the taskset, which imports this module.
-    from reliquary_terminal.sandbox import in_process_agent_code
-
+    # it can write a passing report and exit: never kept.
     evidence = in_process_agent_code({tmax.FINAL_TEST: test.encode()})
     if evidence:
         facts.reasons["in_process_agent_code"] = "; ".join(evidence)[:300]
+    # The grading box hands the agent's files to the test uid (tmax_box.hand_over),
+    # changing some modes: a test that compares one would fail an honest agent.
+    evidence = mode_changed_by_hand_over(test)
+    if evidence:
+        facts.reasons["mode_changed_by_hand_over"] = "; ".join(evidence)[:300]
     return facts
 
 

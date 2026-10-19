@@ -11,7 +11,8 @@ runs. This module turns one task into:
   helper (`tmax_box.py`). `TerminalTask.setup` runs it in every box at start,
   with no network;
 - `tests/`: `test.sh`, the final-state test, `pytest.ini`, and the helper,
-  which puts the protected inputs back before pytest runs;
+  which puts the protected inputs back, then runs the test as an unprivileged
+  uid and writes the verdict as root (docs/tmax.md, decision 11);
 - `solution/solve.sh`: a successful Gemini run's commands, replayed in one
   bash process from `/home/user`. The 2026-10-04 spike replayed 160/169.
 
@@ -21,10 +22,16 @@ the same bytes.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import os
+import posixpath
 import re
 import shlex
+import shutil
+import tempfile
+import uuid
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -46,6 +53,23 @@ ARTIFACT_ROOTS = ("/app", "/home/user")
 SETUP_DIR = "/tmp/reliquary-tmax-setup"
 # ubuntu:22.04's default PATH, which `$PATH` in `%environment` expands to.
 BASE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Variables that choose what a root command executes or loads. A grading box runs its
+# root commands with each unset (PATH: BASE_PATH) unless the task's own value stays
+# outside the artifact roots (`root_argv`); the static stage excludes a task whose
+# value does not (`environment_in_artifact_roots`).
+GUARDED_ENV = ("PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "BASH_ENV", "ENV", "PYTHONHOME",
+               "PYTHONSTARTUP", "PYTHONPATH")
+# HOME of every root grading command: outside the artifact roots, so no user-level
+# config, site or tool directory of the agent's is ever searched.
+GRADE_HOME = "/root"
+# LD_* / PYTHON* names a root command may keep (when present); every other one is unset.
+SAFE_LOADER_ENV = frozenset({"PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "PYTHONHASHSEED",
+                             "PYTHONIOENCODING", "PYTHONUTF8"})
+# Other variables that make a tool read files from a directory they name: a task whose
+# value points under an artifact root is refused (`environment_in_artifact_roots`).
+SEARCH_ENV_PREFIXES = ("XDG_", "GIT_", "NODE_", "PERL5", "RUBY", "JAVA_")
+SEARCH_ENV_NAMES = ("HOME", "CLASSPATH")
+_ABSOLUTE = {"sh": "/bin/sh", "bash": "/bin/bash", "rm": "/bin/rm"}
 # Fixed so that a repository the setup creates gets the same commit hashes in
 # the agent's box and the grading box (the spike saw replays fail on hashes
 # that differ per build).
@@ -228,6 +252,58 @@ def parse_environment(text: str) -> dict[str, str] | None:
             return None
         env[name] = value
     return env
+
+
+def _under_roots(path: str) -> bool:
+    path = posixpath.normpath(path)
+    return any(path == root or path.startswith(root + "/") for root in ARTIFACT_ROOTS)
+
+
+def _guarded_value_unsafe(value: str) -> bool:
+    """A guarded variable's value names an artifact root, or a relative or empty entry
+    (resolved against a directory the grading command did not choose)."""
+    entries = [e for part in value.split(":") for e in (part.split() or [""])]
+    return any(not e.startswith("/") or _under_roots(e) for e in entries)
+
+
+def env_in_artifact_roots(env: dict[str, str]) -> list[str]:
+    """The names of `env` that point a command at the agent's files: a guarded variable
+    (`GUARDED_ENV`) whose value is unsafe, or any other `LD_*` / `PYTHON*` variable with
+    an absolute entry under an artifact root."""
+    found = []
+    for name, value in sorted(env.items()):
+        if name in GUARDED_ENV:
+            if _guarded_value_unsafe(value):
+                found.append(name)
+        elif (name.startswith(("LD_", "PYTHON") + SEARCH_ENV_PREFIXES)
+              or name in SEARCH_ENV_NAMES or name.endswith("_OPTIONS")):
+            if any(_under_roots(e) for e in re.findall(r"/[^\s:=,;'\"]*", value)):
+                found.append(name)
+    return found
+
+
+def root_argv(argv: list[str], env: dict[str, str]) -> list[str]:
+    """`argv` as a grading box runs it as root: through `/usr/bin/env`, which unsets
+    every guarded variable whose value in `env` (what the box applies) is unsafe or
+    absent, sets PATH (the task's own when safe, else BASE_PATH), and runs `sh`, `bash`
+    and `rm` by absolute path."""
+    unset, assign = [], []
+    for name in GUARDED_ENV:
+        value = env.get(name)
+        safe = value is not None and not _guarded_value_unsafe(value)
+        if name == "PATH":
+            assign.append(f"PATH={value if safe else BASE_PATH}")
+        elif safe:
+            assign.append(f"{name}={value}")
+        else:
+            unset += ["-u", name]
+    for name in sorted(env):
+        if (name.startswith(("LD_", "PYTHON")) and name not in GUARDED_ENV
+                and name not in SAFE_LOADER_ENV and name != "PYTHONNOUSERSITE"):
+            unset += ["-u", name]
+    assign += [f"HOME={GRADE_HOME}", "PYTHONNOUSERSITE=1"]
+    head = _ABSOLUTE.get(argv[0], argv[0])
+    return ["/usr/bin/env", *unset, *assign, head, *argv[1:]]
 
 
 # --------------------------------------------------------------------------
@@ -718,22 +794,18 @@ def setup_script(task_id: str, files: list[tuple[str, str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-TEST_SH = f"""#!/bin/bash
+TEST_SH = """#!/bin/bash
 # reliquary-tmax grading. Puts the protected inputs back over the agent's
-# artifacts, then runs the final-state test from /tests, never from a
-# directory the agent wrote.
+# artifacts, then runs the final-state test from /tests as an unprivileged uid
+# (tmax_box.py run-tests): nothing the agent's code starts during the test can
+# write the verdict, which root writes once every process of that uid is gone.
 mkdir -p /logs/verifier
 echo 0 > /logs/verifier/reward.txt
-if ! python3 /tests/tmax_box.py relay; then
+if ! /usr/bin/python3 -I /tests/tmax_box.py relay; then
     echo "reliquary-tmax: protected inputs could not be restored; scoring 0"
     exit 1
 fi
-cd /tests
-python3 -m pytest -q -p no:cacheprovider -c /tests/pytest.ini --rootdir=/tests \\
-    --confcutdir=/tests --ctrf /logs/verifier/ctrf.json -rA /tests/{FINAL_TEST}
-rc=$?
-if [ "$rc" -eq 0 ]; then echo 1 > /logs/verifier/reward.txt; fi
-exit "$rc"
+exec /usr/bin/python3 -I /tests/tmax_box.py run-tests
 """
 
 PYTEST_INI = "[pytest]\naddopts =\n"
@@ -808,32 +880,81 @@ def convert(
 
 
 def materialize(converted: Converted, root: Path = CACHE) -> Path:
-    """Write a converted task under `root/<task_id>`. Rewritten only when
-    its content differs, so concurrent loaders converge on the same bytes."""
+    """Write a converted task under `root/<task_id>`. Rewritten only when its content
+    differs. Safe across processes: each writer stages in a directory of its own and
+    renames it into place; a writer that finds the place taken by the same content
+    keeps that one."""
     task_dir = root / converted.task_id
-    stamp = task_dir / ".content"
     digest = _content_digest(converted)
-    if stamp.is_file() and stamp.read_text() == digest:
+    if stamp_of(task_dir) == digest:
         return task_dir
-    staging = root / f".{converted.task_id}.partial"
-    import shutil
+    root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{converted.task_id}.partial-", dir=root))
+    try:
+        for rel, content in converted.files.items():
+            path = staging / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            if rel.endswith(".sh"):
+                path.chmod(0o755)
+        (staging / ".content").write_text(digest)
+        staging.chmod(0o755)
+        for _ in range(8):
+            try:
+                os.rename(staging, task_dir)
+                return task_dir
+            except OSError:  # taken (a non-empty directory)
+                if stamp_of(task_dir) == digest:
+                    return task_dir
+                stale = root / f".{converted.task_id}.stale-{uuid.uuid4().hex}"
+                try:
+                    os.rename(task_dir, stale)
+                except FileNotFoundError:
+                    continue
+                shutil.rmtree(stale, ignore_errors=True)
+        raise RuntimeError(f"could not materialize {task_dir}")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
-    shutil.rmtree(staging, ignore_errors=True)
-    for rel, content in converted.files.items():
-        path = staging / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(content)
-        if rel.endswith(".sh"):
-            path.chmod(0o755)
-    (staging / ".content").write_text(digest)
-    shutil.rmtree(task_dir, ignore_errors=True)
-    staging.rename(task_dir)
-    return task_dir
+
+def tree_digest(task_dir: Path) -> str:
+    """A sha256 over a directory's files (relative path and bytes, sorted by path), the
+    `.content` stamp left out: for a materialized task, the stamp's own value."""
+    root = Path(task_dir)
+    if not root.is_dir():
+        raise FileNotFoundError(f"no task directory at {root}")
+    files = sorted((p.relative_to(root).as_posix(), p) for p in root.rglob("*")
+                   if p.is_file() and p.relative_to(root).as_posix() != ".content")
+    digest = hashlib.sha256()
+    for rel, path in files:
+        digest.update(rel.encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+_VERIFIED: dict[str, str] = {}
+"""Task directories whose files were checked against their stamp in this process."""
+
+
+def stamp_of(task_dir: Path) -> str | None:
+    """A materialized task's `.content` stamp, or None when there is none or the files
+    no longer match it. Checked against the files once per process per stamp."""
+    stamp = Path(task_dir) / ".content"
+    try:
+        value = stamp.read_text().strip()
+    except OSError:
+        return None
+    key = str(Path(task_dir).resolve())
+    if _VERIFIED.get(key) != value:
+        try:
+            if tree_digest(Path(task_dir)) != value:
+                return None
+        except OSError:
+            return None
+        _VERIFIED[key] = value
+    return value
 
 
 def _content_digest(converted: Converted) -> str:
-    import hashlib
-
     digest = hashlib.sha256()
     for rel in sorted(converted.files):
         digest.update(rel.encode() + b"\0" + converted.files[rel] + b"\0")

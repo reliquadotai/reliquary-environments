@@ -60,13 +60,14 @@ class SweEnv(vf.Env[SweEnvConfig]):
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         if not isinstance(task, SweTask):
             raise TypeError(f"the swe env runs swe tasks; got {type(task).__name__}")
-        await agents.agent.run(task)
+        await agents.agent.run(task.graded_elsewhere())
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """Grade the solver's captured patch in a box it never touched, and
         record the result onto its trace. A trace that never completed
         (`not solution.ok`) is left unscored, same as an agent that never
-        produced a patch at all -- there is nothing here to grade."""
+        produced a patch at all -- there is nothing here to grade. The task records no
+        reward of its own here (`graded_elsewhere`)."""
         if not isinstance(task, SweTask):
             return
         solution = episode.traces[0]

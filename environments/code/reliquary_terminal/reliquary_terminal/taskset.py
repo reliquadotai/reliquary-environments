@@ -18,6 +18,7 @@ import base64
 import functools
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -41,6 +42,8 @@ from verifiers.v1.utils.artifacts import Artifact
 
 from reliquary_terminal import tmax, tmax_select
 from reliquary_terminal.grading import TerminalTask
+
+logger = logging.getLogger(__name__)
 
 # Pinned by content digest: `@latest` is revision 6 today and can move.
 EVAL_DATASET = (
@@ -287,6 +290,22 @@ def tmax_tasks(
     return manifest["base_image"], (kept[:num_tasks] if num_tasks is not None else kept)
 
 
+class UnservedTask(ValueError):
+    """A kept tmax task this package refuses to serve: its environment points a command
+    at the agent's files (`tmax.env_in_artifact_roots`), or it declares collect hooks."""
+
+
+def refuse_unserved(data: HarborData) -> HarborData:
+    """`data`, unless it is a task no grading box may run (`UnservedTask`)."""
+    envs = {**data.env, **(data.verifier.env if data.verifier is not None else {})}
+    pointing = tmax.env_in_artifact_roots(envs)
+    if pointing:
+        raise UnservedTask(f"{data.name}: environment_in_artifact_roots ({', '.join(pointing)})")
+    if data.collect:
+        raise UnservedTask(f"{data.name}: collect hooks are not served")
+    return data
+
+
 def _tmax_source(path: Path | None) -> tmax.Source:
     if path is None:
         return tmax.Source(tmax.download_source())
@@ -311,7 +330,7 @@ def tmax_data(
         cpu=TMAX_CPUS * config.resource_multiplier,
         memory=TMAX_MEMORY_GB * config.resource_multiplier,
     )
-    return HarborData(
+    return refuse_unserved(HarborData(
         idx=idx,
         name=task_id,
         prompt=converted.instruction,
@@ -339,13 +358,41 @@ def tmax_data(
             network_allow=[],
             env=dict(converted.env),
         ),
-    )
+    ))
 
 
 # Parameterized directly rather than subclassing `HarborTaskset`: verifiers
 # resolves a taskset's config type from its generic parameters, so a plain
 # subclass would still hand the CLI `HarborConfig`, without `split`.
 class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
+    def _source(self) -> tmax.Source:
+        source = getattr(self, "_tmax_source_cache", None)
+        if source is None:
+            source = self._tmax_source_cache = _tmax_source(self.config.tmax_source)
+        return source
+
+    def __len__(self) -> int:
+        split = self.config.split
+        if split in TMAX_SPLITS and self.config.tasks is None:
+            return len(tmax_tasks(self.config.num_tasks, part=TMAX_SPLITS[split])[1])
+        if split == "train" and self.config.tasks is None:
+            return len(load_train_rows())
+        raise TypeError(f"no cheap length for split {split!r} with this config")
+
+    def task_at(self, index: int) -> TerminalTask:
+        """Task `index` of a tmax split, converted alone (`load` converts every task):
+        the same task as the `index`-th of `load`. Raises `UnservedTask` for a task
+        `load` skips."""
+        split = self.config.split
+        if split not in TMAX_SPLITS or self.config.tasks is not None:
+            raise ValueError("task_at serves the tmax splits without a tasks filter")
+        base_image, kept = tmax_tasks(self.config.num_tasks, part=TMAX_SPLITS[split])
+        if type(index) is not int or not 0 <= index < len(kept):
+            raise IndexError(index)
+        task_id, entry = kept[index]
+        data = tmax_data(self._source(), task_id, entry, index, self.config, base_image)
+        return TerminalTask(data, self.config.task)
+
     def load(self) -> Iterator[TerminalTask]:
         if self.config.split is None:
             raise ValueError(
@@ -365,7 +412,12 @@ class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
             source = _tmax_source(self.config.tmax_source)
             for idx, (task_id, entry) in enumerate(kept):
                 if self.config.tasks is None or task_id in self.config.tasks:
-                    data = tmax_data(source, task_id, entry, idx, self.config, base_image)
+                    try:
+                        data = tmax_data(source, task_id, entry, idx, self.config, base_image)
+                    except UnservedTask as refused:
+                        # Indices stay those of the manifest: `task_at` raises for it.
+                        logger.warning("reliquary-terminal: %s", refused)
+                        continue
                     yield TerminalTask(data, self.config.task)
             return
         root = dataset_dir(self.config)
@@ -384,4 +436,4 @@ class TerminalTaskset(Taskset[TerminalTask, TerminalConfig]):
             yield TerminalTask(data, self.config.task)
 
 
-__all__ = ["EVAL_DATASET", "TMAX_SPLITS", "TerminalConfig", "TerminalTaskset", "image_workdir", "tmax_data", "tmax_tasks"]
+__all__ = ["EVAL_DATASET", "TMAX_SPLITS", "TerminalConfig", "TerminalTaskset", "image_workdir", "UnservedTask", "refuse_unserved", "tmax_data", "tmax_tasks"]
