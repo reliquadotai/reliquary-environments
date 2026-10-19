@@ -351,8 +351,10 @@ def test_the_cases_cover_task_zero_and_a_task_whose_test_runs_programs(cases_sou
     cases = conformance.conformance_cases("tmax")
     assert {c["index"] for c in cases} == {0, 2}
     assert len(cases) == 10
-    for split in ("eval", "train", "tmax_rl", "tmax_sft"):
+    for split in ("eval", "train", "tmax_sft"):
         assert conformance.conformance_cases(split) == []
+    rl = conformance.conformance_cases("tmax_rl")                    # the split the RL run serves
+    assert rl and 0 in {c["index"] for c in rl}
 
 
 def test_without_such_a_task_the_cases_cover_task_zero(cases_source):
@@ -367,7 +369,10 @@ def test_reference_calls_replay_the_tasks_recorded_solution(cases_source):
     assert calls == conformance.run_script_calls(solve)
     assert b"cat .truth.json > out.txt" in solve
     assert conformance.reference_calls("eval", 0) is None
-    assert conformance.reference_calls("tmax_rl", 0) is None
+    assert conformance.reference_calls("tmax_sft", 0) is None
+    rl = TerminalTaskset(_config(split="tmax_rl", tmax_source=cases_source)).task_at(0)
+    rl_solve = (grading.Path(rl.data.task_dir) / "solution" / "solve.sh").read_bytes()
+    assert conformance.reference_calls("tmax_rl", 0) == conformance.run_script_calls(rl_solve)
 
 
 def test_the_package_exports_the_hooks_and_one_taskset():
