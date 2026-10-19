@@ -1,16 +1,16 @@
 {
   "schema": "reliquary/environment-artifact/v1",
-  "environment": "reliquary_telecom_solo_v1",
+  "environment": "reliquary_telecom_solo_v2",
   "contract": "reliquary/episode-json/v1",
   "distribution": {
     "name": "reliquary-telecom-solo",
-    "version": "0.1.0a1"
+    "version": "0.2.0a1"
   },
   "entrypoints": {
     "taskset": "reliquary_telecom_solo:TelecomSoloTaskset",
     "replay": "reliquary_telecom_solo:TelecomSoloEnvironment"
   },
-  "source_manifest_sha256": "fa55e1641a7b7a3b35a1c703b7d052ace5a31483ea35895e09d3f5a9f2b13d7e",
+  "source_manifest_sha256": "bbf1c8f0a445b5483bb3dd6ed26c113b3f8c8a0c2c61e6df0a308d08aab2201e",
   "files": {
     "reliquary_telecom_solo/__init__.py": "82ae48dd43a14a64fd52695bfe268461cf8643a1c53d86a4beeb79fcdc76d421",
     "reliquary_telecom_solo/_tau2/LICENSE": "e67c5aa0074dfcaefd3c3a1aedb94cb539234aecd15d5a972574e3200e6252fe",
@@ -21,16 +21,18 @@
     "reliquary_telecom_solo/_tau2/tools.py": "b5fe051148ac4ea1d4155fe6edf123b38ab2084e7eb6fa3bd4c453d7b1c748f7",
     "reliquary_telecom_solo/_tau2/user_data_model.py": "d3f36edb85e941ef070c3a8298e1c90a92517fcb0ae58ec23d298e7d4bd8bc54",
     "reliquary_telecom_solo/_tau2/user_tools.py": "336c224eab2180da6f31fc73b7441e6c923a5235372eda0964c347c16579a1a7",
-    "reliquary_telecom_solo/corpus.py": "5dc7ce3f7a0f950ae26ff5e086f648d016a5a1c02722271704f508b64068f589",
+    "reliquary_telecom_solo/corpus.py": "03ad6cb6c5d3fb1965346c653d7e5c6a5d10e22ebc8a1af0d6180d9696cd0937",
     "reliquary_telecom_solo/data/db.toml": "562d647ef9d7df8df91eafd8ee76036e707c8f9e32aaedc4a7fde06975aea2c0",
     "reliquary_telecom_solo/data/main_policy_solo.md": "781296ae5419169cb64aac0c4fa2aa6129c78f3c1592f64abd80df6fbabb7042",
+    "reliquary_telecom_solo/data/split_tasks.json.gz": "8a1e0622da71118865138e39ae9392ad1ef9b2776b7d048e81f3b708d5dc241b",
     "reliquary_telecom_solo/data/tasks.json.gz": "0a348b750e724b783f3e9816e088be66f8f9ed409024bdf4126fbc7a4ffbed33",
     "reliquary_telecom_solo/data/tech_support_workflow_solo.md": "b174d1f9705b5d7df49468daf99560a5633f86d23e10499a1166a7753706a412",
     "reliquary_telecom_solo/data/tool_schemas.json": "92124e2900cbdc2820c4944494d8146daf862b73cd37a66365c51ae61d9276d9",
     "reliquary_telecom_solo/data/user_db.toml": "4886107ea0c16f8e16d74bef91cfb557de61822afe9361f5a9b241806aea2e4c",
-    "reliquary_telecom_solo/environment.py": "5c9ed6949eca030ef8fecd30df2bc6de33c91c9fac2365f106da3ab82266b466",
-    "reliquary_telecom_solo/goldens/reference.jsonl": "8fdfab9e53e59e0a4ae9b0ff8394c73b5561dace5263a39b0f48fa27b7aa1f34",
+    "reliquary_telecom_solo/environment.py": "b2493c35917017ca737b49a990dcc52b25a19a9a782a974eaf0ae41c4e3ea8da",
+    "reliquary_telecom_solo/goldens/reference.jsonl": "3603768246cbeb12ebfdda772b14c6e062824ba29bc936f3d1ea9adf95a7e3ee",
     "reliquary_telecom_solo/grading.py": "a1a1e70f279703a632a9ec8464cc72712aedfcebb43047029221cbaf6234e17b",
-    "reliquary_telecom_solo/taskset.py": "889d0031e59f56efb226691bea6dc9427df0dceae90160eb3b74b96c445e4ae8"
+    "reliquary_telecom_solo/layout.py": "c290e001f1207820545a4f10b7657022ed96fb0451dd94dfa6c38f4a122e035b",
+    "reliquary_telecom_solo/taskset.py": "63f24df55454e0a09876ef691bf40aafd47e99dee49020ffd345ccb5e144e0b5"
   }
 }

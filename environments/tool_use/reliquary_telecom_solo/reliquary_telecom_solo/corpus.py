@@ -17,6 +17,7 @@ Sources, all from τ²-bench `data/tau2/domains/telecom/`:
 | `main_policy_solo.md` | `main_policy_solo.md` | what the agent may do |
 | `tech_support_workflow_solo.md` | `tech_support_workflow_solo.md` | how to diagnose |
 | `tool_schemas.json` | generated | the 44 tools, as the agent sees them |
+| `split_tasks.json.gz` | `split_tasks.json` | upstream's own benchmark sets, held out |
 """
 
 from __future__ import annotations
@@ -65,7 +66,22 @@ TOOL_COUNT = 44
 # said to a user who is not here, and NL_ASSERTION is an LLM judge.
 REWARD_TYPES = ("ENV_ASSERTION", "ACTION")
 
-SPLITS = ("train", "eval", "qualification")
+# τ²-bench's own benchmark sets, as upstream names them: `base` (114 tickets,
+# which upstream subdivides into its `train` 74 and `test` 40), `test` and
+# `small` (20). Their union is the 134 tickets upstream reports telecom scores
+# on, and a policy trained on any of them would report a number that is partly
+# recall. Shipped byte for byte from upstream at commit 4ce7c039
+# (2026-10-07; the file is unchanged since 0ed2fd8d, 2025-11-10), and digested
+# like the tasks, over the decompressed body.
+BENCHMARK_FILE = f"{DATA_DIR}/split_tasks.json.gz"
+BENCHMARK_SHA256 = "605b488bb9a6acb3c7f4505240a855fdc8681d09aadb16a8f38b2efcfc5c3aec"
+BENCHMARK_SETS = ("base", "test", "small")
+BENCHMARK_COUNT = 134
+
+SPLITS = ("train", "eval", "qualification", "benchmark")
+# The splits reliquary_telecom_solo_v1 served. Its rule is kept, unchanged, as
+# `v1_rows`: v2 is v1 with the benchmark tickets lifted out of every split.
+V1_SPLITS = ("train", "eval", "qualification")
 # Shares rather than thirds, and drawn inside each task family rather than over
 # the corpus as a whole. The families are lopsided — 1,984 MMS tickets against
 # 47 service tickets — and 10% of 47 taken by a hash could land anywhere
@@ -293,8 +309,40 @@ def tool_schemas() -> tuple[dict[str, Any], ...]:
     return tuple(schemas)
 
 
+@lru_cache(maxsize=1)
+def benchmark_keys() -> frozenset[str]:
+    """The tickets upstream benchmarks on, which no other split may hold."""
+    sets = json.loads(_checked(BENCHMARK_FILE, BENCHMARK_SHA256, gzipped=True))
+    keys = frozenset(key for name in BENCHMARK_SETS for key in sets[name])
+    if len(keys) != BENCHMARK_COUNT:
+        raise RuntimeError(
+            f"{len(keys)} benchmark tickets, expected {BENCHMARK_COUNT}"
+        )
+    unknown = keys - {task.key for task in tasks()}
+    if unknown:
+        # A held-out id the corpus does not hold would hold nothing out.
+        raise RuntimeError(
+            f"benchmark names tickets the corpus lacks: {sorted(unknown)}"
+        )
+    return keys
+
+
 def split_of(key: str) -> str:
-    """Which split a task belongs to, taken from its identity and its family.
+    """Which split a task belongs to: `benchmark` if upstream measures on it,
+    otherwise the split v1 drew for it.
+
+    Lifting the benchmark out after the draw, rather than drawing over what is
+    left, keeps every other ticket where v1 put it. A ticket that was in v1's
+    eval or qualification is never in v2's train, so a score taken on either
+    under v1 still means what it meant.
+    """
+    if key in benchmark_keys():
+        return "benchmark"
+    return v1_split_of(key)
+
+
+def v1_split_of(key: str) -> str:
+    """Which split reliquary_telecom_solo_v1 put a task in.
 
     Hashing the task id rather than slicing the file keeps a task in the split
     it has always been in whatever order the corpus arrives in, and the family
@@ -330,30 +378,111 @@ def _family_order() -> dict[str, tuple[int, int]]:
     return ranks
 
 
+# Train is shared between SFT and RL, as reliquary-competitive-code's is: each
+# use is one contiguous range of it, so a corpus job is [start, start + count).
+# Within a family, train is ordered by the salted rank that drew it into train
+# — a shuffle, and a deliberate one: upstream's file lists tickets roughly by
+# how many faults they inject, so its first half is the easy half.
+#
+# SFT takes the first `count` train rows of each family listed here, in this
+# order; RL takes what is left, service first. Service has no SFT share: its
+# 10 train tickets all go to RL. Mobile data splits in half, rounded toward SFT.
+USES = ("sft", "rl")
+SFT_ROWS = (("mobile_data_issue", 83), ("mms_issue", 1137))
+RL_ORDER = ("service_issue", "mobile_data_issue", "mms_issue")
+
+
 @lru_cache(maxsize=None)
 def rows(split: str = "train") -> tuple[Task, ...]:
-    """The tasks of one split, in corpus order."""
+    """The tasks of one split: train as SFT then RL, the others in corpus order."""
     if split not in SPLITS:
         raise ValueError(f"split must be one of {SPLITS}")
-    return tuple(task for task in tasks() if split_of(task.key) == split)
+    if split != "train":
+        return tuple(task for task in tasks() if split_of(task.key) == split)
+    order = _family_order()
+    families: dict[str, list[Task]] = {}
+    for task in sorted(tasks(), key=lambda task: order[task.key][0]):
+        if split_of(task.key) == "train":
+            families.setdefault(task.family, []).append(task)
+    if set(families) != set(RL_ORDER):
+        raise RuntimeError(f"train holds families {sorted(families)}")
+    sft = dict(SFT_ROWS)
+    for family, count in SFT_ROWS:
+        if count > len(families[family]):
+            raise RuntimeError(
+                f"{family}: {count} SFT rows of {len(families[family])}"
+            )
+    laid = [
+        task for family, count in SFT_ROWS for task in families[family][:count]
+    ]
+    laid += [
+        task for family in RL_ORDER for task in families[family][sft.get(family, 0) :]
+    ]
+    return tuple(laid)
+
+
+@lru_cache(maxsize=None)
+def v1_rows(split: str = "train") -> tuple[Task, ...]:
+    """The tasks of one split as reliquary_telecom_solo_v1 served them: in
+    corpus order, the benchmark tickets included."""
+    if split not in V1_SPLITS:
+        raise ValueError(f"split must be one of {V1_SPLITS}")
+    return tuple(task for task in tasks() if v1_split_of(task.key) == split)
+
+
+def use_range(use: str) -> range:
+    """The indices of train that serve `use` ("sft" or "rl")."""
+    if use not in USES:
+        raise ValueError(f"use must be one of {USES}")
+    sft = sum(count for _, count in SFT_ROWS)
+    return range(0, sft) if use == "sft" else range(sft, len(rows("train")))
+
+
+@lru_cache(maxsize=1)
+def _uses() -> dict[str, str]:
+    sft = use_range("sft")
+    return {
+        task.key: "sft" if index in sft else "rl"
+        for index, task in enumerate(rows("train"))
+    }
+
+
+def use_of(key: str) -> str:
+    """Which use a train ticket serves. Only train is shared, so a ticket from
+    any other split has none."""
+    try:
+        return _uses()[key]
+    except KeyError:
+        raise ValueError(f"not a train task: {key}") from None
 
 
 __all__ = [
+    "BENCHMARK_COUNT",
+    "BENCHMARK_SHA256",
     "DB_SHA256",
     "EnvAssertion",
     "EnvCall",
     "GoldAction",
     "REWARD_TYPES",
+    "RL_ORDER",
+    "SFT_ROWS",
     "SPLITS",
     "TASKS_SHA256",
     "TASK_COUNT",
     "TOOL_COUNT",
     "Task",
     "USER_DB_SHA256",
+    "USES",
+    "V1_SPLITS",
+    "benchmark_keys",
     "databases",
     "policy",
     "rows",
     "split_of",
     "tasks",
     "tool_schemas",
+    "use_of",
+    "use_range",
+    "v1_rows",
+    "v1_split_of",
 ]

@@ -1,0 +1,128 @@
+reliquary-general
+
+The code in this package is MIT-licensed (see LICENSE), except
+reliquary_general/_ifeval/, which is Apache-2.0 (see the LICENSE beside it).
+
+The prompt corpus this package serves is published separately, as the Hugging
+Face dataset ReliquaryForge/general-prompts-curated, and pinned by revision and
+digest; the wheel does not contain it. It is derived from the datasets below. Every row names its source in its `source` field and keeps the
+upstream identifier in its `key`. Only prompts are redistributed: no upstream
+response, rubric or preference is included, except the frozen earlier turns of
+a multi-turn conversation or tool transcript, which are part of the prompt.
+Licences were read on each dataset card at the pinned revision on 2026-10-09.
+
+General prompts
+---------------
+
+  WildChat-4.8M, Allen Institute for AI
+  https://huggingface.co/datasets/allenai/WildChat-4.8M
+  revision c827c6df8fcf008219ffaffa4d1dd77491099367
+  Open Data Commons Attribution License (ODC-By) v1.0
+  User turns of English, non-toxic, non-redacted conversations (o1 models
+  excluded); multi-turn rows keep the earlier ChatGPT replies as frozen history.
+
+  oasst2, OpenAssistant
+  https://huggingface.co/datasets/OpenAssistant/oasst2
+  revision 179dd21fc55192153d94adb0e0ce8f69e222bf75
+  Apache License 2.0
+
+  HelpSteer3 (preference subset, general and STEM domains), NVIDIA Corporation
+  https://huggingface.co/datasets/nvidia/HelpSteer3
+  revision f6d145777bcbde96137596340fab89793acd1031
+  Creative Commons Attribution 4.0 International (CC BY 4.0)
+
+  Nemotron-RL-Multichallenge-v1, NVIDIA Corporation
+  https://huggingface.co/datasets/nvidia/Nemotron-RL-Multichallenge-v1
+  revision 4df9901a1f8b2996431ca841245ac67f93c7743d
+  CC BY 4.0
+
+  IF_multi_constraints_upto5, Allen Institute for AI
+  https://huggingface.co/datasets/allenai/IF_multi_constraints_upto5
+  revision 2e3a77407b7fce69f95b248d64a884e3ae1c2423
+  ODC-By v1.0
+  Only rows whose base prompt comes from WildChat, oasst1, FLAN v2, GSM8K or
+  NuminaMath (PersonaHub, evol-codealpaca, WildJailbreak, WildGuardMix,
+  No Robots, Aya and TableGPT rows excluded).
+
+  Nemotron-RL-Instruction-Following-Structured-Outputs-v2, NVIDIA Corporation
+  https://huggingface.co/datasets/nvidia/Nemotron-RL-Instruction-Following-Structured-Outputs-v2
+  revision b0187e1802944a6dd01560f74d124ce9c19fe0e8
+  CC BY 4.0
+  Split 1 (direct_generation) only; splits 2 and 3 embed Wikipedia articles
+  (CC BY-SA) and are excluded.
+
+  Nemotron-RL-instruction_following-structured_outputs, NVIDIA Corporation
+  https://huggingface.co/datasets/nvidia/Nemotron-RL-instruction_following-structured_outputs
+  revision 4ed3d0e404c03dd47453217ce498c3511aa90a44
+  CC BY 4.0
+
+  Nemotron-SFT-Safety-v1, NVIDIA Corporation
+  https://huggingface.co/datasets/nvidia/Nemotron-SFT-Safety-v1
+  revision 913fd7c803a9378dab0ce4fef80297ce115781f6
+  CC BY 4.0 (card: "Additional Information: Apache 2.0 License; MIT License");
+  only rows whose own `license` field is cc-by-4.0.
+
+  Aegis-AI-Content-Safety-Dataset-2.0, NVIDIA Corporation
+  https://huggingface.co/datasets/nvidia/Aegis-AI-Content-Safety-Dataset-2.0
+  revision d86bb8bedff51d25ac834ab7838f1cc61acb7a2c
+  CC BY 4.0
+
+  Nemotron-RL-Identity-Following-v1, NVIDIA Corporation
+  https://huggingface.co/datasets/nvidia/Nemotron-RL-Identity-Following-v1
+  revision 44d1f2956ca0889347d39bf13629e0827e4e7250
+  CC BY 4.0 (English prompts only; the rubric naming another model is dropped)
+
+  olmo-2-hard-coded, Allen Institute for AI
+  https://huggingface.co/datasets/allenai/olmo-2-hard-coded
+  revision 7e7685797806d1210bb939cd3ef2eb77d6291682
+  CC BY 4.0 (prompts only; prompts naming OLMo or Ai2 dropped)
+
+Tool-use prompts
+----------------
+
+  xlam-function-calling-60k, Salesforce
+  https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k
+  revision 26d14ebfe18b1f7b524bd39b404b50af5dc97866
+  CC BY 4.0 (gated; terms accepted by the downloading account)
+  Tool schemas rewritten from Python type names to JSON Schema. Rows whose
+  tools carry a function name used by BFCL v4, When2Call or tau2-bench dropped
+  (205 of 32,693 filtered rows remain).
+
+  Nemotron-RL-Agentic-Function-Calling-Pivot-v1, NVIDIA Corporation
+  https://huggingface.co/datasets/nvidia/Nemotron-RL-Agentic-Function-Calling-Pivot-v1
+  revision 0ac34ec81bb6976d3746407df306a57ce48f0bd8
+  CC BY 4.0 (card: "Additional Information: Apache 2.0 License; MIT License")
+
+  Nemotron-RL-Agentic-Conversational-Tool-Use-Pivot-v1, NVIDIA Corporation
+  https://huggingface.co/datasets/nvidia/Nemotron-RL-Agentic-Conversational-Tool-Use-Pivot-v1
+  revision bfc7a4dd55ec1424cc3761ceacdd85a5743b4f4e
+  CC BY 4.0 (airline, retail and telecom domains excluded)
+
+  Toucan-1.5M (SFT subset), Agent-Ark
+  https://huggingface.co/datasets/Agent-Ark/Toucan-1.5M
+  revision 0df3cf37f2abefb380370cfb02eabea2a35ae782
+  Apache License 2.0
+
+Constraint and grading code
+---------------------------
+
+  IFEvalG verifiers, Allen Institute for AI (open-instruct), from Google
+  Research's instruction_following_eval. Apache License 2.0. Vendored in
+  reliquary_general/_ifeval/ (same bytes as reliquary-instruction-following's
+  copy). The verifiable-instruction prompts are WildChat prompts with
+  constraints drawn from these verifiers' own templates.
+
+  The structured-output grading rule restates NVIDIA NeMo Gym's
+  structured_outputs resource server (https://github.com/NVIDIA-NeMo/Gym,
+  commit 016bb6b811aa3cf27217d3385e981771115f7b88, Apache License 2.0) on the
+  standard library; no NeMo Gym code is copied.
+
+Changes made to every source: English prompts kept; prompts with e-mail
+addresses or phone numbers dropped; a short lexicon of extreme content dropped
+outside the safety block; exact and near (MinHash, Jaccard >= 0.7 on word
+5-grams) duplicates removed within and across sources, including against the
+prompts of reliquary-instruction-following; prompts sharing 8-grams with
+IFEval, IFBench, Arena-Hard v2, MT-Bench, BFCL v4, tau2-bench, When2Call,
+XSTest, MMLU-Pro or GPQA Diamond removed; rows whose tools carry a function
+name from tau2-bench removed, and for xLAM also from BFCL v4 and When2Call; rows sampled, reformatted into chat
+messages and reordered.

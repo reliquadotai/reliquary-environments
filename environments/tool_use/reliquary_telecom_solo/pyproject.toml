@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reliquary-telecom-solo"
-version = "0.1.0a1"
+version = "0.2.0a1"
 description = "τ²-bench's telecom domain in solo mode: multi-turn tool use graded by environment assertions"
 readme = "README.md"
 license = "MIT"
