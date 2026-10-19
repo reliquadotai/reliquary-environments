@@ -192,6 +192,6 @@ on an older commit (production corpus executors call `grading.grade` and the cor
 modules, which keep their signatures). Move every pin at once, between jobs, with no live
 episode: the gateway's env packages, the validators' allow-listed identities and the
 corpus executors. A gateway on 0.3.0 lists the envs as `verifiers:reliquary-swe==0.3.0`
-and `verifiers:reliquary-terminal==0.3.0`, never as `module:callable` entries. A validator
+and `verifiers:reliquary-terminal==0.3.1`, never as `module:callable` entries. A validator
 places no session on a gateway whose env identity it does not allow-list, so a half-moved
 fleet refuses sessions rather than grading them two ways.

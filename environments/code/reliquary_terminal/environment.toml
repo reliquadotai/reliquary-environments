@@ -1,6 +1,6 @@
 schema = "reliquary/environment-source/v2"
 id = "reliquary/terminal"
-version = "0.3.0"
+version = "0.3.1"
 taskset = "reliquary-terminal"
 entrypoint = "reliquary_terminal:TerminalTaskset"
 license = "MIT"
@@ -71,9 +71,10 @@ license = "Terminal-Bench: Apache-2.0; MiMo-V2.6-RL-oss: Apache-2.0 per its data
 # tasks are kept is `reliquary_terminal/tmax_manifest.json`. Of 14,601, the
 # static stage excludes 8,637 (8,407 have no successful recorded run) and
 # the box phase (scripts/tmax_validate.py, 2026-10-05/08) 975 more: 4,989
-# are kept. They come in two disjoint parts, `--taskset.split tmax_sft`
-# (2,401, the SFT corpus job) and `tmax_rl` (2,588, RL); `tmax` is both.
+# were kept, 4,955 since `setup_imports_scapy` (a setup that cannot prepare
+# under gVisor). They come in two disjoint parts, `--taskset.split tmax_sft`
+# (2,386, the SFT corpus job) and `tmax_rl` (2,569, RL); `tmax` is both.
 # The base image is pinned by its registry digest, the image the validation
 # ran on, pushed as is (docs/tmax.md, "Full run").
 tmax = "hf:allenai/TMax-15K@e3ded940596cc611c9815684ba51a7e8ee0cffc9"
-tmax_rows = 4989
+tmax_rows = 4955

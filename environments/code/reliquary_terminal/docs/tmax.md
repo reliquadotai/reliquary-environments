@@ -15,8 +15,8 @@ container host. It builds the shared base image, validates every task that
 passed the static stage, and feeds its results back into the manifest. It ran
 from 2026-10-05 to 2026-10-08 ("Full run" below): **4,998 tasks were kept**;
 the static reasons added since (`environment_in_artifact_roots`,
-`mode_changed_by_hand_over`) leave **4,989**, 2,401 in `tmax_sft` and 2,588
-in `tmax_rl`. What is still missing before
+`mode_changed_by_hand_over`, `setup_imports_scapy`) leave **4,955**, 2,386 in
+`tmax_sft` and 2,569 in `tmax_rl`. What is still missing before
 anyone trains on them is listed under "What is left".
 
 ## What TMax ships, and why it is not a Harbor dataset
@@ -179,7 +179,8 @@ run.
 | `docker_in_test` | 12 | 0 | the final test calls docker |
 | `in_process_agent_code` | 201 | 85 | the final test loads the agent's code into pytest's process (`sys.path`, `importlib` loaders, `eval`; `sandbox.in_process_agent_code`): that code could write a passing report and exit. Added 2026-10-07, after the base was built: these tasks' packages stay in the base |
 | `environment_in_artifact_roots` | 20 | 1 | `%environment` points PATH, `LD_*`, `BASH_ENV`, `ENV`, `PYTHON*`, `HOME`, `XDG_*`, `GIT_*`, `NODE_*`, `PERL5*`, `RUBY*`, `JAVA_*`, `CLASSPATH` or `*_OPTIONS` at `/app` or `/home/user` (or at a relative entry): a grading command would run or load the agent's files. Added 2026-10-09, after the base was built; also refused at load. The one kept task it removed is `task_007472_ddf365ce` (`BASH_ENV`) |
-| `mode_changed_by_hand_over` | 20 | 11 | the final test compares a mode the grading box's hand-over to the test uid changes (decision 11, `tmax_box.handed_mode`): an owner digit without `r` (`0o000`), a set-id bit (`S_ISUID`, `& 0o4000`, `0o4755`; a check that the bit is gone too, which the hand-over makes true for any agent), or a check that the owner cannot read (`& 0o400 == 0`). The match is per line, so a test that builds its files outside the roots (a `tempfile` directory) is excluded as well: conservative. A regex over the final test (`tmax_select.mode_changed_by_hand_over`), so a lower bound: a mode read through `stat -c` or built at run time is missed. Added 2026-10-10, after the base was built; it removed 8 kept tasks, and 3 the box phase had excluded now carry this reason instead |
+| `mode_changed_by_hand_over` | 25 | 12 | the final test compares a mode the grading box's hand-over to the test uid changes (decision 11, `tmax_box.handed_mode`): an owner digit without `r` (`0o000`), a set-id bit (`S_ISUID`, `& 0o4000`, `0o4755`; a check that the bit is gone too, which the hand-over makes true for any agent), or a check that the owner cannot read (`& 0o400 == 0`). The match is per line, so a test that builds its files outside the roots (a `tempfile` directory) is excluded as well: conservative. A regex over the final test (`tmax_select.mode_changed_by_hand_over`), so a lower bound: a mode read through `stat -c` or built at run time is missed. Added 2026-10-10, after the base was built; it removed 8 kept tasks, and 3 the box phase had excluded now carry this reason instead |
+| `setup_imports_scapy` | 105 | 43 | `%post` imports scapy (`tmax_select.setup_imports_scapy`). The signed-episode sandboxes run boxes under gVisor, whose netlink address messages carry no `scope`; scapy reads the IPv6 routes when imported and raises, so the setup never prepares there. Added 2026-10-19, after the base was built (its packages stay in the base); it removed 34 kept tasks, 19 of `tmax_rl` and 15 of `tmax_sft`, measured on a gVisor host |
 | `pip_pin_conflict`, `apt_unknown`, `apt_conflict` | 0 | 0 | see 5 |
 | `decontaminated` | 4 | 1 | overlaps Terminal-Bench 2.0 or 2.1 (see 7) |
 
@@ -222,7 +223,7 @@ That check targets River's weak tests, so expect fewer.
 
 ### 8. The split
 
-`--taskset.split tmax` loads the manifest's 4,989 kept tasks (`tmax_sft` and
+`--taskset.split tmax` loads the manifest's 4,955 kept tasks (`tmax_sft` and
 `tmax_rl` one part of them, decision 10) in ascending sha256 of
 the task id, the same fixed order as `r2e`. `--taskset.num-tasks N` takes the
 first N. Each task's grading box is the same base image with no network. 2 CPU
@@ -262,8 +263,8 @@ union, for validation and evaluation; a training source names a part.
   2,891 SFT and 3,170 RL (47.7 %). Anchors are large and dealt whole, so
   domains differ. Hashing anchors one by one instead gave 27 % to 62 % per
   domain; hashing every task on its id gives 48-52 % but splits anchors.
-- **Final balance** (the 4,989 kept tasks): 2,401 SFT and 2,588 RL
-  (48.1 %). All 38 anchors still have kept tasks, each in one part only.
+- **Final balance** (the 4,955 kept tasks): 2,386 SFT and 2,569 RL
+  (48.2 %). All 38 anchors still have kept tasks, each in one part only.
 
   | domain | kept | `tmax_sft` | `tmax_rl` | SFT share |
   |---|---|---|---|---|
@@ -273,10 +274,10 @@ union, for validation and evaluation; a training source names a part.
   | software_engineering | 560 | 269 | 291 | 48 % |
   | file_operations | 528 | 254 | 274 | 48 % |
   | scientific_computing | 526 | 280 | 246 | 53 % |
-  | debugging | 524 | 245 | 279 | 47 % |
-  | security | 460 | 203 | 257 | 44 % |
+  | debugging | 491 | 230 | 261 | 47 % |
+  | security | 459 | 203 | 256 | 44 % |
   | system_administration | 225 | 113 | 112 | 50 % |
-  | **all** | **4,989** | **2,401** | **2,588** | **48 %** |
+  | **all** | **4,955** | **2,386** | **2,569** | **48 %** |
 - `SFT_FRACTION` must be fixed before the SFT job starts; changing it
   re-deals the anchors.
 
