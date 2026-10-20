@@ -2,8 +2,7 @@
 
 Terminal tasks: a policy gets a container, an instruction and a shell, and
 is rewarded when the task's own tests pass. Three corpora, graded differently
-on purpose (design spec `docs/superpowers/specs/2026-09-23-reliquary-terminal-env-design.md`,
-section 4, option C):
+on purpose:
 
 | Split | Corpus | Graded | Why |
 | --- | --- | --- | --- |

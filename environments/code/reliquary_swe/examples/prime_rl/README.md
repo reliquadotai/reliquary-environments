@@ -19,8 +19,7 @@ Prime-RL v0.9.0 launcher and is not claimed here.
 ## This example does not train on SWE-bench Verified for real
 
 `reliquary-swe`'s `eval` split is SWE-bench Verified, pinned in
-`environment.toml`. It is an evaluation set and must never be trained on
-(design spec section 8, `docs/superpowers/specs/2026-09-22-reliquary-swe-env-design.md`).
+`environment.toml`. It is an evaluation set and must never be trained on.
 Training comes from SWE-smith instead (`env.taskset.split = "train"`,
 `num_images`/`max_test_count` choosing its size and cost bound — see the
 package README's Corpus section). This file still ships with no real

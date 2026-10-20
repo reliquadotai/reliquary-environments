@@ -13,8 +13,7 @@ task_families = ["swe_bench_verified", "swe_smith", "mimo_polyglot", "r2e_gym"]
 # be a promise the implementation cannot keep. This is a conscious deviation
 # from the repository README, which states that every package exposes both
 # surfaces -- recorded here and in the README table below so it reads as a
-# decision rather than an omission (see the design spec's section 2,
-# docs/superpowers/specs/2026-09-22-reliquary-swe-env-design.md).
+# decision rather than an omission.
 
 [compatibility]
 python = ">=3.12,<3.13"

@@ -6,3 +6,19 @@ __pycache__/
 *.egg-info/
 dist/
 outputs/
+
+# Local plans, evidence, and generated reports
+/.superpowers/
+/docs/superpowers/
+/review-private/
+*.review.private.md
+/reports/
+/private/
+/research/
+/evidence/
+/tests/*-live-*.jsonl
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
