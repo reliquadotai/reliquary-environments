@@ -17,7 +17,7 @@
     "reliquary_hard_math/data/problems.jsonl.gz": "8754e56609a825fc4aa3e348618c8bc5c241e4c4d62b616fc0a720f1088e374a",
     "reliquary_hard_math/environment.py": "7b051a5a8a5de1504136b34bdc9b0b2d2a481d3a2f8cafedb65e030d003a0ebd",
     "reliquary_hard_math/goldens/reference.jsonl": "30bd6e1c31d6713108f2c1ed4406da4d866f76fd2b23d5e7c48b2e00cdc70a31",
-    "reliquary_hard_math/grading.py": "833a48711580eb448a8c6fa926ad0dea5bdca0c062cfffe9d5898d238da4700c",
+    "reliquary_hard_math/grading.py": "d7060259ad299914cc60842af61da69459c708131cabd801d47a83d9b8a058da",
     "reliquary_hard_math/taskset.py": "17adf115efb243a011894b01533312a23d6c2769dac5d3abf647f51b678dc5f0"
   }
 }

@@ -66,6 +66,7 @@ from decimal import (
     localcontext,
 )
 from fractions import Fraction
+from math import isqrt
 
 GRADER_VERSION = "boxed-expression-v1"
 SPEC_SCHEMA = "reliquary/hard-math-verifier/v1"
@@ -78,6 +79,7 @@ MAX_ANSWER_CHARS = 400
 MAX_NODES = 400
 MAX_EXPONENT = 100_000
 MAX_EXACT_DIGITS = 100_000
+MAX_ROOT_ITERATIONS = 256
 BASE_PRECISION = 60
 # Agreement required on the numeric path, in significant digits.
 AGREEMENT_DIGITS = 40
@@ -518,21 +520,18 @@ def _exact_root(value: Fraction, index: int) -> Fraction:
         return -_exact_root(-value, index)
 
     def integer_root(n: int) -> int:
-        if n < 2:
+        if n < 2 or index == 1:
             return n
-        guess = round(n ** (1.0 / index)) if n.bit_length() < 1000 else 1 << (n.bit_length() // index)
-        # Newton's method from above, then settle.
-        x = max(guess, 1)
-        while True:
+        if index == 2:
+            return isqrt(n)
+        # x**index > n: integer Newton iteration descends to the floor root.
+        x = 1 << ((n.bit_length() + index - 1) // index)
+        for _ in range(MAX_ROOT_ITERATIONS):
             y = ((index - 1) * x + n // x ** (index - 1)) // index
             if y >= x:
-                break
+                return x
             x = y
-        while x**index > n:
-            x -= 1
-        while (x + 1) ** index <= n:
-            x += 1
-        return x
+        raise _Refused("exact root work limit")
 
     numerator = integer_root(value.numerator)
     denominator = integer_root(value.denominator)

@@ -76,6 +76,9 @@ What is refused rather than read one way:
 - anything past 400 characters or 400 nodes, integer exponents past 100,000,
   exact values past 100,000 digits, decimal precision past 3,000 digits.
 
+Exact square roots use integer arithmetic. Higher integer roots descend from
+a proven upper bound and refuse a comparison if 256 iterations do not converge.
+
 `tests/test_hard_math.py` holds the true and false positives this is held to,
 including `5` against `5/2`, `0.333` against `1/3`, `2^{2011}+1` against
 `2^{2011}`, `2^n` against `n^2`, `(1,0)` against `(0,1)` and `[0,1]` against
