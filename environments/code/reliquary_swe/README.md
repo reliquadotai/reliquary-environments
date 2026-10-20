@@ -52,10 +52,8 @@ and ships no synchronous JSON replay surface. A container cannot be replayed
 deterministically, so shipping that surface would be a promise this package
 cannot keep. This is a conscious deviation from this repository's own
 convention (every other package here exposes both a native `Taskset` and a
-compatibility surface) — see the design spec's section 2
-(`docs/superpowers/specs/2026-09-22-reliquary-swe-env-design.md`) and the
-repository-root README's package table, which marks this environment
-Verifiers-only for the same reason.
+compatibility surface). The repository-root README's package table marks this
+environment Verifiers-only for the same reason.
 
 ## How the policy is prompted
 

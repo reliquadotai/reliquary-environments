@@ -5,7 +5,7 @@ on:
   push:
 
 jobs:
-  stateful-tools:
+  stateful-tools-tests:
     runs-on: ubuntu-22.04
     defaults:
       run:
@@ -20,7 +20,8 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv run --no-sync validate reliquary-stateful-tools -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
@@ -33,6 +34,13 @@ jobs:
       - name: Validate installed wheel
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/tool_use/reliquary_stateful_tools/.wheel-venv/bin/validate reliquary-stateful-tools -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   reliquary-logic:
     runs-on: ubuntu-22.04
@@ -48,7 +56,8 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run pytest
+      - id: unit_tests
+        run: uv run pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv run validate reliquary-logic -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
@@ -61,6 +70,13 @@ jobs:
       - name: Validate installed wheel
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/reasoning/reliquary_logic/.wheel-venv/bin/validate reliquary-logic -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   telecom-solo:
     runs-on: ubuntu-22.04
@@ -76,7 +92,8 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv run --no-sync validate reliquary-telecom-solo -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
@@ -86,6 +103,13 @@ jobs:
       - name: Verify installed wheel and packaged golden
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/tool_use/reliquary_telecom_solo/.wheel-venv/bin/python -c "import hashlib,importlib.resources,json; import verifiers.v1 as vf; from reliquary_telecom_solo import TelecomSoloEnvironment; root=importlib.resources.files('reliquary_telecom_solo'); artifact=json.loads(root.joinpath('artifact.json').read_text()); assert all(hashlib.sha256(root.parent.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in artifact['files'].items()); assert len(root.joinpath('goldens/reference.jsonl').read_text().splitlines())==13; e=TelecomSoloEnvironment('qualification'); assert len(e)==219; assert len(TelecomSoloEnvironment('benchmark'))==134; assert e.replay(0, e.reference_actions(0))['reward']['reward']==1.0; assert e.replay(0, [])['reward']['reward']==0.0; config=vf.taskset_config_type('reliquary-telecom-solo'); assert len(list(vf.load_taskset(config(id='reliquary-telecom-solo')).head(3)))==3"
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   reliquary-envscaler:
     runs-on: ubuntu-22.04
@@ -100,9 +124,17 @@ jobs:
       - run: uv sync --locked
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run pytest
+      - id: unit_tests
+        run: uv run pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv run validate reliquary-envscaler -n 2 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   prime-rl-v0-9:
     runs-on: ubuntu-22.04
@@ -161,13 +193,21 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
       - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_instruction_following-0.1.0a1-py3-none-any.whl
       - name: Verify installed wheel and packaged goldens
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/instruction_following/reliquary_instruction_following/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/instruction_following/reliquary_instruction_following/scripts/verify_wheel.py
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   dapo-math:
     runs-on: ubuntu-22.04
@@ -183,7 +223,8 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv run --no-sync validate reliquary-dapo-math -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
@@ -191,6 +232,13 @@ jobs:
       - name: Verify installed wheel and packaged goldens
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/reasoning/reliquary_dapo_math/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/reasoning/reliquary_dapo_math/scripts/verify_wheel.py
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   science:
     runs-on: ubuntu-22.04
@@ -206,7 +254,8 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv run --no-sync validate reliquary-science -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
@@ -214,6 +263,13 @@ jobs:
       - name: Verify installed wheel and packaged goldens
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/reasoning/reliquary_science/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/reasoning/reliquary_science/scripts/verify_wheel.py
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   hard-math:
     runs-on: ubuntu-22.04
@@ -229,7 +285,8 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv run --no-sync validate reliquary-hard-math -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
@@ -237,6 +294,13 @@ jobs:
       - name: Verify installed wheel and packaged goldens
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/reasoning/reliquary_hard_math/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/reasoning/reliquary_hard_math/scripts/verify_wheel.py
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   general:
     runs-on: ubuntu-22.04
@@ -252,13 +316,21 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
       - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_general-0.1.0a1-py3-none-any.whl
       - name: Verify installed wheel and packaged goldens
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/general/reliquary_general/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/general/reliquary_general/scripts/verify_wheel.py
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   reliquary-code:
     runs-on: ubuntu-22.04
@@ -274,7 +346,8 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv run --no-sync validate reliquary-code -n 3 --only-gold true --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
@@ -282,6 +355,13 @@ jobs:
       - name: Verify installed wheel outside its source tree
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/code/reliquary_code/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/code/reliquary_code/scripts/verify_wheel.py
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   reliquary-competitive-code:
     runs-on: ubuntu-22.04
@@ -297,7 +377,8 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
       - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv run --no-sync validate reliquary-competitive-code -n 3 --only-gold true --taskset.split eval --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
       - run: uv venv --python 3.12 .wheel-venv
@@ -305,6 +386,13 @@ jobs:
       - name: Verify installed wheel and packaged goldens
         working-directory: ${{ runner.temp }}
         run: $GITHUB_WORKSPACE/environments/code/reliquary_competitive_code/.wheel-venv/bin/python $GITHUB_WORKSPACE/environments/code/reliquary_competitive_code/scripts/verify_wheel.py
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   reliquary-swe:
     runs-on: ubuntu-22.04
@@ -388,9 +476,17 @@ jobs:
       # not re-measured on a runner: the R2E dataset's ~4.4 GB in
       # ~/.cache/huggingface (see the cache step above) -- the "Free disk
       # space" step is what leaves room for it.
-      - run: uv run --no-sync pytest -m "not slow"
+      - id: unit_tests
+        run: uv run --no-sync pytest -m "not slow" --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv run --no-sync validate reliquary-swe -n 3 --only-gold true --taskset.split eval --runtime.type docker --runtime.allow '[]' --rich false
       - run: uv build --clear
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   reliquary-terminal:
     runs-on: ubuntu-22.04
@@ -408,8 +504,16 @@ jobs:
       - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
       # The @docker goldens pull two small images: alexgshaw/fix-git and
       # xiaomimimo/mimo-v2.6-rl-oss:general-agent-env-1 (~0.3 GB compressed).
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
       - run: uv build --clear
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
 
   heldout-benchmarks:
     runs-on: ubuntu-22.04
@@ -424,4 +528,63 @@ jobs:
       - run: uv sync --locked
       - run: uv run --no-sync python ../../scripts/check_verifiers_pin.py
       # Dry-runs and the GPQA reward only: no model, no network, no datasets.
-      - run: uv run --no-sync pytest
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
+
+  repository-scripts:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - id: unit_tests
+        run: uv run --no-project --python 3.12 --with 'pytest>=8,<9' pytest scripts/tests --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
+
+  stateful-tools:
+    name: stateful-tools
+    if: always()
+    needs:
+      - stateful-tools-tests
+      - reliquary-logic
+      - telecom-solo
+      - reliquary-envscaler
+      - prime-rl-v0-9
+      - instruction-following
+      - dapo-math
+      - science
+      - hard-math
+      - general
+      - reliquary-code
+      - reliquary-competitive-code
+      - reliquary-swe
+      - reliquary-terminal
+      - heldout-benchmarks
+      - repository-scripts
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Require all checks to succeed
+        env:
+          CHECK_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          import os
+
+          checks = json.loads(os.environ["CHECK_RESULTS"])
+          failed = [name for name, check in checks.items() if check["result"] != "success"]
+          if failed:
+              raise SystemExit("Required checks did not succeed: " + ", ".join(failed))
+          PYCODE
