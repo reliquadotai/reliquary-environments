@@ -104,12 +104,14 @@ def test_the_shipped_manifest_is_the_validated_one():
     manifest = tmax_select.load_manifest()
     assert manifest["source"]["revision"] == tmax.SOURCE_REVISION
     assert len(manifest["tasks"]) == manifest["counts"]["tasks"] == 14601
-    assert manifest["counts"]["status"] == {"excluded": 9612, "kept": 4989}
-    assert manifest["counts"]["part"] == {"sft": {"kept": 2401}, "rl": {"kept": 2588}}
+    assert manifest["counts"]["status"] == {"excluded": 9646, "kept": 4955}
+    assert manifest["counts"]["part"] == {"sft": {"kept": 2386}, "rl": {"kept": 2569}}
     # Every static reason is applied, those added after the box phase included, so
     # `__len__` and `task_at` never count a task the static stage refuses.
     assert manifest["counts"]["reason"]["environment_in_artifact_roots"] == 20
-    assert manifest["counts"]["reason"]["mode_changed_by_hand_over"] == 20
+    assert manifest["counts"]["reason"]["mode_changed_by_hand_over"] == 25
+    assert manifest["counts"]["reason"]["setup_imports_scapy"] == 105
+    assert manifest["tasks"]["task_007887_6ffd23c3"]["reasons"] == ["setup_imports_scapy"]
     assert manifest["tasks"]["task_007472_ddf365ce"]["reasons"] == ["environment_in_artifact_roots"]
     assert manifest["tasks"]["task_009356_631c219d"]["reasons"] == ["mode_changed_by_hand_over"]
     assert manifest["tasks"]["task_002746_262e77cc"]["reasons"] == ["mode_changed_by_hand_over"]
@@ -137,11 +139,11 @@ def test_the_shipped_parts_are_disjoint_and_cover_the_kept_tasks():
     sft = [t for t, _ in tmax_select.kept_tasks(manifest, "sft")]
     rl = [t for t, _ in tmax_select.kept_tasks(manifest, "rl")]
     everything = [t for t, _ in tmax_select.kept_tasks(manifest)]
-    assert (len(sft), len(rl), len(everything)) == (2401, 2588, 4989)
+    assert (len(sft), len(rl), len(everything)) == (2386, 2569, 4955)
     assert not set(sft) & set(rl) and set(sft) | set(rl) == set(everything)
     descriptor = tomllib.loads((Path(__file__).parent.parent / "environment.toml").read_text())
     rows = [v for section in descriptor.values() if isinstance(section, dict) for k, v in section.items() if k == "tmax_rows"]
-    assert rows == [4989]
+    assert rows == [4955]
 
 
 def test_tmax_rejects_a_zip_that_is_not_the_pinned_one(tmp_path, monkeypatch, tmax_env):
@@ -222,3 +224,9 @@ def test_unknown_setup_role_is_refused():
 
     with pytest.raises(ValueError):
         asyncio.run(tmax.run_setup(SetupBox(), None, "root"))
+
+
+def test_a_setup_that_imports_scapy_is_flagged():
+    post = "    pip3 install pytest scapy\n    python3 - <<'EOF'\nfrom scapy.all import IP, UDP\nimport scapy.utils\nEOF\n"
+    assert tmax_select.setup_imports_scapy(post) == ["from scapy.", "import scapy"]
+    assert tmax_select.setup_imports_scapy("    pip3 install pytest scapy\n    echo scapy is not imported\n") == []

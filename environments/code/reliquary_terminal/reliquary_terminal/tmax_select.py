@@ -44,6 +44,7 @@ STATIC_REASONS = (
     "in_process_agent_code",
     "environment_in_artifact_roots",
     "mode_changed_by_hand_over",
+    "setup_imports_scapy",
     "pip_pin_conflict",
     "apt_unknown",
     "apt_conflict",
@@ -52,7 +53,7 @@ STATIC_REASONS = (
 # Static reasons added after the base image was built (2026-10-05): they
 # exclude a task but leave its packages in the base.
 POST_BASE_REASONS = frozenset(
-    {"in_process_agent_code", "environment_in_artifact_roots", "mode_changed_by_hand_over"}
+    {"in_process_agent_code", "environment_in_artifact_roots", "mode_changed_by_hand_over", "setup_imports_scapy"}
 )
 # Reason codes the box phase adds (`scripts/tmax_validate.py`).
 BOX_REASONS = (
@@ -96,6 +97,16 @@ _SETID_READ = re.compile(r"S_IS[UG]ID|&\s*0o[246]000\b")
 _OWNER_READ_MASK = re.compile(r"&\s*\(?\s*(?:0o[4-7]00\b|(?:stat\.)?S_IRUSR\b|(?:stat\.)?S_IRWXU\b)")
 _STRING = re.compile(r"""f?(?:"[^"]*"|'[^']*')""")
 _NEGATIVE = re.compile(r"\bnot\b|==\s*0\b|==\s*0o0+\b")
+
+
+_SCAPY_IMPORT = re.compile(r"^\s*(?:from\s+scapy(?:\.|\s)|import\s+scapy\b)", re.M)
+
+
+def setup_imports_scapy(setup: str) -> list[str]:
+    """The lines of a task's setup that import scapy. The signed-episode sandboxes run boxes
+    under gVisor, whose netlink address messages carry no `scope`; scapy reads the IPv6 routes
+    when it is imported and raises, so such a setup never prepares there."""
+    return [m.group(0).strip() for m in _SCAPY_IMPORT.finditer(setup)]
 
 
 def mode_changed_by_hand_over(test: str) -> list[str]:
@@ -227,6 +238,10 @@ def task_facts(source: tmax.Source, task_id: str) -> TaskFacts:
     evidence = mode_changed_by_hand_over(test)
     if evidence:
         facts.reasons["mode_changed_by_hand_over"] = "; ".join(evidence)[:300]
+    # The sandboxes' boxes run under gVisor, where importing scapy raises: the setup never prepares.
+    evidence = setup_imports_scapy(definition.post)
+    if evidence:
+        facts.reasons["setup_imports_scapy"] = "; ".join(evidence)[:300]
     return facts
 
 

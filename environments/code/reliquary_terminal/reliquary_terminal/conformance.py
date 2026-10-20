@@ -1,7 +1,8 @@
 """reliquary-terminal's conformance cases and reference solutions, as plain data, for a
 signed-episode sandbox's env conformance suite (`conformance_cases(split)`) and reference
-sweep (`reference_calls(split, index)`). Only the `tmax` split is served on a sandbox;
-every other split answers nothing. Nothing here imports a sandbox.
+sweep (`reference_calls(split, index)`). The `tmax` split and its RL part `tmax_rl` (the one
+the async RL run serves) are served on a sandbox; every other split answers nothing. Nothing
+here imports a sandbox.
 
 A reference replays the task's recorded solution (`solution/solve.sh`) through the `bash`
 tool, uploaded in base64 chunks (one tool call's arguments are bounded). The other cases
@@ -33,7 +34,7 @@ from pathlib import Path
 
 import verifiers.v1 as vf
 
-SPLITS = ("tmax",)
+SPLITS = ("tmax", "tmax_rl")
 CHUNK = 60_000
 """base64 characters per shell call."""
 STAGE = "/tmp/reliquary-reference.b64"
