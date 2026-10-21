@@ -751,9 +751,10 @@ def task_for(row: corpus.SweRow, index: int, split: str, task_config=None) -> Sw
                 finalize=_FINALIZE_TIMEOUT_SECONDS,
                 scoring=_SCORING_TIMEOUT_SECONDS,
             ),
-            # Provisional: no SWE box declared any before (Docker's default is
-            # unlimited); a signed-episode sandbox enforces both.
-            resources=vf.TaskResources(memory=4.0, disk=10.0),
+            # A signed-episode sandbox enforces both and reserves the memory without
+            # overcommit. 2 GB: SWE-smith train boxes peaked at 1.7 GB (p50 0.17)
+            # over 16-512 concurrent gold-patch episodes on sbx-gw-04, 2026-10-21.
+            resources=vf.TaskResources(memory=2.0, disk=10.0),
             instance_id=row.instance_id,
             repo=row.repo,
             base_commit=row.base_commit,

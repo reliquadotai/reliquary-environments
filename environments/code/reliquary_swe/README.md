@@ -549,7 +549,7 @@ split's size).
   own there, `SweEnv` grades in a box it provisions, as before. The reward records nothing
   on any runtime but a sandbox's grading box (`runtime.config.type ==
   "reliquary-sandbox"`): it never grades in the agent's own box.
-- Limits declared on every task: 4 GB memory, 10 GB disk; setup 600s, agent 3600s,
+- Limits declared on every task: 2 GB memory, 10 GB disk; setup 600s, agent 3600s,
   finalize 600s, scoring 810s; a sandbox's extract (and grade) budget is max(finalize,
   scoring) = 810s (see "Timeouts").
 - `reliquary_swe.conformance_cases(split)` and `reliquary_swe.reference_calls(split,
