@@ -361,7 +361,7 @@ def test_the_task_pickles_and_declares_what_a_sandbox_accepts():
     assert 35 <= timeout.setup <= 600
     assert 70 <= timeout.finalize <= 810 and 70 <= timeout.scoring <= 810
     assert max(timeout.finalize, timeout.scoring) == 810  # the README's extract budget
-    assert task.data.resources.memory == 4 and task.data.resources.disk == 10
+    assert task.data.resources.memory == 2 and task.data.resources.disk == 10
     assert task.data.artifacts == []  # the patch rides verifiers' /logs/artifacts sweep
     assert task.runtime_env() == {}
 
