@@ -1,10 +1,12 @@
 """Write reliquary_swe/sandbox-images.lock.json: the image lock a signed-episode sandbox
 reads before it serves a task (every image pinned by digest).
 
-The lock is the union of the three digest files the corpora already pin
-(`swesmith_digests.json`, `r2e_digests.json`, `polyglot_digests.json`, tag -> digest), so
-it covers every image the `train`, `r2e` and `polyglot` splits can name. Re-run after any
-pin script changes one of them:
+The lock is the union of the digest files the corpora already pin
+(`swesmith_digests.json`, `r2e_digests.json`, `polyglot_digests.json`,
+`verified_digests.json`, tag -> digest), so it covers every image the `train`, `r2e`,
+`polyglot` and `eval` splits can name. A gateway pre-pulls only the images of the splits
+and ranges it serves, never the whole lock. Re-run after any pin script changes one of
+them:
 
     uv run python scripts/pin_sandbox_lock.py           # rewrite the lock
     uv run python scripts/pin_sandbox_lock.py --check   # exit 1 when it is stale
@@ -17,7 +19,8 @@ import sys
 from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parent.parent / "reliquary_swe"
-SOURCES = ("swesmith_digests.json", "r2e_digests.json", "polyglot_digests.json")
+SOURCES = ("swesmith_digests.json", "r2e_digests.json", "polyglot_digests.json",
+           "verified_digests.json")
 LOCK_NAME = "sandbox-images.lock.json"
 
 

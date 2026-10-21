@@ -55,3 +55,20 @@ def test_a_tag_pinned_twice_with_two_digests_is_refused(tmp_path):
 def test_the_lock_ships_inside_the_package():
     assert importlib.resources.files("reliquary_swe").joinpath(
         "sandbox-images.lock.json").is_file()
+
+
+def test_the_verified_pins_add_eval_images_only():
+    """SWE-bench Verified (split `eval`, 500 instances) pins one held-out evaluation image
+    per instance, none of them an image a training corpus names: locking them leaves
+    every training split's images, and their digests, as they were."""
+    verified = json.loads((PACKAGE / "verified_digests.json").read_text())
+    assert len(verified) == 500
+    for tag, digest in verified.items():
+        name = tag.removesuffix(":latest")
+        assert name.startswith("swebench/sweb.eval.x86_64.") and name != tag
+        assert digest.startswith(name + "@sha256:")
+    training = set()
+    for source in pin_sandbox_lock.SOURCES:
+        if source != "verified_digests.json":
+            training |= set(json.loads((PACKAGE / source).read_text()))
+    assert not training & set(verified)

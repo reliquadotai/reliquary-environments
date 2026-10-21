@@ -39,7 +39,8 @@ adapters are gone.
    (`Task.hash`) is signed in the episode's first record and recomputed by validators, so
    it must not depend on the machine (paths, caches).
 9. **Explicit splits.** The served split names are the taskset's own split values. `eval`
-   is never served.
+   is never served for training: a gateway serves it only under a split named `eval`, for
+   held-out evaluation, when its operator lists one.
 10. **The conformance suite is the gate.** The sandbox runs the env through the bridge on
     gVisor: references grade 1, the empty artifact grades 0, every declared attack grades 0,
     and repeated gradings agree. Passing it is what plugs an env in.
@@ -96,7 +97,8 @@ shows up there, not as voided episodes.
   per-call timeout 600 s, splits `train`, `r2e`, `polyglot` each mapped to itself.
 - Images: `reliquary_swe/sandbox-images.lock.json`, built by `scripts/pin_sandbox_lock.py`
   from the per-corpus digest files (`swesmith_digests.json`, `r2e_digests.json`,
-  `polyglot_digests.json`).
+  `polyglot_digests.json`, and `verified_digests.json` for the held-out `eval` split, which
+  a gateway serves only under a split named `eval`).
 - prime-rl's `SweEnv` keeps grading in a box of its own (`task.graded_elsewhere()`); the
   reward records nothing on any runtime but a sandbox's grading box.
 - Known residual, the same as in container grading: a patch confined to source can

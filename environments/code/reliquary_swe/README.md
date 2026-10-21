@@ -565,7 +565,11 @@ split's size).
   publishes no fix: its references are shipped under `reliquary_swe/references/` once
   recovered from an image.
 - The images a sandbox may run are pinned by digest in
-  `reliquary_swe/sandbox-images.lock.json` (`scripts/pin_sandbox_lock.py`).
+  `reliquary_swe/sandbox-images.lock.json` (`scripts/pin_sandbox_lock.py`)): every image of
+  `train`, `r2e`, `polyglot` and of SWE-bench Verified's `eval` (500 images,
+  `reliquary_swe/verified_digests.json`, `scripts/pin_verified_digests.py`). A gateway serves
+  `eval` only under a split named `eval` that its operator lists, and pre-pulls only the
+  images of the splits and ranges it serves.
 
 Known residual, the same as in container grading: a patch confined to source can
 monkeypatch pytest's reporting at import time (e.g. reassign
