@@ -99,7 +99,7 @@ def test_task_data_follows_task_toml():
         assert data.language == toml["metadata"]["language"]
         assert data.verifier is None and data.task_dir == "" and not data.collect
         assert [a.source for a in data.artifacts] == [PATCH_PATH]
-        assert data.resources == vf.TaskResources(cpu=2.0, memory=8.0, disk=20.0)
+        assert data.resources == vf.TaskResources(cpu=2.0, memory=8.0, disk=10.0)
 
 
 def test_timeouts_fit_the_bridge():

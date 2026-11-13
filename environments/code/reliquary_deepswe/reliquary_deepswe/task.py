@@ -40,6 +40,7 @@ PATCH_PATH = "/logs/artifacts/model.patch"
 MAX_PATCH_BYTES = 16 * 1024 * 1024
 TESTS_ARCHIVE = "/tmp/deepswe-tests.tgz"
 TEST_STDOUT = "/tmp/deepswe-test-stdout.txt"
+MAX_DISK_GB = 10.0
 MAX_ATTEMPTS = 3
 RETRY_BUDGET_S = 700.0
 """A timeout retry starts only when both retries, each as long as the first run, end
@@ -328,7 +329,7 @@ class DeepSWETask(HarborTask):
 
 def task_data(task_id: str, idx: int, split: str, toml: dict, prompt: str) -> DeepSWEData:
     """The task's data, from its `task.toml` (all 113 declare the same box: 2 CPUs, 8 GB,
-    20 GB, no network; agent 5400 s)."""
+    20 GB, no network; agent 5400 s), the disk capped at `MAX_DISK_GB`."""
     environment, metadata = toml["environment"], toml["metadata"]
     return DeepSWEData(
         idx=idx,
@@ -340,9 +341,12 @@ def task_data(task_id: str, idx: int, split: str, toml: dict, prompt: str) -> De
         network_allow=[],
         timeout=vf.TaskTimeout(setup=120.0, agent=float(toml["agent"]["timeout_sec"]),
                                finalize=300.0, scoring=810.0),
+        # Disk capped at 10 GiB: a session's budgets must cover the task's needs, and both
+        # a gateway (episode_max_disk_bytes) and Catalyst's episode budgets stop at 10 GiB;
+        # task.toml's 20 GB would refuse every session. It bounds the box's writable layer.
         resources=vf.TaskResources(cpu=float(environment["cpus"]),
                                    memory=environment["memory_mb"] / 1024,
-                                   disk=environment["storage_mb"] / 1024),
+                                   disk=min(environment["storage_mb"] / 1024, MAX_DISK_GB)),
         artifacts=[vf.Artifact(source=PATCH_PATH, required=False)],
         category=metadata.get("category"),
         tags=[metadata["language"]],

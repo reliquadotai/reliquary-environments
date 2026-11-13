@@ -40,8 +40,9 @@ order is the task id's, sorted; `task_at(i)` is the `i`-th task `load()` yields.
 
 ## The task (env norm)
 
-- **Box**: the task's image, `/app` at the base commit, 2 CPUs, 8 GB memory, 20 GB disk,
-  no network (all 113 declare `allow_internet = false` for the agent and the verifier).
+- **Box**: the task's image, `/app` at the base commit, 2 CPUs, 8 GB memory, 10 GiB disk
+  (`task.toml` says 20 GB; a gateway and Catalyst's episode budgets stop at 10 GiB, and a
+  session's budgets must cover the task's needs), no network (all 113 declare `allow_internet = false` for the agent and the verifier).
   Agent timeout 5,400 s (upstream's at the pin; the bridge's `wall_s`). Tools: `bash` and
   `edit`.
 - **Prompt**: `instruction.md`, unchanged. It ends with "work on this in a new branch

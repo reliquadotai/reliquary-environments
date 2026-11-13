@@ -156,9 +156,12 @@ shows up there, not as voided episodes.
   `reward.json` is never read). Timeout-only failures with every fail-to-pass test passing
   are re-run twice when the budget allows.
 - Timeouts: setup 120 s, agent 5400 s, finalize 300 s, scoring 810 s. Resources: 2 CPUs,
-  8 GB, 20 GB. Recommended gateway options: tools `bash` and `edit`, split `eval` mapped
-  to itself.
-- Images: 113 tags (106 distinct digests, 111 GB compressed) in the package's lock.
+  8 GiB, 10 GiB disk (the most a gateway admits; upstream declares 20 GB). Recommended
+  gateway options: tools `bash` and `edit`, split `eval` mapped to itself, per-call
+  timeout 600 s.
+- Images: 113 tags (106 distinct digests, 111 GB compressed) in the package's lock; the 110
+  served tasks use 103. Mirrored by digest into our Hippius registry (2026-11-13).
+- Gold check (2026-11-13, gVisor, no network): 110 of 113 served (`gate.py`).
 
 ## 4. Conformance cases and reference solutions
 
