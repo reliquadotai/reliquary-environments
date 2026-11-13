@@ -69,6 +69,8 @@ def test_eval_is_the_six_scored_domains_in_contiguous_blocks() -> None:
 def test_there_is_no_train_split() -> None:
     with pytest.raises(ValueError):
         AutomationBenchEnvironment("train")
+    with pytest.raises(TypeError):
+        AutomationBenchEnvironment()  # type: ignore[call-arg]
 
 
 def test_every_task_has_a_system_prompt_a_request_and_assertions() -> None:

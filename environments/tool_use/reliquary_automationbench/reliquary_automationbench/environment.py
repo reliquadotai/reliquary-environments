@@ -178,7 +178,9 @@ class AutomationBenchEnvironment:
     max_turns = MAX_TURNS
     validator_authoritative_reward = True
 
-    def __init__(self, split: str = "eval") -> None:
+    def __init__(self, split: str) -> None:
+        # No default: a consumer that asks for its default split asks for
+        # `train`, and this benchmark has none to give.
         if split not in SPLITS:
             raise ValueError(f"split must be one of {SPLITS}")
         self.split = split

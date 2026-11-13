@@ -342,7 +342,7 @@
     "reliquary_automationbench/_upstream/utils/routing.py": "defc998d428d7e8df7e220d18b91a09ed4905f22af0523f6ab4dbac4f88f699e",
     "reliquary_automationbench/corpus.py": "aa7621f0dc130f39a9f737d4b07f411c57defd66bea8351ac06ae1510148353a",
     "reliquary_automationbench/data/tasks.jsonl.gz": "289edb3ce20994984e132f6db5e287571fc59ef97e9ddd29218ee0dd47eba13b",
-    "reliquary_automationbench/environment.py": "8a8aa7af53887db9f9f0565bee0b0299c9d5ad0af649fc9233f18eb895bfbd4d",
+    "reliquary_automationbench/environment.py": "75c24f1606e79a5036595ebed4d3600d2526f597dc9bffcc0b501e27fdd1ac80",
     "reliquary_automationbench/taskset.py": "37519f9adc6164a5d0cdc19e57d78fe127b7a3bb01abd2d8f2047f7ccebb8cd5",
     "reliquary_automationbench/world.py": "869acefbd0db9765ddbf2412459a6b1e4a0fe314d844d457ddf813a8fb562593"
   }
