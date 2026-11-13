@@ -1,0 +1,15 @@
+reliquary-nl2repo
+Copyright 2026 Reliquary contributors
+
+This package is licensed under the Apache License, Version 2.0 (LICENSE). That license
+covers this package's own code only.
+
+It does not contain NL2Repo-Bench's task files. scripts/vendor_tasks.py fetches them,
+per task start.md, test_case_count.txt, test_commands.json and test_files.json, from
+https://github.com/multimodal-art-projection/NL2RepoBench at commit
+781a1da1ee41fb8edb0bed22f586d69111610edf, checked against the sha256 digests in
+reliquary_nl2repo/_source.py. That repository publishes no license: whoever builds a
+wheel carrying those files (or redistributes the task images) must establish the right
+to do so. The test suites inside the task images
+(ghcr.io/multimodal-art-projection/nl2repobench/*) belong to each upstream project
+under its own license.

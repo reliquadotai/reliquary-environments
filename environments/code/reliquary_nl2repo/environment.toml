@@ -1,0 +1,52 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/nl2repo"
+version = "0.1.0"
+taskset = "reliquary-nl2repo"
+entrypoint = "reliquary_nl2repo:NL2RepoTaskset"
+license = "Apache-2.0"
+verification_tier = "container-reverified"
+owners = ["Reliquary contributors"]
+task_families = ["nl2repo_bench"]
+
+# No `compatibility_entrypoint`: Verifiers-only, like reliquary-swe and
+# reliquary-deepswe -- a container cannot be replayed deterministically.
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+# No box has network, the agent's or the grading box: upstream's `pip install`
+# commands run offline against the image's packages.
+network = false
+secrets = []
+resource_class = "container"
+# Provisional, as reliquary-swe's: the order's episode budget (max turns, tokens)
+# bounds a run. Upstream runs OpenHands with no iteration limit; a whole
+# repository takes far more turns than a repair.
+max_turns = 200
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+# `NL2RepoTask.pass_rate`: min(passed / test_case_count, 1), upstream's per-task
+# metric, counted from the hidden tests' JUnit reports.
+components = ["pass_rate"]
+
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """
+The agent builds a whole package from a long specification (15-393 KB): it must
+read the API guide, plan modules and interfaces, and keep them consistent over a
+long horizon. An argument, as for reliquary-swe, not a measurement.
+"""
+
+[data]
+# Held out: never trained on. `eval` is the gold-checked subset
+# (reliquary_nl2repo/gate.py), `eval_all` all 104.
+eval = "git:multimodal-art-projection/NL2RepoBench@781a1da1ee41fb8edb0bed22f586d69111610edf"
+rows = 104
+redistributable = false
+license = "Upstream publishes no license: the task files are fetched at build time (scripts/vendor_tasks.py), never committed; each project's tests in the images stay under its own license"

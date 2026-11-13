@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reliquary-nl2repo"
+version = "0.1.0"
+description = "NL2Repo-Bench (104 whole-repository generation tasks) for evaluation, graded in a pristine box by each project's hidden tests"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "verifiers==0.3.1",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.21.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["reliquary_nl2repo"]
+# Fetched by scripts/vendor_tasks.py, never committed (upstream ships no license).
+artifacts = ["reliquary_nl2repo/tasks/**"]
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["reliquary_nl2repo/tasks/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-q", "--strict-markers"]
+asyncio_mode = "auto"
+
+[tool.uv]
+required-version = ">=0.11.1"
+
+[tool.uv.sources]
+verifiers = { git = "https://github.com/PrimeIntellect-ai/verifiers.git", rev = "b2e4e8157783b2c0dffc7821044c87f29f1c3ccf" }

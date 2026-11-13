@@ -541,6 +541,37 @@ jobs:
           junit-path: ${{ runner.temp }}/pytest-results.xml
           test-outcome: ${{ steps.unit_tests.outcome }}
 
+  reliquary-nl2repo:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/code/reliquary_nl2repo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      # Upstream ships no license: its task files are fetched at the pin, checked by digest.
+      - run: |
+          git clone -q https://github.com/multimodal-art-projection/NL2RepoBench.git "$RUNNER_TEMP/nl2repo"
+          git -C "$RUNNER_TEMP/nl2repo" checkout -q 781a1da1ee41fb8edb0bed22f586d69111610edf
+          python scripts/vendor_tasks.py "$RUNNER_TEMP/nl2repo"
+      - run: uv sync --locked
+      - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
+      - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
+      # No Docker and no image: the gold check runs on a gVisor host (scripts/gold_check.py).
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
+      - run: uv build --clear
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
+
   heldout-benchmarks:
     runs-on: ubuntu-22.04
     defaults:
