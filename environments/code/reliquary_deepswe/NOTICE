@@ -1,0 +1,21 @@
+reliquary-deepswe
+Copyright 2026 Reliquary contributors
+
+This package is licensed under the Apache License, Version 2.0 (LICENSE).
+
+It vendors, unchanged, the 113 task directories of DeepSWE v1.1 under
+reliquary_deepswe/tasks/, from https://github.com/datacurve-ai/deep-swe at commit
+8cae5984d5dd0ee37445beff0e928dc10c331116 (byte-identical to the tasks at
+f2975d3457b8add60d4ee6e8a65ad3aaffe86fd2, the commit that added the repository's
+Apache-2.0 LICENSE, reproduced in LICENSE). Copyright Datacurve AI Inc. As
+reliquary_deepswe/PROVENANCE.md (upstream commit
+6db64a40f3318d8659238ff34a8cc4b491c49205) states, that license covers Datacurve's
+task specifications, verifiers and curation only; the code of each upstream project a
+task patches or tests remains under that project's own license, listed there.
+
+reliquary_deepswe/verifier.py is derived from PI-DeepSWE's shared verifier, version 17
+(https://github.com/PrimeIntellect-ai/research-environments,
+environments/swe/pi_deepswe/pi_deepswe/verifier.py at
+b41d8759070715dc102000e06fba0d73ebce9955), Copyright Prime Intellect, Apache-2.0. The
+changes are described at the top of that file. reliquary_deepswe/overlay.py ports the
+same package's runner corrections (pi_deepswe/taskset.py at that commit).
