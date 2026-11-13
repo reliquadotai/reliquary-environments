@@ -111,6 +111,36 @@ jobs:
           junit-path: ${{ runner.temp }}/pytest-results.xml
           test-outcome: ${{ steps.unit_tests.outcome }}
 
+  reliquary-automationbench:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/tool_use/reliquary_automationbench
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
+      - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
+      - run: uv build --clear
+      - run: uv venv --python 3.12 .wheel-venv
+      - run: uv pip install --python .wheel-venv/bin/python dist/reliquary_automationbench-0.1.0a1-py3-none-any.whl
+      - run: uv pip install --python .wheel-venv/bin/python --no-deps 'verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b2e4e8157783b2c0dffc7821044c87f29f1c3ccf'
+      - name: Verify installed wheel
+        working-directory: ${{ runner.temp }}
+        run: $GITHUB_WORKSPACE/environments/tool_use/reliquary_automationbench/.wheel-venv/bin/python -c "import hashlib,importlib.resources,json; import verifiers.v1 as vf; from reliquary_automationbench import AutomationBenchEnvironment; root=importlib.resources.files('reliquary_automationbench'); artifact=json.loads(root.joinpath('artifact.json').read_text()); assert all(hashlib.sha256(root.parent.joinpath(name).read_bytes()).hexdigest()==digest for name,digest in artifact['files'].items()); e=AutomationBenchEnvironment('eval'); assert len(e)==600; assert len(AutomationBenchEnvironment('qualification'))==200; assert e.replay(0, [{'final': ''}])['reward']['reward']==0.0; config=vf.taskset_config_type('reliquary-automationbench'); assert len(list(vf.load_taskset(config(id='reliquary-automationbench')).head(3)))==3"
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
+
   reliquary-envscaler:
     runs-on: ubuntu-22.04
     defaults:
