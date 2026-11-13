@@ -142,9 +142,13 @@ shows up there, not as voided episodes.
   until the gold check recorded them) and `eval_all` (all 113). Both are held out; a
   gateway serves `eval` only, under a split named `eval`.
 - `setup` and `grading_setup` check `/app` is at the task's base commit (ours otherwise).
-  `finalize` writes the agent's committed diff (`git diff --binary <base> HEAD`, DeepSWE's
-  boundary) to `/logs/artifacts/model.patch`, the only declared artifact, from a scratch
-  repository over the agent's objects; a planted patch or link is removed first.
+  `setup` also records the files the image ships untracked. `finalize` writes everything
+  the agent changed against the base, committed or not (its work tree staged in a scratch
+  repository over its objects, `git diff --cached --binary <base>`; no git setting or hook
+  of the agent's runs; the image's untracked files and toolchain directories left out) to
+  `/logs/artifacts/model.patch`, the only declared artifact; a planted patch or link is
+  removed first. A deviation from upstream DeepSWE, which grades committed work only:
+  uncommitted work counts, so scores compare across harnesses.
 - The reward, `solved`: an empty patch is 0; a patch with a symlink, a submodule or a
   path in a toolchain directory is 0 and never applied; otherwise `/tests` is staged
   (upstream's tests and PI-DeepSWE's shared verifier, v17), `test.sh` runs, and the
@@ -185,10 +189,10 @@ in `/home/user/.local/bin`; each file only creates a marker under `/tmp` if exec
 marker in the grading box means the grader ran the agent's file.
 
 reliquary-deepswe, on two goldens of the served split (a Python and a Go task): the
-reference applies the gold patch through `bash` and commits it (expect 1); attacks,
-each expect 0: the gold uncommitted, planted in `/logs/artifacts`, planted by git
-settings, committed with a symlink or a `node_modules/` file, and (Python) a committed
-root `conftest.py` forcing passes. Every task has a reference.
+reference applies the gold patch through `bash` and commits it (expect 1), as do the
+gold left uncommitted and the gold with a force-added `node_modules/` file (expect 1);
+attacks, each expect 0: the gold planted in `/logs/artifacts`, planted by git settings,
+the gold with a symlink, and (Python) a root `conftest.py` forcing passes. Every task has a reference.
 
 Indices are those of a split served with the taskset's defaults; a split served otherwise
 names other tasks under these indices, and its reference case fails.

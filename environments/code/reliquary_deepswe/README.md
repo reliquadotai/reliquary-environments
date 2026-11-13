@@ -45,13 +45,20 @@ order is the task id's, sorted; `task_at(i)` is the `i`-th task `load()` yields.
   `edit`.
 - **Prompt**: `instruction.md`, unchanged. It ends with "work on this in a new branch
   from main and commit everything when you are done".
-- **`setup`**: checks `/app` is at the base commit (the image is the task's). Ours if not.
-- **`finalize`**: upstream's committed-patch boundary, `git diff --binary <base> HEAD`, to
-  `/logs/artifacts/model.patch` (the only declared artifact). It runs in a scratch
-  repository whose only link to the agent's is the object directory, so no hook, config,
-  attribute driver, fsmonitor or redirected `.git` the agent left runs; a planted patch,
-  or a link at `/logs` or `/logs/artifacts`, is removed first. **Uncommitted work is not
-  graded**, as upstream. Over 16 MB, no patch.
+- **`setup`**: checks `/app` is at the base commit (the image is the task's; ours if not)
+  and records the files the image ships untracked, so the capture leaves them out.
+- **`finalize`**: **everything the agent changed against the base commit, committed or
+  not**: its work tree staged over the base tree in a scratch repository (`git add -A`),
+  then `git diff --cached --binary <base>`, to `/logs/artifacts/model.patch` (the only
+  declared artifact). **A deviation from upstream DeepSWE**, which grades only committed
+  work (`git diff <base> HEAD`): uncommitted work counts here, so scores are comparable
+  across our harnesses whether or not they commit. The scratch repository's only link to
+  the agent's is the object directory (read as an alternate) and the work tree, so no
+  hook, config, attribute driver, fsmonitor or redirected `.git` the agent left runs;
+  in-tree `.gitignore` files apply, toolchain directories (`node_modules`, `.venv`,
+  `.gocache`, `target/`, ...) and the image's untracked files are never captured; a
+  planted patch, or a link at `/logs` or `/logs/artifacts`, is removed first. Over
+  16 MB, no patch.
 - **`grading_setup`**: checks the pristine grading box's `/app` is at the base commit.
 - **`solved`** (reward `solved`, 0 or 1), in that box with the patch restored:
   1. an empty patch is 0 without running anything (the fail-to-pass tests fail on the
@@ -121,10 +128,11 @@ and committed), `finalize`, then a fresh grading box, `grading_setup`, the patch
 
 Every task has a reference (gold applied and committed). On the goldens
 (`sqlite-utils-safe-import-checkpoints`, Python; `etree-xml-diff-patch`, Go: the smallest
-images; they must be in the verified list), each expected 0: the gold applied but not
-committed; the gold planted in `/logs/artifacts`; planted by git settings run during a
-capture; the gold committed with a symlink; with a `node_modules/` file; and on the
-Python golden a committed root `conftest.py` forcing passes. `eval` has none before the
+images; they must be in the verified list): expected 1, the gold applied but not
+committed, and the gold with a force-added `node_modules/` file (never captured);
+expected 0, the gold planted in `/logs/artifacts`; planted by git settings run during a
+capture; the gold committed with a symlink; and on the Python golden a root
+`conftest.py` forcing passes. `eval` has none before the
 gate.
 
 ## Images and disk

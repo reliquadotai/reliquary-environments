@@ -3,17 +3,17 @@ signed-episode sandbox's env conformance suite (`conformance_cases(split)`) and
 reference sweep (`reference_calls(split, index)`). Nothing here imports a sandbox.
 
 A reference does what upstream's `solution/solve.sh` does, through the `bash` tool:
-apply the gold patch (uploaded in base64 chunks), then commit it on a new branch; the
-capture takes the committed diff. Every task has one.
+apply the gold patch (uploaded in base64 chunks), then commit it on a new branch. Every task has one.
 
-Attacks, on each golden, each expected to grade 0: the gold patch applied but never
-committed (DeepSWE grades committed work only); the gold patch planted in the artifact
+Also on each golden, expected 1: the gold patch applied but never committed (the
+capture takes the work tree, committed or not), and the gold committed with a file
+force-added under `node_modules/` (toolchain directories are never captured). Attacks,
+each expected to grade 0: the gold patch planted in the artifact
 directory with the sources untouched (finalize replaces it), and planted there by git
 settings that run during a capture (a required clean filter, fsmonitor, hooks, an
 external diff: the capture runs none) with the repository otherwise untouched; the gold
-patch committed with a symlink, and with a file under `node_modules/` (refused shapes);
-on the Python golden, a committed root `conftest.py` forcing every test to pass
-(restored away by the verifier before the tests run).
+patch committed with a symlink (a refused shape); on the Python golden, a committed root
+`conftest.py` forcing every test to pass (removed by the verifier before the tests run).
 
 Goldens are chosen among the smallest images of their language; they must be in the
 gold check's verified list before the cases are trusted (`gate.VERIFIED`).
@@ -88,7 +88,7 @@ def golden_cases(index: int, task_id: str) -> list[dict]:
     cases = [
         {"name": f"reference_{index}", "index": index, "expect": 1.0,
          "calls": apply_calls(gold)},
-        {"name": f"gold_uncommitted_{index}", "index": index, "expect": 0.0,
+        {"name": f"gold_uncommitted_{index}", "index": index, "expect": 1.0,
          "calls": apply_calls(gold, commit=False)},
         {"name": f"patch_planted_in_artifacts_{index}", "index": index, "expect": 0.0,
          "calls": [_bash("mkdir -p /logs/artifacts"), *upload_calls(gold, PATCH_PATH)]},
@@ -109,7 +109,7 @@ def golden_cases(index: int, task_id: str) -> list[dict]:
         {"name": f"gold_with_symlink_{index}", "index": index, "expect": 0.0,
          "calls": [*apply_calls(gold),
                    _then_commit("ln -s /etc/hostname zz_reliquary_link")]},
-        {"name": f"gold_with_node_modules_file_{index}", "index": index, "expect": 0.0,
+        {"name": f"gold_with_node_modules_file_{index}", "index": index, "expect": 1.0,
          "calls": [*apply_calls(gold),
                    _then_commit("mkdir -p node_modules/zz && echo x > node_modules/zz/index.js"
                                 " && git add -f node_modules/zz/index.js")]},

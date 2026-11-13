@@ -36,7 +36,10 @@ def test_cases_on_each_golden():
     references = [c for c in cases if c["name"].startswith("reference_")]
     assert len(references) == len(conformance.GOLDENS)
     assert all(c["expect"] == 1.0 for c in references)
-    assert all(c["expect"] == 0.0 for c in cases if c not in references)
+    graded_1 = {c["name"].rsplit("_", 1)[0] for c in cases
+                if c["expect"] == 1.0 and c not in references}
+    assert graded_1 == {"gold_uncommitted", "gold_with_node_modules_file"}
+    assert all(c["expect"] in (0.0, 1.0) for c in cases)
     languages = {source.task_toml(t)["metadata"]["language"] for t in conformance.GOLDENS}
     assert languages == {"python", "go"}
     assert any(c["name"].startswith("conftest_forcing_passes_") for c in cases)

@@ -30,6 +30,10 @@ class LocalBox:
         done = subprocess.run(argv, env={**os.environ, **env}, capture_output=True, text=True)
         return SimpleNamespace(exit_code=done.returncode, stdout=done.stdout, stderr=done.stderr)
 
+    async def write(self, path, data):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(data)
+
 
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
@@ -64,26 +68,79 @@ def test_setup_accepts_the_base_and_refuses_another_head(repo):
         asyncio.run(repo.task.setup(LocalBox()))
 
 
-def test_committed_work_is_captured(repo):
+def apply_in_pristine_clone(repo):
+    clone = repo.tmp / "pristine"
+    subprocess.run(["git", "clone", "-q", str(repo.work), str(clone)], check=True)
+    subprocess.run(["git", "checkout", "-q", repo.base], cwd=clone, check=True)
+    subprocess.run(["git", "apply", str(repo.patch)], cwd=clone, check=True)
+    return clone
+
+
+def test_committed_and_uncommitted_work_are_both_captured(repo):
+    asyncio.run(repo.task.setup(LocalBox()))
     (repo.work / "a.py").write_text("x = 2\n")
     (repo.work / "b.py").write_text("y = 1\n")
     git(repo.work, "checkout", "-qb", "feature")
     git(repo.work, "add", "-A")
     git(repo.work, "commit", "-qm", "work")
     (repo.work / "c.py").write_text("uncommitted\n")
+    (repo.work / "a.py").write_text("x = 3\n")
     trace = finalize(repo)
     patch = repo.patch.read_text()
     assert "patch_error" not in trace.info
-    assert "+x = 2" in patch and "b/b.py" in patch and "c.py" not in patch
-    subprocess.run(["git", "checkout", "-q", repo.base], cwd=repo.work, check=True)
-    subprocess.run(["git", "clean", "-fdq"], cwd=repo.work, check=True)
-    subprocess.run(["git", "apply", "--check", str(repo.patch)], cwd=repo.work, check=True)
+    assert "+x = 3" in patch and "b/b.py" in patch and "b/c.py" in patch
+    clone = apply_in_pristine_clone(repo)
+    assert (clone / "a.py").read_text() == "x = 3\n" and (clone / "c.py").exists()
 
 
-def test_uncommitted_work_is_an_empty_patch(repo):
+def test_uncommitted_work_scores_as_committed_work(repo):
+    asyncio.run(repo.task.setup(LocalBox()))
     (repo.work / "a.py").write_text("x = 2\n")
     finalize(repo)
-    assert repo.patch.read_bytes() == b""
+    uncommitted = repo.patch.read_bytes()
+    git(repo.work, "commit", "-qam", "work")
+    finalize(repo)
+    assert uncommitted == repo.patch.read_bytes() and b"+x = 2" in uncommitted
+
+
+def test_a_deletion_is_captured(repo):
+    (repo.work / "a.py").unlink()
+    finalize(repo)
+    assert "deleted file mode" in repo.patch.read_text()
+    assert not (apply_in_pristine_clone(repo) / "a.py").exists()
+
+
+def test_an_untouched_box_is_an_empty_patch(repo):
+    (repo.work / "shipped untracked [1].txt").write_text("from the image\n")
+    asyncio.run(repo.task.setup(LocalBox()))
+    trace = finalize(repo)
+    assert "patch_error" not in trace.info and repo.patch.read_bytes() == b""
+
+
+def test_the_images_untracked_files_and_toolchain_directories_are_left_out(repo):
+    (repo.work / "shipped.txt").write_text("from the image\n")
+    asyncio.run(repo.task.setup(LocalBox()))
+    (repo.work / "shipped.txt").write_text("changed by the agent\n")
+    for path in (".gocache/00/x", "node_modules/m/index.js", "sub/__pycache__/m.pyc",
+                 "target/debug/x", ".venv/lib/x.pth"):
+        (repo.work / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo.work / path).write_text("x\n")
+    (repo.work / "src").mkdir()
+    (repo.work / "src" / "target").write_text("a source file named target\n")
+    finalize(repo)
+    patch = repo.patch.read_text()
+    assert "src/target" in patch
+    for left_out in ("shipped.txt", ".gocache", "node_modules", "__pycache__", "b/target/",
+                     ".venv"):
+        assert left_out not in patch
+
+
+def test_exclude_patterns_match_paths_literally():
+    from reliquary_deepswe.task import exclude_patterns
+
+    assert exclude_patterns(["a*b", "[x]", "d/e ", "#f"]) == "/a\\*b\n/\\[x]\n/d/e\\ \n/#f\n"
+    with pytest.raises(ValueError):
+        exclude_patterns(["bad\nname"])
 
 
 def test_a_planted_patch_never_travels(repo):
@@ -124,7 +181,7 @@ def test_the_agents_git_settings_never_run(repo):
 def test_no_repository_is_no_patch(repo):
     (repo.work / ".git").rename(repo.tmp / "moved")
     trace = finalize(repo)
-    assert trace.info["patch_error"] == "no_head" and not repo.patch.exists()
+    assert trace.info["patch_error"] == "no_repository" and not repo.patch.exists()
 
 
 def test_a_patch_over_the_cap_is_dropped(repo, monkeypatch):

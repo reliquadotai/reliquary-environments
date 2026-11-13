@@ -1,13 +1,15 @@
 """One DeepSWE v1.1 task under the env norm (docs/env-norm.md).
 
-* `setup` (the agent's box): checks the image is the task's (`/app` at the base commit).
-  A mismatch is ours: the open fails.
-* `finalize` (the agent's box): DeepSWE's committed-patch boundary, as upstream's
-  `pre_artifacts.sh` draws it: `git diff --binary <base> HEAD`, the agent's committed
-  work, written to `/logs/artifacts/model.patch` (the only declared artifact). Run in a
-  scratch repository of ours over the agent's objects, so no git setting, hook, attribute
-  driver or redirected `.git` the agent left runs; a patch planted there is removed first.
-  Uncommitted changes are not graded, as upstream (the prompt says to commit).
+* `setup` (the agent's box): checks the image is the task's (`/app` at the base commit;
+  a mismatch is ours: the open fails) and records the files it ships untracked.
+* `finalize` (the agent's box): everything the agent changed against the base,
+  committed or not (a deviation from upstream, which grades `git diff <base> HEAD`, the
+  committed work only: here a harness that never commits is graded on what it did, so
+  scores compare across harnesses), written to `/logs/artifacts/model.patch` (the only
+  declared artifact). The work tree is staged in a scratch repository of ours over the
+  agent's objects, so no git setting, hook, attribute driver or redirected `.git` the
+  agent left runs; the image's untracked files and toolchain directories are left out; a
+  patch planted there is removed first.
 * `grading_setup` (a pristine box of the image): checks `/app` is at the base commit.
 * `solved` (the same box, the patch restored): refuses a patch of a shape no candidate
   needs (`scoring.patch_refusal`), stages `/tests` (`overlay`), runs the task's `test.sh`
@@ -69,6 +71,43 @@ HEAD_SCRIPT = (
 """Prints the object name HEAD resolves to in `$1`'s repository; reads no object, runs
 no hook."""
 
+TOOLCHAIN_EXCLUDES = tuple(f"{d}/" for d in sorted(scoring.REFUSED_DIRS - {".git"})) + (
+    "/target/",)
+"""Never captured: dependency and build-cache directories the agent's commands create
+(`GOCACHE=/app/.gocache` among them). The grader refuses a path there anyway."""
+
+UNTRACKED_EXCLUDE = ".git/deepswe-image-untracked"
+"""Under the workdir: `setup`'s exclude patterns for the files the image ships untracked
+(in the agent's box; editing it only widens or narrows the agent's own diff)."""
+MAX_UNTRACKED_BYTES = 4 * 1024 * 1024
+
+_SCRATCH = (
+    'rm -rf -- "$scratch" && mkdir -m 700 -- "$scratch" '
+    '&& git init -q --bare --template= "$scratch" && mkdir -p -- "$scratch/info" || exit 4\n'
+    "printf '%s\\n' " + " ".join(f"'{p}'" for p in TOOLCHAIN_EXCLUDES)
+    + ' > "$scratch/info/exclude" || exit 4\n'
+    f'x="$work/{UNTRACKED_EXCLUDE}"\n'
+    'if [ -f "$x" ] && [ ! -L "$x" ]; then '
+    f'head -c {MAX_UNTRACKED_BYTES} -- "$x" >> "$scratch/info/exclude"; fi\n'
+    '[ -d "$work/.git/objects" ] && [ ! -L "$work/.git" ] || exit 3\n'
+    'export GIT_DIR="$scratch" GIT_WORK_TREE="$work" '
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES="$work/.git/objects"\n'
+    "G() { git -c core.bare=false -c core.hooksPath=/dev/null -c core.fsmonitor=false "
+    "-c core.untrackedCache=false -c core.splitIndex=false -c safe.directory='*' \"$@\"; }\n"
+    'b=$(G rev-parse --verify -q "$base^{commit}") && G read-tree "$b" && cd -- "$work" '
+    '|| exit 5\n'
+)
+"""A scratch repository of ours over the agent's work tree: index at the base tree, the
+agent's objects read as an alternate (data); no config, hook, fsmonitor or attribute
+driver of the agent's runs. In-tree `.gitignore` files are read: they only hide paths."""
+
+LIST_UNTRACKED_SCRIPT = (
+    'set -u\nbase=$1 work=$2 scratch=$3\n' + _HARDENED_GIT + _SCRATCH
+    + 'G ls-files --others --exclude-standard -z; rc=$?\ncd /\n'
+    'rm -rf -- "$scratch" "$scratch.home"\nexit $rc\n'
+)
+"""The image's untracked, unignored files (NUL-separated), listed once in `setup`."""
+
 CAPTURE_SCRIPT = r'''
 set -u
 base=$1 work=$2 out=$3 scratch=$4 max=$5
@@ -80,22 +119,38 @@ for d in "$(dirname -- "$art")" "$art"; do
 done
 rm -rf -- "$out" || exit 90
 [ ! -e "$out" ] && [ ! -L "$out" ] || exit 90
-head=$(git -c safe.directory=* --git-dir="$work/.git" rev-parse --verify -q HEAD) || exit 3
-rm -rf -- "$scratch" "$scratch.patch" && git init -q --bare "$scratch" || exit 4
-GIT_DIR="$scratch" GIT_ALTERNATE_OBJECT_DIRECTORIES="$work/.git/objects" \
-  git -c safe.directory=* diff --binary --no-ext-diff --no-textconv --no-color \
-  "$base" "$head" -- > "$scratch.patch"
+rm -f -- "$scratch.patch"
+''' + _SCRATCH + r'''
+G add -A && G diff --cached --binary --no-ext-diff --no-textconv --no-color "$b" -- \
+  > "$scratch.patch"
 rc=$?
+cd /
 rm -rf -- "$scratch" "$scratch.home"
 if [ $rc -ne 0 ]; then rm -f -- "$scratch.patch"; exit 5; fi
 if [ "$(wc -c < "$scratch.patch")" -gt "$max" ]; then rm -f -- "$scratch.patch"; exit 6; fi
 mv -f -- "$scratch.patch" "$out" || exit 90
 '''
-"""The agent's committed diff, `git diff --binary <base> HEAD`, in a scratch repository
-whose only link to the agent's is its object directory (data). Exit 90: a planted path
-could not be removed (the extract fails, graded 0); 3-6: no patch (an empty submission)."""
+"""Everything the agent changed against the base, committed or not: its work tree staged
+over the base tree in the scratch repository (`git add -A`), then `git diff --cached
+--binary <base>`. Files the image ships untracked and toolchain directories are left out.
+Exit 90: a planted path could not be removed (the extract fails, graded 0); 3-6: no
+patch (an empty submission)."""
 
-CAPTURE_ERRORS = {3: "no_head", 4: "scratch_failed", 5: "diff_failed", 6: "patch_too_large"}
+CAPTURE_ERRORS = {3: "no_repository", 4: "scratch_failed", 5: "diff_failed",
+                  6: "patch_too_large"}
+
+
+def exclude_patterns(paths: list[str]) -> str:
+    """Anchored gitignore patterns matching exactly these paths."""
+    lines = []
+    for path in paths:
+        if "\n" in path or "\r" in path:
+            raise ValueError(f"an untracked path with a line break: {path!r}")
+        escaped = "".join("\\" + c if c in "\\*?[" else c for c in path)
+        if escaped.endswith(" "):
+            escaped = escaped[:-1] + "\\ "
+        lines.append("/" + escaped + "\n")
+    return "".join(lines)
 
 STAGE_SCRIPT = (
     'rm -rf /tests /logs/verifier && mkdir -p /tests /logs/verifier '
@@ -137,8 +192,23 @@ class DeepSWETask(HarborTask):
                                f"{head or 'nothing'}, not the base {self.data.base_commit}")
 
     async def setup(self, runtime: Runtime) -> None:
-        """The agent's box is the task's image, untouched: `/app` at the base commit."""
+        """The agent's box is the task's image, untouched: `/app` at the base commit. The
+        files the image ships untracked are recorded in the box (`UNTRACKED_EXCLUDE`), so
+        the capture leaves them out: in the grading box they exist already, and a patch
+        creating them would not apply."""
         await self._check_base(runtime, "agent")
+        scratch = f"/tmp/deepswe-list-{uuid.uuid4().hex}"
+        listing = await runtime.run(["sh", "-c", LIST_UNTRACKED_SCRIPT, "deepswe-list",
+                                     self.data.base_commit, WORKDIR, scratch], {})
+        if listing.exit_code:
+            raise RuntimeError(f"{self.data.task_id}: listing the image's untracked files "
+                               f"failed (exit {listing.exit_code}): "
+                               f"{(listing.stderr or '').strip()[-300:]}")
+        patterns = exclude_patterns([p for p in (listing.stdout or "").split("\0") if p])
+        if len(patterns.encode()) > MAX_UNTRACKED_BYTES:
+            raise RuntimeError(f"{self.data.task_id}: the image's untracked list is over "
+                               f"{MAX_UNTRACKED_BYTES} bytes")
+        await runtime.write(f"{WORKDIR}/{UNTRACKED_EXCLUDE}", patterns.encode())
 
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
         scratch = f"/tmp/deepswe-capture-{uuid.uuid4().hex}"
