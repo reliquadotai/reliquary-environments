@@ -136,6 +136,26 @@ shows up there, not as voided episodes.
   run"). The validated image was pushed as is; a rebuild is a new image and needs a new
   validation.
 
+## 3b. reliquary-deepswe
+
+- Splits: `eval` (the gold-checked tasks, `reliquary_deepswe/gate.py`; refuses to load
+  until the gold check recorded them) and `eval_all` (all 113). Both are held out; a
+  gateway serves `eval` only, under a split named `eval`.
+- `setup` and `grading_setup` check `/app` is at the task's base commit (ours otherwise).
+  `finalize` writes the agent's committed diff (`git diff --binary <base> HEAD`, DeepSWE's
+  boundary) to `/logs/artifacts/model.patch`, the only declared artifact, from a scratch
+  repository over the agent's objects; a planted patch or link is removed first.
+- The reward, `solved`: an empty patch is 0; a patch with a symlink, a submodule or a
+  path in a toolchain directory is 0 and never applied; otherwise `/tests` is staged
+  (upstream's tests and PI-DeepSWE's shared verifier, v17), `test.sh` runs, and the
+  verdict is computed in the scoring process from the report files (the box's own
+  `reward.json` is never read). Timeout-only failures with every fail-to-pass test passing
+  are re-run twice when the budget allows.
+- Timeouts: setup 120 s, agent 5400 s, finalize 300 s, scoring 810 s. Resources: 2 CPUs,
+  8 GB, 20 GB. Recommended gateway options: tools `bash` and `edit`, split `eval` mapped
+  to itself.
+- Images: 113 tags (106 distinct digests, 111 GB compressed) in the package's lock.
+
 ## 4. Conformance cases and reference solutions
 
 Each package exports two functions of plain data, read by the sandbox's conformance suite
@@ -163,6 +183,12 @@ expect 0 with their markers `absent`: a `conftest.py` in `/home/user` and `/app`
 `usercustomize.py` in the user site, a `sitecustomize.py` in `/app`, `bash` and `python3`
 in `/home/user/.local/bin`; each file only creates a marker under `/tmp` if executed, so a
 marker in the grading box means the grader ran the agent's file.
+
+reliquary-deepswe, on two goldens of the served split (a Python and a Go task): the
+reference applies the gold patch through `bash` and commits it (expect 1); attacks,
+each expect 0: the gold uncommitted, planted in `/logs/artifacts`, planted by git
+settings, committed with a symlink or a `node_modules/` file, and (Python) a committed
+root `conftest.py` forcing passes. Every task has a reference.
 
 Indices are those of a split served with the taskset's defaults; a split served otherwise
 names other tasks under these indices, and its reference case fails.

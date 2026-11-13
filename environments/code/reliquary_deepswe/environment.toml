@@ -1,0 +1,54 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/deepswe"
+version = "0.1.0"
+taskset = "reliquary-deepswe"
+entrypoint = "reliquary_deepswe:DeepSWETaskset"
+license = "Apache-2.0"
+verification_tier = "container-reverified"
+owners = ["Reliquary contributors"]
+task_families = ["deepswe_v1_1"]
+
+# No `compatibility_entrypoint`: Verifiers-only, like reliquary-swe and
+# reliquary-terminal -- a container cannot be replayed deterministically.
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+# No box has network, the agent's or the grading box (every task declares
+# `allow_internet = false` for both phases).
+network = false
+secrets = []
+resource_class = "container"
+# Provisional, borrowed from reliquary-swe's own provisional 40: the order's
+# episode budget (max turns, tokens) is what bounds a run; to be re-derived from
+# a pilot's trajectories. Upstream's leaderboard runs mini-swe-agent unbounded
+# in turns within a 5,400 s agent timeout.
+max_turns = 40
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+# `DeepSWETask.solved`: 1 iff every fail-to-pass test passes and no
+# pass-to-pass test fails (PI-DeepSWE's strict rule, upstream's binary reward).
+components = ["solved"]
+
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """
+Each task is a multi-file feature or behaviour change in an unfamiliar
+repository, specified only by behaviour: the agent must read the code and plan
+before its first edit, and the shell is the only other place reasoning can go.
+An argument, as for reliquary-swe, not a measurement.
+"""
+
+[data]
+# Held out: never trained on. `eval` is the gold-checked subset
+# (reliquary_deepswe/gate.py), `eval_all` all 113.
+eval = "git:datacurve-ai/deep-swe@8cae5984d5dd0ee37445beff0e928dc10c331116"
+rows = 113
+redistributable = true
+license = "Apache-2.0 (Datacurve's task content and verifiers; PI-DeepSWE's verifier); each task's repository code under its own project's license (reliquary_deepswe/PROVENANCE.md)"
