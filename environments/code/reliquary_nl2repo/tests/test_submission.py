@@ -143,3 +143,12 @@ def test_count_passed():
 def test_count_passed_refuses_what_is_not_a_plain_report(raw):
     with pytest.raises(Exception):
         submission.count_passed(raw)
+
+
+def test_a_projects_own_plugin_package_is_kept():
+    assert submission.drop_reason("pytest_cov/plugin.py", ()) == "shadows_runner"
+    assert submission.drop_reason("src/pytest_cov/plugin.py", (), frozenset({"pytest_cov"})) is None
+    assert submission.drop_reason("_pytest/x.py", (), frozenset({"pytest_cov"})) == "shadows_runner"
+    clean, _ = submission.sanitize(archive([("pytest_cases/__init__.py", "file", b"")]), [],
+                                   ["pytest_cases"])
+    assert names(clean) == ["pytest_cases/__init__.py"]

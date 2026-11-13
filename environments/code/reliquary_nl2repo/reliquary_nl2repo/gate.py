@@ -21,5 +21,8 @@ VERIFIED: frozenset[str] | None = None
 GOLD_CHECK: dict[str, str] = {}
 """Provenance of `VERIFIED`: where and when the gold check ran (host, runtime, date)."""
 
-EXCLUDED: dict[str, str] = {}
+EXCLUDED: dict[str, str] = {
+    "pyautogui": "the image runs as appuser, which cannot create /logs (no artifact can be "
+                 "captured), and needs an X display; no reference survives in the image",
+}
 """Task id -> why it is never served."""

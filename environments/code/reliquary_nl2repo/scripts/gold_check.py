@@ -40,7 +40,7 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-from reliquary_nl2repo import conformance, gate, source
+from reliquary_nl2repo import conformance, gate, source, submission
 from reliquary_nl2repo.task import ARCHIVE_PATH, SANDBOX_RUNTIME, WORKDIR, NL2RepoTask
 from reliquary_nl2repo.taskset import NL2RepoConfig, NL2RepoTaskset
 
@@ -49,6 +49,9 @@ LOCK = json.loads((PACKAGE / "sandbox-images.lock.json").read_text())["images"]
 STEP_S = 810.0
 """A gateway's grading step (the bridge's MAX_GRADING_TIMEOUT_S)."""
 REFERENCE_TMP = "/tmp/reliquary-reference.tar.gz"
+MAX_REFERENCE_FILE = 4 * 1024 * 1024
+"""Upstream build contexts hold junk no agent would write (emoji: a 1 GB tar of itself;
+justext: a Windows virtualenv): files over this are left out of the reference played."""
 PROBE = (
     "import importlib.util, sys\n"
     "for name in sys.argv[1:]:\n"
@@ -144,6 +147,24 @@ def new_trace() -> SimpleNamespace:
     return trace
 
 
+def trim_reference(reference: bytes) -> tuple[bytes, int]:
+    """The reference without toolchain directories and files over MAX_REFERENCE_FILE (what
+    no submission would carry), recompressed; and how many files were left out."""
+    out = io.BytesIO()
+    left_out = 0
+    with tarfile.open(fileobj=io.BytesIO(reference), mode="r:gz") as source, \
+            tarfile.open(fileobj=out, mode="w:gz") as kept:
+        for member in source:
+            if not member.isreg():
+                continue
+            if member.size > MAX_REFERENCE_FILE \
+                    or submission.drop_reason(member.name, ()) == "toolchain_dir":
+                left_out += 1
+                continue
+            kept.addfile(member, source.extractfile(member))
+    return out.getvalue(), left_out
+
+
 def module_names(reference: bytes) -> list[str]:
     """The reference's top-level import names (packages and modules at its root or
     under `src/`), for the leak probe."""
@@ -182,6 +203,7 @@ async def play(args, task: NL2RepoTask, case: str, calls: list | None,
         await asyncio.wait_for(task.setup(agent), task.data.timeout.setup)
         row["setup_s"] = round(time.monotonic() - clock, 1)
         if reference is not None:
+            reference, row["reference_left_out"] = trim_reference(reference)
             row["leaks"] = await probe(agent, module_names(reference))
             await agent.write(REFERENCE_TMP, reference)
             unpacked = await agent.run(["sh", "-c", f"tar -xzf {REFERENCE_TMP} -C {WORKDIR} "
@@ -280,9 +302,11 @@ async def run_all(args) -> list[dict]:
             out.close()
 
 
-def verified(rows: list[dict], budget: float) -> list[str]:
-    """Tasks whose reference graded 1 and empty workspace 0, both within the budget, with
-    no error and no reference module importable in the emptied agent box."""
+def verified(rows: list[dict], budget: float, min_reference: float = 1.0,
+             max_empty: float = 0.0) -> list[str]:
+    """Tasks whose reference graded at least `min_reference` (1) and empty workspace at
+    most `max_empty` (0), both within the budget, with no error and no reference module
+    importable in the emptied agent box."""
     by_task: dict[str, dict[str, dict]] = {}
     for row in rows:
         by_task.setdefault(row["task_id"], {})[row.get("case")] = row
@@ -291,7 +315,8 @@ def verified(rows: list[dict], budget: float) -> list[str]:
         ref, empty = cases.get("reference"), cases.get("empty")
         if not ref or not empty or ref.get("error") or empty.get("error"):
             continue
-        if ref.get("reward") != 1 or empty.get("reward") != 0 or ref.get("leaks"):
+        if ref.get("reward", 0) < min_reference or empty.get("reward", 1) > max_empty \
+                or ref.get("leaks"):
             continue
         if max(ref.get("grading_s", STEP_S), empty.get("grading_s", STEP_S)) > budget:
             continue
@@ -300,10 +325,11 @@ def verified(rows: list[dict], budget: float) -> list[str]:
 
 
 def write_gate(rows: list[dict], args) -> None:
-    passed = verified(rows, args.budget)
+    passed = verified(rows, args.budget, args.min_reference, args.max_empty)
     digest = hashlib.sha256("\n".join(json.dumps(r, sort_keys=True) for r in rows).encode())
     provenance = {"host": platform.node(), "runtime": args.runtime or "docker default",
                   "date": datetime.date.today().isoformat(), "budget_s": str(args.budget),
+                  "rule": f"reference >= {args.min_reference}, empty <= {args.max_empty}",
                   "results_sha256": digest.hexdigest(),
                   "verified": f"{len(passed)}/{len(source.task_ids())}"}
     text = Path(gate.__file__).read_text()
@@ -332,6 +358,10 @@ def main() -> int:
     parser.add_argument("--refs", help="directory of <task>.tar.gz references")
     parser.add_argument("--budget", type=float, default=700.0,
                         help="a task grading slower than this is not verified")
+    parser.add_argument("--min-reference", type=float, default=1.0,
+                        help="the reference must grade at least this")
+    parser.add_argument("--max-empty", type=float, default=0.0,
+                        help="the empty workspace must grade at most this")
     parser.add_argument("--out", help="append JSON lines here")
     parser.add_argument("--conformance", action="store_true",
                         help="run the declared attack cases on the goldens instead")
@@ -349,7 +379,7 @@ def main() -> int:
         "over_budget": sorted({r["task_id"] for r in graded if not r["within_budget"]}),
         "slowest_grading_s": max((r["grading_s"] for r in graded), default=None),
         "leaks": sorted({r["task_id"] for r in rows if r.get("leaks")}),
-        "verified": len(verified(rows, args.budget)),
+        "verified": len(verified(rows, args.budget, args.min_reference, args.max_empty)),
     }
     print(json.dumps(summary, sort_keys=True), file=sys.stderr)
     if args.write_gate:

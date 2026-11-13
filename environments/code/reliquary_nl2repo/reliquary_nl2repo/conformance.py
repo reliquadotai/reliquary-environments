@@ -24,7 +24,7 @@ from reliquary_nl2repo.taskset import split_ids
 CHUNK = 60_000
 """base64 characters per shell call."""
 STAGE = "/tmp/reliquary-upload.b64"
-GOLDENS = ("tinydb", "retrying")
+GOLDENS = ("parse", "retrying")
 FORCING_CONFTEST = (
     "import pytest\n\n\n"
     "@pytest.hookimpl(hookwrapper=True)\n"

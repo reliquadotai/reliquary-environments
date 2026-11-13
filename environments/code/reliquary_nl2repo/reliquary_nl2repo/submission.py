@@ -59,7 +59,8 @@ def _module_name(part: str) -> str:
     return part[:-3] if part.endswith(".py") else part.split(".", 1)[0]
 
 
-def drop_reason(path: str, test_paths: tuple[str, ...]) -> str | None:
+def drop_reason(path: str, test_paths: tuple[str, ...],
+                own_modules: frozenset[str] = frozenset()) -> str | None:
     """Why `path` (relative, normalised) is left out of the graded workspace, or None."""
     parts = PurePosixPath(path).parts
     name = parts[-1]
@@ -76,7 +77,7 @@ def drop_reason(path: str, test_paths: tuple[str, ...]) -> str | None:
         return "runner_hook"
     module = parts[1:] if parts[0] == "src" and len(parts) > 1 else parts
     top = _module_name(module[0])
-    if top in SHADOWED or top.startswith("pytest_"):
+    if top not in own_modules and (top in SHADOWED or top.startswith("pytest_")):
         return "shadows_runner"
     if name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")):
         return "test_file"
@@ -96,11 +97,13 @@ def _normalise(name: str) -> str | None:
     return "/".join(parts)
 
 
-def sanitize(raw: bytes, test_paths: list[str] | tuple[str, ...]) -> tuple[bytes, dict]:
+def sanitize(raw: bytes, test_paths: list[str] | tuple[str, ...],
+             own_modules: list[str] | tuple[str, ...] = ()) -> tuple[bytes, dict]:
     """A clean, uncompressed tar of the workspace's kept regular files, and what was
     dropped (counts per reason). Raises ArchiveRefused for unreadable or oversized
     input."""
     tests = tuple(p for p in (_normalise(t) for t in test_paths) if p)
+    own = frozenset(own_modules)
     dropped: dict[str, int] = {}
     kept: dict[str, tuple[bytes, int]] = {}
     total = 0
@@ -118,7 +121,7 @@ def sanitize(raw: bytes, test_paths: list[str] | tuple[str, ...]) -> tuple[bytes
                 elif not member.isreg():
                     reason = "not_a_regular_file"
                 else:
-                    reason = drop_reason(path, tests)
+                    reason = drop_reason(path, tests, own)
                 if reason is not None:
                     dropped[reason] = dropped.get(reason, 0) + 1
                     continue

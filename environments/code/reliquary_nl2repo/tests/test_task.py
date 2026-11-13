@@ -305,3 +305,8 @@ def test_an_unreadable_archive_is_zero_without_running_anything():
     task = a_task("tinydb")
     reward, trace, box = grade(task, {ARCHIVE_PATH: b"garbage"})
     assert reward == 0.0 and trace.metrics["archive_refused"] == 1.0 and box.runs == []
+
+
+def test_own_modules_reach_the_task():
+    assert a_task("pytest-cov").data.own_modules == ["pytest_cov"]
+    assert a_task("tinydb").data.own_modules == []

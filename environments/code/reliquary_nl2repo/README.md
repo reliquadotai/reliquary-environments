@@ -103,7 +103,7 @@ its empty workspace 0, both within `--budget` (700 s), and nothing leaked.
 
 ## Conformance (`conformance_cases`, `reference_calls`)
 
-No reference ships (`reference_calls` is None). On the goldens (`tinydb`, `retrying`;
+No reference ships (`reference_calls` is None). On the goldens (`parse`, `retrying`;
 they must be in the verified list), every case is expected to grade 0: the empty
 workspace, a root `conftest.py` forcing passes, the same as `sitecustomize.py` and as a
 `.pth`, a `pytest` package shadowing the runner, pytest config loading a forcing plugin,

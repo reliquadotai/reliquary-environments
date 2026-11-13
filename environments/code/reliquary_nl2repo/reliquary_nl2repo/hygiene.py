@@ -29,6 +29,13 @@ REFERENCE_PATHS: dict[str, tuple[str, ...]] = {
 """Task id -> absolute paths outside `/workspace` holding reference copies (scan of the
 pinned images; the agent's box and the grading box both lose them)."""
 
+OWN_MODULES: dict[str, tuple[str, ...]] = {
+    "pytest-cov": ("pytest_cov",),
+    "python-pytest-cases": ("pytest_cases",),
+}
+"""Task id -> the project's own import names that the runner-shadowing rule would drop
+(`submission.drop_reason`): these projects are pytest plugins."""
+
 REMOVE_SCRIPT = r'''
 set -u
 for p in "$@"; do
@@ -128,4 +135,4 @@ UNINSTALL_SCRIPT = (
 )
 """Run as `sh -c UNINSTALL_SCRIPT <UNINSTALL_PY>`: the Python source travels as $0."""
 
-__all__ = ["REFERENCE_PATHS", "REMOVE_SCRIPT", "UNINSTALL_PY", "UNINSTALL_SCRIPT"]
+__all__ = ["OWN_MODULES", "REFERENCE_PATHS", "REMOVE_SCRIPT", "UNINSTALL_PY", "UNINSTALL_SCRIPT"]

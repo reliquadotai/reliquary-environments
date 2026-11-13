@@ -82,8 +82,12 @@ def replay(layer_paths: list[Path]) -> tuple[dict[str, dict[str, bytes]], dict[s
                     continue
                 if len(parts) < 2 or not member.isreg():
                     continue
+                files = state.setdefault(top, {})
+                rel = "/".join(parts[1:])
+                if rel in files:
+                    continue  # the copy's version: later layers (chown, test runs) may mangle it
                 handle = tar.extractfile(member)
-                state.setdefault(top, {})["/".join(parts[1:])] = handle.read() if handle else b""
+                files[rel] = handle.read() if handle else b""
         for top, files in state.items():
             if any(k.endswith(".py") for k in files) and len(files) >= len(best.get(top, {})):
                 best[top] = dict(files)

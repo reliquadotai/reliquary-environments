@@ -85,7 +85,8 @@ CLEAR_WORKSPACE = (
     'mkdir -p /workspace && find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + '
     '&& [ -z "$(ls -A /workspace)" ]'
 )
-CLEAR_TMP = "find /tmp -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + ; [ -z \"$(ls -A /tmp)\" ]"
+CLEAR_TMP = "find /tmp -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null; exit 0"
+"""Best effort: an image whose user is not root (pyautogui) keeps root's files there."""
 HAS_TESTS = "find /workspace -type f -name '*.py' | head -n 1 | grep -q ."
 EXTRACT_SCRIPT = (
     f"mkdir -p {WORKDIR} && tar -xf {CLEAN_ARCHIVE} -C {WORKDIR} --no-same-owner "
@@ -157,6 +158,8 @@ class NL2RepoData(HarborData):
     test_files: list[str]
     test_case_count: int
     reference_paths: list[str]
+    own_modules: list[str]
+    """Import names of the project that look like pytest plugins (`hygiene.OWN_MODULES`)."""
     split: str
 
 
@@ -240,7 +243,7 @@ class NL2RepoTask(HarborTask):
             trace.record_metrics({"empty_workspace": 1.0})
             raw = submission.empty_archive()
         try:
-            clean, kept = submission.sanitize(raw, self.data.test_files)
+            clean, kept = submission.sanitize(raw, self.data.test_files, self.data.own_modules)
         except submission.ArchiveRefused as exc:
             trace.record_metrics({"archive_refused": 1.0})
             trace.info["nl2repo"] = {"archive_refused": str(exc)[:300]}
@@ -323,6 +326,7 @@ def task_data(task_id: str, idx: int, split: str) -> NL2RepoData:
         test_files=source.test_files(task_id),
         test_case_count=source.test_case_count(task_id),
         reference_paths=list(hygiene.REFERENCE_PATHS.get(task_id, ())),
+        own_modules=list(hygiene.OWN_MODULES.get(task_id, ())),
         split=split,
     )
 
