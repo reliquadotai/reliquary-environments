@@ -54,6 +54,7 @@ JUNIT = "/tmp/nl2repo-junit-{}.xml"
 LOG = "/tmp/nl2repo-cmd-{}.log"
 EXIT = "/tmp/nl2repo-cmd-{}.exit"
 MAX_LOG_TAIL = 3000
+MAX_DISK_GB = 10.0
 
 TOOLCHAIN_PRUNE = (".git", "__pycache__", ".venv", "venv", "node_modules", ".pytest_cache",
                    ".mypy_cache", "*.egg-info")
@@ -302,9 +303,9 @@ class NL2RepoTask(HarborTask):
 
 
 def task_data(task_id: str, idx: int, split: str) -> NL2RepoData:
-    """The task's data. Every box: 4 CPUs, 8 GB, 20 GB (Prime's adaptation's defaults:
-    stable-baselines3, tsfresh, ydata-profiling and pytorch-grad-cam test heavily), no
-    network."""
+    """The task's data. Every box: 4 CPUs, 8 GB (Prime's adaptation's defaults:
+    stable-baselines3, tsfresh, ydata-profiling and pytorch-grad-cam test heavily),
+    `MAX_DISK_GB` of disk, no network."""
     from reliquary_nl2repo import source
 
     return NL2RepoData(
@@ -317,7 +318,10 @@ def task_data(task_id: str, idx: int, split: str) -> NL2RepoData:
         # Agent: upstream bounds nothing (OpenHands with no iteration limit); 2 h gives a
         # whole-repository build room, the order's turn and token budget binds first.
         timeout=vf.TaskTimeout(setup=300.0, agent=7200.0, finalize=300.0, scoring=810.0),
-        resources=vf.TaskResources(cpu=4.0, memory=8.0, disk=20.0),
+        # Disk 10 GiB, not Prime's 20 GB: a session's budgets must cover the task's needs, and
+        # both a gateway (episode_max_disk_bytes) and Catalyst's episode budgets stop at 10 GiB;
+        # 20 GB would refuse every session. It bounds the box's writable layer, not the image.
+        resources=vf.TaskResources(cpu=4.0, memory=8.0, disk=MAX_DISK_GB),
         artifacts=[vf.Artifact(source=ARCHIVE_PATH, required=False)],
         tags=["python"],
         task_id=task_id,

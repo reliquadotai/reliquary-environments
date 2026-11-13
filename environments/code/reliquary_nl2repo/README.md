@@ -35,9 +35,11 @@ the task id's (upstream's directory name), sorted; `task_at(i)` is the `i`-th ta
 
 ## The task (env norm)
 
-- **Box**: the task's image, workdir `/workspace`, 4 CPUs, 8 GB memory, 20 GB disk (Prime's
-  adaptation's sizes), no network. Agent timeout 7,200 s: upstream bounds nothing
-  (OpenHands with no iteration limit); the order's turn and token budget binds first.
+- **Box**: the task's image, workdir `/workspace`, 4 CPUs, 8 GB memory (Prime's
+  adaptation's sizes), 10 GiB disk (Prime's 20 GB is above what a gateway and Catalyst's
+  episode budgets admit, and a session's budgets must cover the task's needs), no
+  network. Agent timeout 7,200 s: upstream bounds nothing (OpenHands with no iteration
+  limit); the order's turn and token budget binds first.
   Tools: `bash` and `edit`.
 - **Prompt**: upstream's instruction, unchanged ("According to the start.md in the
   workspace, implement the entire project ..."); the specification is `start.md` in the

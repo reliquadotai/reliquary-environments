@@ -181,8 +181,8 @@ shows up there, not as voided episodes.
   bash, offline, within 660 s; reward = min(passed / `test_case_count`, 1), counted from
   the JUnit reports in the scoring process.
 - Timeouts: setup 300 s, agent 7200 s, finalize 300 s, scoring 810 s. Resources: 4 CPUs,
-  8 GB, 20 GB. Recommended gateway options: tools `bash` and `edit`, split `eval` mapped
-  to itself.
+  8 GB, 10 GiB disk (the most a gateway admits; Prime's adaptation declares 20 GB).
+  Recommended gateway options: tools `bash` and `edit`, split `eval` mapped to itself.
 - Images: 104 tags, one per task (55 GB compressed), in the package's lock. Upstream
   ships no license: the task files are fetched at build time by digest, never committed.
 

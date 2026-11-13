@@ -212,6 +212,8 @@ def test_task_data():
     assert data.network_allow == [] and data.workdir == "/workspace"
     assert [a.source for a in data.artifacts] == [ARCHIVE_PATH]
     assert data.timeout.scoring == 810.0 and data.timeout.setup <= 600
+    # A session's budgets must cover these, and a gateway's and Catalyst's disk stops at 10 GiB.
+    assert (data.resources.cpu, data.resources.memory, data.resources.disk) == (4.0, 8.0, 10.0)
     assert data.test_case_count == 227 and data.spec_sha256 == source.spec_sha256("asteval")
     pickle.dumps(task)
 
