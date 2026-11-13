@@ -1,0 +1,51 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/terminal-bench"
+version = "0.1.0"
+taskset = "reliquary-terminal-bench"
+entrypoint = "reliquary_terminal_bench:TerminalBenchTaskset"
+license = "Apache-2.0"
+verification_tier = "container-reverified"
+owners = ["Reliquary contributors"]
+task_families = ["terminal_bench_2_1"]
+
+# No `compatibility_entrypoint`: Verifiers-only, like reliquary-terminal -- a
+# container cannot be replayed deterministically.
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+# Grading never has network: test.sh's installs are pre-baked into the verifier image
+# (images.py). The agent's box is offline too unless the gateway gives the env controlled
+# egress for the agent phase (split `eval`, gated that way; `eval_offline` is gated
+# without). Upstream declares `allow_internet = true` for all 89 tasks.
+network = false
+secrets = []
+resource_class = "container"
+# Upstream bounds an episode by its agent timeout only (Terminus 2 has no turn
+# limit); the order's episode budget sets the turns.
+max_turns = 200
+max_observation_bytes = 10000
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+# `TerminalBenchTask.solved`: test.sh's reward.txt, as Harbor reads it.
+components = ["solved"]
+
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """
+Each task is an open-ended terminal job (build, debug, recover, configure) judged
+only by its final state: the agent must plan before acting, as for reliquary-terminal.
+An argument, not a measurement.
+"""
+
+[data]
+# Held out: never trained on. `eval` is the gold-checked subset (gate.py), `eval_all` all 89.
+eval = "harbor:terminal-bench/terminal-bench-2-1@sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a"
+rows = 89
+redistributable = true
+license = "Apache-2.0 (harbor-framework/terminal-bench-2-1)"

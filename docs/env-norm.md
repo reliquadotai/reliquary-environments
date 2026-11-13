@@ -183,6 +183,29 @@ shows up there, not as voided episodes.
 - Images: 642 digests (1,051 GB compressed, 544 GB distinct) in the package's lock. No
   box has network: tasks whose tests need it fail the gold check and are not served.
 
+## 3d. reliquary-terminal-bench
+
+- Splits: `eval` (65 tasks gold-checked with the agent's box online through controlled egress,
+  grading offline: `gate.VERIFIED`), `eval_offline` (49, both boxes offline:
+  `gate.VERIFIED_OFFLINE`) and `eval_all` (all 89 of Terminal-Bench 2.1). All held out; 10 tasks
+  graded against a live process are `EXCLUDED`. A gateway serves `eval` (with egress) or
+  `eval_offline` (without), under that split name.
+- Image: per task, upstream's image by digest plus an inert verifier overlay
+  (`/opt/tb-verifier/overlay.tar.gz.<part>`: what `test.sh`'s own installs leave, recorded with
+  network at build time, tests stubbed). `setup` deletes it from the agent's box and marks the
+  start.
+- `finalize` captures the agent's filesystem (inodes changed since the mark, by ctime, and the
+  list of every path, for deletions) under `/logs/artifacts`, the only root (512 MB cap).
+- `grading_setup` lists the pristine box; the reward unpacks the overlay, applies the agent's
+  deletions and files over `/`, and runs `test.sh` offline (`UV_OFFLINE=1`) from the image's
+  WORKDIR; the reward is `reward.txt`/`reward.json`, as Harbor reads it. Trust is upstream's
+  (same-box grading): eval only, never trained on.
+- Timeouts: setup 120 s, agent as `task.toml` (the episode's wall budget on the order path),
+  finalize 600 s, scoring 810 s. Resources as `task.toml`. Gateway options: tool `bash`, split
+  `eval`, `defaults` `per_call_timeout_s` 600 and `max_artifact_bytes` 570425344, `network`
+  `{"profile": "packages", "agent": true, "grading": false}` with `gate.EGRESS_EXTRA_HOSTS`
+  added to the profile.
+
 ## 4. Conformance cases and reference solutions
 
 Each package exports two functions of plain data, read by the sandbox's conformance suite
