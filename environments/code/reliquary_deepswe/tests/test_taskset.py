@@ -31,10 +31,26 @@ def test_split_is_required():
         len(DeepSWETaskset(DeepSWEConfig(id="reliquary-deepswe")))
 
 
-def test_eval_refuses_until_gated():
-    assert gate.VERIFIED is None
-    with pytest.raises(ValueError, match="not gated yet"):
-        len(DeepSWETaskset(DeepSWEConfig(split="eval", id="reliquary-deepswe")))
+def test_eval_is_the_recorded_gate():
+    """The gold check of 2026-11-13: 110 tasks served, three excluded with a reason."""
+    assert gate.VERIFIED is not None and gate.VERIFIED <= set(source.task_ids())
+    served = DeepSWETaskset(DeepSWEConfig(split="eval", id="reliquary-deepswe"))
+    assert len(served) == 110 == len(gate.VERIFIED - set(gate.EXCLUDED))
+    ids = taskset.split_ids("eval")
+    assert not set(ids) & set(gate.EXCLUDED) and list(ids) == sorted(ids)
+    assert set(gate.EXCLUDED) == {"expr-try-catch-errors", "numba-stencil-boundary-modes",
+                                  "prometheus-transactional-reload-status"}
+    assert gate.GOLD_CHECK["served"] == "110/113"
+
+
+def test_eval_refuses_until_gated(monkeypatch):
+    monkeypatch.setattr(gate, "VERIFIED", None)
+    taskset.split_ids.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="not gated yet"):
+            len(DeepSWETaskset(DeepSWEConfig(split="eval", id="reliquary-deepswe")))
+    finally:
+        taskset.split_ids.cache_clear()
 
 
 def test_eval_serves_the_verified_tasks_less_the_excluded(monkeypatch):

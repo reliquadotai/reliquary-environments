@@ -30,11 +30,12 @@ files too, and a task whose files do not match is refused at load. Re-vendor wit
 
 | Split | Tasks | For |
 | --- | --- | --- |
-| `eval` | the gold-checked tasks (`reliquary_deepswe/gate.py`) | what a gateway serves and a Catalyst eval set freezes |
+| `eval` | 110 gold-checked tasks (`reliquary_deepswe/gate.py`) | what a gateway serves and a Catalyst eval set freezes |
 | `eval_all` | all 113 | the gold check and conformance runs |
 
-`eval` refuses to load until the gold check has recorded its verified list
-(`gate.VERIFIED`, a `.py` file so the served set is part of the package identity). Task
+`eval` is the gold check's verified list less the excluded tasks (`gate.VERIFIED`,
+`gate.EXCLUDED`, a `.py` file so the served set is part of the package identity); without a
+recorded list it refuses to load. Task
 order is the task id's, sorted; `task_at(i)` is the `i`-th task `load()` yields.
 
 ## The task (env norm)
@@ -81,8 +82,9 @@ order is the task id's, sorted; `task_at(i)` is the `i`-th task `load()` yields.
      recovers only if both pass (PI-DeepSWE's rule; skipped retries are counted in
      `retry_skipped_for_budget`).
 
-  Grading environment: `GOCACHE=/app/.gocache`, `GOFLAGS=-count=1`, `GOPROXY=off`,
-  `GOSUMDB=off`, `GOTOOLCHAIN=local` (a module or toolchain fetch fails at once).
+  Grading environment: `GOCACHE=/app/.gocache`, `GOFLAGS=-count=1`, `GOPROXY=off` (a
+  module fetch fails at once). Go's toolchain and checksum settings stay at their defaults:
+  several images pin a newer Go than they ship, and the cached toolchain is used offline.
 - **Timeouts**: setup 120 s, finalize 300 s, scoring 810 s: each grading step gets 810 s,
   the most a gateway's verification window admits.
 - **Residual**, as for every repository-test grader: the candidate's code runs during its
@@ -123,6 +125,31 @@ and committed), `finalize`, then a fresh grading box, `grading_setup`, the patch
 `tengo-callable-instance-isolation`, `tengo-destructuring-bindings`,
 `termenv-preserve-ansi-resets`, `updo-policy-alerting`, `wazero-multi-module-snapshots`,
 `ytt-jsonpath-query-api`.
+
+### Results, 2026-11-13
+
+Targon cpu-xlarge-amd VM (32 vCPU), gVisor `release-20260928.0` with the gateways' runsc
+arguments, 12 episodes at a time, no network in any box, images by digest. Each task played
+twice: the gold patch (expected 1) and a no-op, one new file no test reads (expected 0, the
+suites run on the base state).
+
+- **Served: 110/113.** Gold 1 and no-op 0 within 700 s for 111; one of them is excluded on
+  timing. Grading time of the served golds: median 50 s, p90 221 s, slowest 656 s
+  (`kgateway-consistent-hash-policy`; then `arcane-drift-detection-baselines` 522 s,
+  `skrub-duration-encoding` 513 s, `oxvg-structural-selector-preservation` 390 s).
+- **Excluded** (`gate.EXCLUDED`): `expr-try-catch-errors` (a task defect under the shared
+  verifier: the gold changes `vm.NewProgram`'s signature and updates `vm/vm_test.go`, which
+  the verifier restores as a test file, so 125 pass-to-pass tests no longer compile);
+  `numba-stencil-boundary-modes` (gold grading over 810 s; the no-op alone 763 s);
+  `prometheus-transactional-reload-status` (685-799 s, over 700 s).
+- **No task needs network.** The first pass set `GOSUMDB=off` and `GOTOOLCHAIN=local`; five
+  Go tasks (`arcane`, `goreleaser`, `kgateway`, `ytt`, `expr`) pin a newer Go than their
+  image ships and failed in 3 s. Their toolchain and its checksum entries are in the
+  image's module cache, which Go uses offline with only `GOPROXY=off`: the grading
+  environment now sets just that, and all 34 Go tasks were re-run (33 gold 1).
+- Conformance cases on both goldens: 13/13 as expected.
+
+Raw results are kept out of the repository; `GOLD_CHECK.results_sha256` digests them.
 
 ## Conformance (`conformance_cases`, `reference_calls`)
 

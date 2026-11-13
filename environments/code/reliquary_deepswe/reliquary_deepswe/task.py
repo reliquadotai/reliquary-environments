@@ -50,11 +50,11 @@ GRADING_ENV = {
     # PI-DeepSWE's: Go's build cache where test.sh expects it, tests re-run every attempt.
     "GOCACHE": "/app/.gocache",
     "GOFLAGS": "-count=1",
-    # No box has network: a module or toolchain fetch fails at once instead of waiting
-    # on a resolver.
+    # No box has network: a module fetch fails at once instead of waiting on a resolver.
+    # Toolchains and checksums are left to Go's defaults: several images pin a newer Go
+    # than they ship, with that toolchain and its sumdb entries in the module cache, which
+    # Go uses offline (GOSUMDB=off or GOTOOLCHAIN=local would refuse it; measured).
     "GOPROXY": "off",
-    "GOSUMDB": "off",
-    "GOTOOLCHAIN": "local",
     "GIT_TERMINAL_PROMPT": "0",
 }
 

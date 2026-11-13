@@ -21,7 +21,7 @@ def gold_check():
 
 
 def args(**overrides):
-    defaults = dict(tasks=[], conformance=False, budget=700.0, runtime="runsc")
+    defaults = dict(tasks=[], conformance=False, noop=False, budget=700.0, runtime="runsc")
     return type("Args", (), {**defaults, **overrides})()
 
 
@@ -30,6 +30,9 @@ def test_one_reference_episode_per_task(gold_check):
     assert [t.key for t, *_ in played] == list(source.task_ids())
     assert all(expect == 1.0 and name.startswith("reference_") for _, name, _, expect in played)
     assert len(gold_check.episodes(args(tasks=["etree-xml-diff-patch"]))) == 1
+    both = gold_check.episodes(args(tasks=["etree-xml-diff-patch"], noop=True))
+    assert [(name.split("_")[0], expect) for _, name, _, expect in both] == [("reference", 1.0),
+                                                                             ("noop", 0.0)]
     assert {name.split("_")[0] for _, name, _, _ in gold_check.episodes(args(conformance=True))} > {"reference"}
 
 
@@ -47,6 +50,9 @@ def test_the_gate_keeps_passing_tasks_within_budget(gold_check, tmp_path, monkey
         {"task_id": ids[1], "case": "reference_1", "reward": 1.0, "grading_s": 900.0},
         {"task_id": ids[2], "case": "reference_2", "reward": 0.0, "grading_s": 50.0},
         {"task_id": ids[3], "case": "reference_3", "reward": 1.0, "grading_s": 10.0, "error": "x"},
+        {"task_id": ids[4], "case": "reference_4", "reward": 1.0, "grading_s": 10.0},
+        {"task_id": ids[4], "case": "noop_4", "reward": 1.0, "grading_s": 10.0},
+        {"task_id": ids[0], "case": "noop_0", "reward": 0.0, "grading_s": 10.0},
     ]
     gold_check.write_gate(rows, args())
     namespace: dict = {}

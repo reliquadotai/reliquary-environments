@@ -15,7 +15,8 @@ the paths they take on a gateway; unlike a gateway, processes are not killed bet
 commands. Output: one JSON line per task (reward, metrics, phase seconds, error), then a
 summary. `--write-gate` records the tasks graded 1 within `--budget` seconds in
 `reliquary_deepswe/gate.py` (the served `eval` split); a new gate is a new package
-version. `--conformance` runs the declared attack cases instead of the references.
+version. `--noop` adds a no-op episode per task (a file no test reads: the suites run on
+the base state, expected 0). `--conformance` runs the declared attack cases instead.
 
     uv run python scripts/gold_check.py --runtime runsc --jobs 8 --out gold.jsonl
     uv run python scripts/gold_check.py --tasks etree-xml-diff-patch --runtime runsc
@@ -37,11 +38,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from reliquary_deepswe import conformance, gate, source
-from reliquary_deepswe.task import PATCH_PATH, SANDBOX_RUNTIME, WORKDIR, DeepSWETask
+from reliquary_deepswe.task import (
+    PATCH_PATH,
+    SANDBOX_RUNTIME,
+    TEST_STDOUT,
+    WORKDIR,
+    DeepSWETask,
+)
 from reliquary_deepswe.taskset import DeepSWEConfig, DeepSWETaskset
 
 PACKAGE = Path(gate.__file__).resolve().parent
 LOCK = json.loads((PACKAGE / "sandbox-images.lock.json").read_text())["images"]
+NOOP_CALLS = [["bash", {"command": f"echo noop > {WORKDIR}/DEEPSWE_NOOP.txt"}]]
+"""The no-op: one new file no test reads, so the patch is not empty and the suites run on
+the base state, where every fail-to-pass test must fail."""
 STEP_S = 810.0
 """A gateway's grading step (the bridge's MAX_GRADING_TIMEOUT_S)."""
 
@@ -94,8 +104,31 @@ class Box:
             raise OSError(f"write {path}: {err.decode()[-200:]}")
 
 
+_PULLS: dict[str, asyncio.Lock] = {}
+
+
+async def pull(args, image: str) -> None:
+    """The image by digest, once per run even when episodes of one task start together."""
+    async with _PULLS.setdefault(image, asyncio.Lock()):
+        for attempt in range(4):
+            process = await asyncio.create_subprocess_exec(
+                args.docker, "image", "inspect", image,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            if await process.wait() == 0:
+                return
+            process = await asyncio.create_subprocess_exec(
+                args.docker, "pull", "-q", image,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            _, err = await process.communicate()
+            if process.returncode == 0:
+                return
+            await asyncio.sleep(10 * (attempt + 1))
+        raise RuntimeError(f"docker pull {image}: {err.decode()[-300:]}")
+
+
 async def start(args, task: DeepSWETask) -> Box:
     image = LOCK[task.data.image]
+    await pull(args, image)
     name = f"deepswe-gold-{task.key[:40]}-{uuid.uuid4().hex[:8]}"
     resources = task.data.resources
     argv = [args.docker, "run", "-d", "--name", name, "--network", "none",
@@ -125,7 +158,12 @@ def new_trace() -> SimpleNamespace:
     return trace
 
 
-async def play(args, task: DeepSWETask, calls: list) -> dict:
+DIAG = (f"grep -aiE 'error|cannot|not found|no required module|dial tcp|lookup |no such host|"
+        f"connection refused|timed out|panic|killed' {TEST_STDOUT} | grep -v '^\\[verifier\\]' "
+        "| sort | uniq -c | sort -rn | head -40")
+
+
+async def play(args, task: DeepSWETask, calls: list, expect: float = 1.0) -> dict:
     """One episode: the calls in the agent's box, then grading in a fresh one."""
     row: dict = {"task_id": task.key, "language": task.data.language}
     agent = grading = None
@@ -170,6 +208,11 @@ async def play(args, task: DeepSWETask, calls: list) -> dict:
         row["metrics"] = trace.metrics
         if reward != 1:
             row["detail"] = trace.info.get("deepswe")
+        if reward != expect:
+            # Why, from the run's full output: the lines naming an error, a missing module or
+            # a network lookup.
+            found = await grading.run(["sh", "-c", DIAG], {})
+            row["diag"] = (found.stdout or "")[-6000:]
     except TimeoutError:
         row["error"] = "timeout: past the step budget"
         row.setdefault("reward", 0.0)
@@ -190,8 +233,13 @@ def episodes(args) -> list[tuple[DeepSWETask, str, list, float]]:
     if args.conformance:
         return [(by_index[c["index"]], c["name"], c["calls"], c["expect"])
                 for c in conformance.conformance_cases("eval_all") if c["index"] in by_index]
-    return [(task, f"reference_{index}", conformance.reference_calls("eval_all", index), 1.0)
-            for index, task in sorted(by_index.items())]
+    played = []
+    for index, task in sorted(by_index.items()):
+        played.append((task, f"reference_{index}", conformance.reference_calls("eval_all", index),
+                       1.0))
+        if args.noop:
+            played.append((task, f"noop_{index}", NOOP_CALLS, 0.0))
+    return played
 
 
 async def run_all(args) -> list[dict]:
@@ -200,8 +248,9 @@ async def run_all(args) -> list[dict]:
 
     async def one(task, name, calls, expect):
         async with limit:
-            row = await play(args, task, calls)
-            row.update(case=name, expect=expect, ok=row.get("reward") == expect)
+            row = await play(args, task, calls, expect)
+            row.update(case=name, expect=expect,
+                       ok=row.get("reward") == expect and not row.get("error"))
             line = json.dumps(row, sort_keys=True)
             print(line, flush=True)
             if out is not None:
@@ -217,14 +266,18 @@ async def run_all(args) -> list[dict]:
 
 
 def write_gate(rows: list[dict], args) -> None:
+    noop_failed = {r["task_id"] for r in rows if r.get("case", "").startswith("noop_")
+                   and (r.get("reward") != 0 or r.get("error"))}
     passed = sorted(r["task_id"] for r in rows
                     if r.get("case", "").startswith("reference_") and r.get("reward") == 1
-                    and r.get("grading_s", STEP_S) <= args.budget and not r.get("error"))
+                    and r.get("grading_s", STEP_S) <= args.budget and not r.get("error")
+                    and r["task_id"] not in noop_failed)
     digest = hashlib.sha256("\n".join(json.dumps(r, sort_keys=True) for r in rows).encode())
     provenance = {"host": platform.node(), "runtime": args.runtime or "docker default",
                   "date": datetime.date.today().isoformat(), "budget_s": str(args.budget),
                   "results_sha256": digest.hexdigest(),
-                  "verified": f"{len(passed)}/{len(source.task_ids())}"}
+                  "verified": f"{len(passed)}/{len(source.task_ids())}",
+                  "served": f"{len(set(passed) - set(gate.EXCLUDED))}/{len(source.task_ids())}"}
     text = Path(gate.__file__).read_text()
     head = text.split("VERIFIED:", 1)[0]
     body = ("VERIFIED: frozenset[str] | None = frozenset({\n"
@@ -233,7 +286,8 @@ def write_gate(rows: list[dict], args) -> None:
             "GOLD_CHECK: dict[str, str] = {\n"
             + "".join(f"    {k!r}: {v!r},\n" for k, v in provenance.items()) + "}\n"
             '"""Provenance of `VERIFIED`: where and when the gold check ran (host, runtime, date)."""\n\n'
-            f"EXCLUDED: dict[str, str] = {gate.EXCLUDED!r}\n"
+            "EXCLUDED: dict[str, str] = {\n"
+            + "".join(f"    {k!r}: {v!r},\n" for k, v in gate.EXCLUDED.items()) + "}\n"
             '"""Task id -> why it is never served."""\n')
     Path(gate.__file__).write_text(head + body)
     print(f"gate: {len(passed)}/{len(source.task_ids())} verified", file=sys.stderr)
@@ -250,6 +304,8 @@ def main() -> int:
     parser.add_argument("--budget", type=float, default=700.0,
                         help="a task grading slower than this is not verified")
     parser.add_argument("--out", help="append JSON lines here")
+    parser.add_argument("--noop", action="store_true",
+                        help="also play a no-op episode per task (expected 0)")
     parser.add_argument("--conformance", action="store_true",
                         help="run the declared attack cases on the goldens instead")
     parser.add_argument("--write-gate", action="store_true")

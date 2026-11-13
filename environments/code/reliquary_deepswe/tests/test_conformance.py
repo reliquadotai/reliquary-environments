@@ -22,9 +22,11 @@ def test_every_task_has_a_reference_that_uploads_its_gold_patch_and_commits():
     assert conformance.reference_calls("eval_all", len(ids)) is None
 
 
-def test_eval_has_no_cases_before_the_gate():
-    assert conformance.conformance_cases("eval") == []
-    assert conformance.reference_calls("eval", 0) is None
+def test_eval_cases_use_eval_indices_and_unknown_splits_have_none():
+    eval_ids = split_ids("eval")
+    cases = conformance.conformance_cases("eval")
+    assert {c["index"] for c in cases} == {eval_ids.index(t) for t in conformance.GOLDENS}
+    assert conformance.reference_calls("eval", len(eval_ids)) is None
     assert conformance.conformance_cases("train") == []
 
 
