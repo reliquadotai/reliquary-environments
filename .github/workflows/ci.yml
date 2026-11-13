@@ -541,6 +541,32 @@ jobs:
           junit-path: ${{ runner.temp }}/pytest-results.xml
           test-outcome: ${{ steps.unit_tests.outcome }}
 
+  reliquary-swebench-pro:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: environments/code/reliquary_swebench_pro
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - run: uv sync --locked
+      - run: uv run --no-sync python ../../../scripts/check_verifiers_pin.py
+      - run: uv run --no-sync python ../../../scripts/check_reasoning_mode.py
+      - run: uv run --no-sync python ../../../scripts/check_example_matches_policy.py
+      # No Docker and no image: the gold check runs on a gVisor host (scripts/gold_check.py).
+      - id: unit_tests
+        run: uv run --no-sync pytest --junitxml="${{ runner.temp }}/pytest-results.xml" -o junit_logging=no -o junit_log_passing_tests=false
+      - run: uv build --clear
+
+      - name: Retain test counts
+        if: always()
+        uses: ./.github/actions/test-summary
+        with:
+          junit-path: ${{ runner.temp }}/pytest-results.xml
+          test-outcome: ${{ steps.unit_tests.outcome }}
+
   heldout-benchmarks:
     runs-on: ubuntu-22.04
     defaults:

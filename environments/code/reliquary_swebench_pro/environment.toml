@@ -1,0 +1,54 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/swebench-pro"
+version = "0.1.0"
+taskset = "reliquary-swebench-pro"
+entrypoint = "reliquary_swebench_pro:SweProTaskset"
+license = "Apache-2.0"
+verification_tier = "container-reverified"
+owners = ["Reliquary contributors"]
+task_families = ["swebench_pro_v2"]
+
+# No `compatibility_entrypoint`: Verifiers-only, like reliquary-swe and
+# reliquary-terminal -- a container cannot be replayed deterministically.
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+# No box has network. Upstream's agent runs offline; its verifier runs with
+# `network_mode = "public"`, which is not granted here: tasks whose tests need
+# network fail the gold check and are left out of `eval` (gate.py).
+network = false
+secrets = []
+resource_class = "container"
+# Provisional, as reliquary-swe's and reliquary-deepswe's: the order's episode
+# budget (max turns, tokens) is what bounds a run. Upstream's locked protocol
+# bounds the agent by a 3,000 s timeout only.
+max_turns = 40
+max_observation_bytes = 16384
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+# `SweProTask.solved`: 1 iff every fail-to-pass and pass-to-pass test is
+# reported PASSED by the task's own parser (upstream's binary reward).
+components = ["solved"]
+
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """
+Each task is an issue or feature request against a large production repository
+(Go, Python, JavaScript/TypeScript), often across several files: the agent must
+read the code and plan before its first edit. An argument, as for reliquary-swe,
+not a measurement.
+"""
+
+[data]
+# Held out: never trained on. `eval` is the gold-checked subset
+# (reliquary_swebench_pro/gate.py), `eval_all` all 642.
+eval = "git:scaleapi/SWE-bench_Pro-os@66f92766bba642462d4bbe5479e83f91f9211862"
+rows = 642
+redistributable = true
+license = "MIT (Scale AI's harness and task packaging); each task's patches and problem statement under its repository's own license (NOTICE)"

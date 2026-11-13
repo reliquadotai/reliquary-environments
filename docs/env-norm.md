@@ -163,6 +163,26 @@ shows up there, not as voided episodes.
   served tasks use 103. Mirrored by digest into our Hippius registry (2026-11-13).
 - Gold check (2026-11-13, gVisor, no network): 110 of 113 served (`gate.py`).
 
+## 3c. reliquary-swebench-pro
+
+- Splits: `eval` (the gold-checked tasks, `reliquary_swebench_pro/gate.py`; refuses to load
+  until the gold check recorded them) and `eval_all` (all 642). Both are held out; a
+  gateway serves `eval` only, under a split named `eval`.
+- `setup` and `grading_setup` check `/app` is at the task's base commit (ours otherwise).
+  `finalize` writes everything the agent changed against the base, committed or not, to
+  `/logs/artifacts/model.patch`, the only declared artifact, from a scratch repository
+  over the agent's objects; a planted patch or link is removed first.
+- The reward, `solved`: an empty patch is 0; a patch with a symlink, a submodule or a
+  path in a toolchain directory is 0 and never applied; otherwise it is applied with
+  Scale's replay fallbacks, upstream's `test.sh` runs unchanged, and the verdict is
+  computed in the scoring process from the run script's logs with the task's own vendored
+  parser (the box's `reward.txt` and `output.json` are never read).
+- Timeouts: setup 120 s, agent 3000 s, finalize 300 s, scoring 810 s. Resources: 1 CPU,
+  4 GB, 10 GB (upstream's). Recommended gateway options: tools `bash` and `edit`, split
+  `eval` mapped to itself.
+- Images: 642 digests (1,051 GB compressed, 544 GB distinct) in the package's lock. No
+  box has network: tasks whose tests need it fail the gold check and are not served.
+
 ## 4. Conformance cases and reference solutions
 
 Each package exports two functions of plain data, read by the sandbox's conformance suite
