@@ -7,6 +7,7 @@ imports made while the entrypoint is imported, so all of them happen here.
 import importlib
 
 MODULES = (
+    "reliquary_automationbench._upstream",
     "reliquary_automationbench._upstream.rubric",
     "reliquary_automationbench._upstream.rubric.assertions",
     "reliquary_automationbench._upstream.rubric.assertions.buffer",

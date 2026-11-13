@@ -358,6 +358,14 @@ def test_the_taskset_loads_and_validates() -> None:
         assert asyncio.run(task.validate(None)) is True
 
 
+def test_every_module_is_in_a_regular_package() -> None:
+    """Reliquary's verified loader serves only artifact-bound modules: a
+    namespace package (no `__init__.py`) cannot be imported through it."""
+    for path in PACKAGE.rglob("*.py"):
+        for folder in path.relative_to(PACKAGE).parents:
+            assert (PACKAGE / folder / "__init__.py").is_file(), folder
+
+
 def test_artifact_manifest_hashes_the_package() -> None:
     artifact = json.loads((PACKAGE / "artifact.json").read_text())
     shipped = {

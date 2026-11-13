@@ -239,7 +239,7 @@ def _closure() -> list[str]:
             continue
         seen.add(name)
         parts = name.split(".")
-        for i in range(3, len(parts)):
+        for i in range(2, len(parts)):
             stack.append(".".join(parts[:i]))
         tree = ast.parse(_module_file(name).read_text())
         is_package = _module_file(name).name == "__init__.py"
