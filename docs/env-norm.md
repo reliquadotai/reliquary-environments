@@ -163,6 +163,29 @@ shows up there, not as voided episodes.
   served tasks use 103. Mirrored by digest into our Hippius registry (2026-11-13).
 - Gold check (2026-11-13, gVisor, no network): 110 of 113 served (`gate.py`).
 
+## 3c. reliquary-nl2repo
+
+- Splits: `eval` (the gold-checked tasks, `reliquary_nl2repo/gate.py`; refuses to load
+  until the gold check recorded them) and `eval_all` (all 104). Both are held out; a
+  gateway serves `eval` only, under a split named `eval`.
+- `setup` removes what the image keeps of the reference (copies outside `/workspace`, pip
+  caches, distributions installed from a local directory, `setup.py develop` links,
+  `/tmp`), empties `/workspace` (hidden tests, upstream packaging) and writes `start.md`.
+  `finalize` archives `/workspace` (regular files, no toolchain directory, at most 24 MiB)
+  to `/logs/artifacts/workspace.tar.gz`, the only declared artifact, after emptying the
+  artifact directory. `grading_setup` repeats the hygiene in the pristine box.
+- The reward, `pass_rate`: the archive is rebuilt in the scoring process (regular files,
+  relative paths; packaging, hidden-test paths, `conftest.py`, `sitecustomize.py`,
+  `*.pth`, pytest config, runner-shadowing modules and test-named files dropped),
+  extracted without replacing any file the image has, then upstream's commands run in
+  bash, offline, within 660 s; reward = min(passed / `test_case_count`, 1), counted from
+  the JUnit reports in the scoring process.
+- Timeouts: setup 300 s, agent 7200 s, finalize 300 s, scoring 810 s. Resources: 4 CPUs,
+  8 GB, 20 GB. Recommended gateway options: tools `bash` and `edit`, split `eval` mapped
+  to itself.
+- Images: 104 tags, one per task (55 GB compressed), in the package's lock. Upstream
+  ships no license: the task files are fetched at build time by digest, never committed.
+
 ## 4. Conformance cases and reference solutions
 
 Each package exports two functions of plain data, read by the sandbox's conformance suite
