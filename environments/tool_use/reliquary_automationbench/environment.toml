@@ -1,0 +1,81 @@
+schema = "reliquary/environment-source/v2"
+id = "reliquary/automationbench"
+version = "0.1.0a1"
+taskset = "reliquary-automationbench"
+entrypoint = "reliquary_automationbench:AutomationBenchTaskset"
+compatibility_entrypoint = "reliquary_automationbench:AutomationBenchEnvironment"
+license = "MIT"
+verification_tier = "deterministic-replay"
+owners = ["Reliquary contributors"]
+task_families = ["automationbench_api_v1"]
+
+[compatibility]
+python = ">=3.12,<3.13"
+verifiers = ">=0.3.1,<0.4"
+verifiers_api = "v1"
+
+[execution]
+network = false
+secrets = []
+resource_class = "cpu"
+# Upstream allows 50 model responses, each of which may hold several calls; a
+# Reliquary turn holds one call. 100 leaves a sequential agent upstream's room.
+max_turns = 100
+# One tool result is cut at 24 KiB of UTF-8 (environment.MAX_CONTENT_BYTES),
+# which stays under 64 KiB on the wire after JSON escaping.
+max_observation_bytes = 65536
+
+[reward]
+minimum = 0.0
+maximum = 1.0
+# Upstream's strict pass (task_completed_correctly); partial_credit is reported
+# beside it by `grade_report`, not rewarded.
+components = ["all_scored_assertions"]
+
+[data]
+eval = "automationbench:1.0.6:public"
+qualification = "automationbench:1.0.6:simple"
+redistributable = true
+license = "MIT"
+# Shipped in the wheel: rows as upstream's builders return them (noise seeded
+# by example_id), captured before Hugging Face normalisation by
+# scripts/export_tasks.py. The digest covers the decompressed body.
+source = "zapier/AutomationBench"
+source_url = "https://github.com/zapier/AutomationBench"
+source_commit = "4a8e1061254004d9dac807054eed33fad7d1ff14"
+source_version = "1.0.6"
+rows = 800
+sha256 = "9b342647bd15d26019c2a740f67907f6f653cad269d064ce6a89691480d5dca0"
+# eval: the six scored domains, 100 each, contiguous in this order:
+#   [0,100) sales  [100,200) marketing  [200,300) operations
+#   [300,400) support  [400,500) finance  [500,600) hr
+# qualification: upstream's 200 `simple` tasks, which upstream never scores.
+# No train split: a held-out benchmark.
+eval_rows = 600
+qualification_rows = 200
+
+[provenance]
+source_repository = "https://github.com/reliquadotai/reliquary-environments"
+upstream = "https://github.com/zapier/AutomationBench"
+upstream_path = "automationbench/{schema,rubric,utils,tools}"
+upstream_license = "MIT"
+port = "vendored-deterministic"
+
+[policy]
+reasoning = "thinking"
+reasoning_rationale = """
+Multi-hop business workflows: read a policy email, look a tier up in one
+sheet, convert a currency from another, then write to three services without
+touching the decoys. The grade reads only the world after the last call, so
+deliberation costs nothing the grader sees, and the tasks are built around
+traps (stale policies, near-duplicate records, exclusions) that reward it.
+Not yet measured here; telecom, the closest measured environment, gained
+three points and ended episodes cleanly far more often with thinking on.
+"""
+max_new_tokens = 8192
+max_new_tokens_rationale = """
+Not measured yet. A turn plans and writes one call whose body can be a whole
+email or a batch of sheet rows; telecom's p99 turn was 2,001 tokens with
+smaller arguments. 8,192 is a starting ceiling to be measured on the first
+eval and lowered.
+"""
