@@ -91,6 +91,23 @@ uv run python scripts/gold_check.py --runtime runsc --conformance               
 Run on a gVisor host shaped like a gateway (a test VM, never a production one). Each task's
 image is pulled by digest and, with `--prune`, removed after its cases.
 
+### Result (2026-11-13): 576 of 642 served
+
+On Targon CPU VMs (gVisor `runsc` 20260928.0, boxes at the task's 1 CPU / 4 GB), every task's
+reference and no-op were played; `gate.py` records the 576 verified. Left out:
+
+| Why | Tasks |
+| --- | --- |
+| Needs network at grading time (Go module fetches from proxy.golang.org, `npm install`, a test resolving a host) | 32: vuls 15, flipt 9, openlibrary 2, navidrome 2, NodeBB, element-web, teleport, tutanota |
+| Grading over 700 s on 1 CPU (or over the 810 s step) | 24: ansible 8, vuls 7, protonmail 4, teleport 3, flipt 2 |
+| Gold fails offline for another reason (a dependency missing at test time, no network trace) | 4: NodeBB, protonmail 2, tutanota |
+| Gold passes every fail-to-pass test but a pass-to-pass test fails offline | 4: NodeBB 2, element-web 2 |
+| Graded runs of the same case disagreed (flaky) | 2: element-web |
+
+No no-op graded 1. The slowest verified grading took 700 s or less; the median was about
+4 minutes. The per-task report (status, timings, the log lines naming the failure) is kept
+with the results, outside the repository.
+
 ## Conformance (`conformance_cases`, `reference_calls`)
 
 Every task has a reference (gold applied and committed). On the goldens (qutebrowser

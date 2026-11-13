@@ -31,10 +31,16 @@ def test_split_is_required():
         len(SweProTaskset(SweProConfig(id="reliquary-swebench-pro")))
 
 
-def test_eval_refuses_until_gated():
-    assert gate.VERIFIED is None
-    with pytest.raises(ValueError, match="not gated yet"):
-        len(SweProTaskset(SweProConfig(split="eval", id="reliquary-swebench-pro")))
+def test_eval_is_the_gated_tasks_and_refuses_when_ungated(monkeypatch):
+    assert len(gate.VERIFIED) == 576 and gate.GOLD_CHECK["verified"] == "576/642"
+    assert len(SweProTaskset(SweProConfig(split="eval", id="reliquary-swebench-pro"))) == 576
+    monkeypatch.setattr(gate, "VERIFIED", None)
+    taskset.split_ids.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="not gated yet"):
+            len(SweProTaskset(SweProConfig(split="eval", id="reliquary-swebench-pro")))
+    finally:
+        taskset.split_ids.cache_clear()
 
 
 def test_eval_serves_the_verified_tasks_less_the_excluded(monkeypatch):
